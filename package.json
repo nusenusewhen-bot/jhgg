@@ -1,14 +1,12 @@
 {
-  "name": "snapchat-selfbot",
+  "name": "snap-emergency",
   "version": "1.0.0",
-  "description": "Snapchat automation bot",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
+  "main": "bot.js",
+  "scripts": {"start": "node bot.js"},
   "dependencies": {
-    "axios": "^1.6.0",
-    "puppeteer": "^21.0.0",
-    "dotenv": "^16.3.0"
-  }
+    "puppeteer-core": "^21.0.0",
+    "@sparticuz/chromium": "^119.0.0",
+    "ws": "^8.14.0"
+  },
+  "engines": {"node": "18.x"}
 }
