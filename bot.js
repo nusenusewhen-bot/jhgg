@@ -17,123 +17,165 @@ async function launch() {
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      '--single-process',
       '--disable-gpu',
       '--disable-web-security',
-      '--disable-features=IsolateOrigins,site-per-process'
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-blink-features=AutomationControlled',
+      '--window-size=1920,1080'
     ],
-    headless: 'new',
+    headless: false,
     ignoreHTTPSErrors: true
   });
 }
 
-async function login(page) {
-  console.log('[*] Starting login...');
-  await page.goto('https://accounts.snapchat.com/accounts/login', { 
-    waitUntil: 'networkidle2',
-    timeout: 30000 
+async function stealth(page) {
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+    window.chrome = { runtime: {} };
   });
-  
-  for (let i = 0; i < PASSWORDS.length; i++) {
-    try {
-      await page.waitForSelector('input[name="username"]', {timeout: 10000});
-      
-      await page.evaluate(() => {
-        const u = document.querySelector('input[name="username"]');
-        const p = document.querySelector('input[name="password"]');
-        if(u) u.value = '';
-        if(p) p.value = '';
-      });
-      
-      await page.type('input[name="username"]', EMAIL, {delay: 15});
-      await page.type('input[name="password"]', PASSWORDS[i], {delay: 15});
-      
-      await Promise.all([
-        page.click('button[type="submit"]'),
-        page.waitForNavigation({waitUntil: 'networkidle2', timeout: 15000}).catch(() => {})
-      ]);
-      
-      await page.waitForTimeout(4000);
-      
-      const url = page.url();
-      if (!url.includes('accounts.snapchat.com')) {
-        console.log(`[+] Auth success (password ${i})`);
-        return true;
-      }
-      
-      if (await page.$('text/Incorrect password') || await page.$('text/Wrong password')) {
-        console.log(`[-] Password ${i} incorrect`);
-        continue;
-      }
-      
-    } catch(e) {
-      console.log(`[-] Attempt ${i} error: ${e.message}`);
-      if (!page.url().includes('login')) return true;
-    }
-  }
-  throw new Error('Login failed - all passwords exhausted');
 }
 
-async function watchChat(page) {
-  console.log('[*] Loading web.snapchat.com...');
+async function login(page) {
+  console.log('[*] Loading login page...');
   
-  await page.goto('https://web.snapchat.com/', { 
-    waitUntil: 'domcontentloaded',
+  await page.goto('https://accounts.snapchat.com/accounts/login', { 
+    waitUntil: 'networkidle0',
     timeout: 60000 
   });
   
-  await page.waitForTimeout(8000);
+  await page.waitForTimeout(3000);
   
-  console.log('[+] BOT ACTIVE - watching for ".test"');
-  console.log('[*] Ready to reply "Work"');
+  // Try multiple selectors
+  const userSelectors = [
+    'input[name="username"]',
+    'input[id="username"]',
+    'input[type="text"]',
+    'input[placeholder*="username" i]',
+    'input[placeholder*="phone" i]',
+    'input[autocomplete="username"]'
+  ];
   
-  const processed = new Set();
-  
-  while (true) {
+  let usernameInput = null;
+  for (const sel of userSelectors) {
     try {
-      const messages = await page.$$eval('[data-testid="message-content"], .MessageContent, .MsgMessage', 
-        els => els.slice(-10).map((el, idx) => ({
-          id: idx + '-' + el.innerText.slice(0, 20),
+      usernameInput = await page.waitForSelector(sel, {timeout: 5000});
+      if (usernameInput) {
+        console.log(`[+] Found username field: ${sel}`);
+        break;
+      }
+    } catch(e) {}
+  }
+  
+  if (!usernameInput) {
+    console.log('[-] Dumping page HTML for debug:');
+    const html = await page.content();
+    console.log(html.slice(0, 2000));
+    throw new Error('Cannot find username input');
+  }
+  
+  for (let i = 0; i < PASSWORDS.length; i++) {
+    try {
+      await usernameInput.click();
+      await usernameInput.type(EMAIL, {delay: 50});
+      
+      const passSelectors = [
+        'input[name="password"]',
+        'input[id="password"]',
+        'input[type="password"]'
+      ];
+      
+      let passInput = null;
+      for (const sel of passSelectors) {
+        passInput = await page.$(sel);
+        if (passInput) break;
+      }
+      
+      if (!passInput) throw new Error('No password field');
+      
+      await passInput.click();
+      await passInput.type(PASSWORDS[i], {delay: 50});
+      
+      const btnSelectors = [
+        'button[type="submit"]',
+        'button:has-text("Log In")',
+        'input[type="submit"]'
+      ];
+      
+      let btn = null;
+      for (const sel of btnSelectors) {
+        btn = await page.$(sel);
+        if (btn) break;
+      }
+      
+      await Promise.all([
+        btn.click(),
+        page.waitForNavigation({waitUntil: 'networkidle0', timeout: 20000}).catch(() => {})
+      ]);
+      
+      await page.waitForTimeout(5000);
+      
+      const url = page.url();
+      console.log(`[*] Current URL: ${url}`);
+      
+      if (url.includes('web.snapchat.com') || url.includes('accounts.snapchat.com/accounts/welcome')) {
+        console.log(`[+] LOGIN SUCCESS (password ${i})`);
+        return true;
+      }
+      
+      if (url.includes('challenge') || url.includes('verify')) {
+        console.log('[!] 2FA/Challenge required - cannot proceed');
+        return false;
+      }
+      
+    } catch(e) {
+      console.log(`[-] Attempt ${i}: ${e.message}`);
+    }
+  }
+  return false;
+}
+
+async function watchChat(page) {
+  console.log('[*] Navigating to web.snapchat.com...');
+  
+  await page.goto('https://web.snapchat.com/', { 
+    waitUntil: 'networkidle0',
+    timeout: 60000 
+  });
+  
+  await page.waitForTimeout(10000);
+  
+  console.log('[+] BOT RUNNING - type ".test" in any chat');
+  
+  const seen = new Set();
+  
+  setInterval(async () => {
+    try {
+      const msgs = await page.$$eval('[data-testid="message-content"], .Message__body, .MsgMessage__body, .conversation-message', 
+        els => els.slice(-5).map((el, i) => ({
+          id: i + '-' + el.innerText.slice(0, 15),
           text: el.innerText.trim(),
-          isMine: el.className.includes('fromMe') || el.closest('[data-testid="message-outgoing"]')
+          mine: el.className.includes('outgoing') || el.getAttribute('data-self') === 'true'
         }))
       );
       
-      for (const msg of messages) {
-        if (!msg.isMine && msg.text === '.test' && !processed.has(msg.id)) {
-          processed.add(msg.id);
+      for (const msg of msgs) {
+        if (!msg.mine && msg.text === '.test' && !seen.has(msg.id)) {
+          seen.add(msg.id);
           
-          const inputSelectors = [
-            'div[contenteditable="true"]',
-            '[data-testid="message-input"]',
-            'input[placeholder*="Send"]',
-            'textarea'
-          ];
-          
-          let input = null;
-          for (const sel of inputSelectors) {
-            input = await page.$(sel);
-            if (input) break;
-          }
-          
-          if (input) {
-            await input.click();
-            await input.type('Work', {delay: 10});
+          const inputs = await page.$$('div[contenteditable="true"], [data-testid="message-input"], textarea');
+          if (inputs.length > 0) {
+            await inputs[inputs.length - 1].type('Work', {delay: 20});
             await page.keyboard.press('Enter');
-            console.log(`[>] Replied "Work" to .test command`);
-            await page.waitForTimeout(500);
+            console.log('[>] Replied: Work');
           }
         }
       }
       
-      if (processed.size > 100) processed.clear();
-      
-    } catch(e) {
-      // Silent continue
-    }
-    
-    await page.waitForTimeout(1500);
-  }
+      if (seen.size > 50) seen.clear();
+    } catch(e) {}
+  }, 2000);
 }
 
 (async () => {
@@ -142,14 +184,21 @@ async function watchChat(page) {
     browser = await launch();
     const page = await browser.newPage();
     
-    await page.setViewport({width: 1280, height: 720});
-    await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await stealth(page);
     
-    await login(page);
-    await watchChat(page);
+    await page.setViewport({width: 1920, height: 1080});
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+    
+    const success = await login(page);
+    if (success) await watchChat(page);
+    else {
+      console.log('[-] Login failed');
+      await browser.close();
+      process.exit(1);
+    }
     
   } catch(err) {
-    console.error('[-] FATAL:', err.message);
+    console.error('[-] CRASH:', err.message);
     if (browser) await browser.close();
     process.exit(1);
   }
