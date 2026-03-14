@@ -1,0 +1,10 @@
+{
+  "credentials": {
+    "email": "aghaithollah@gmail.com",
+    "passwords": ["Warrior2012@", "Warrior012@", "Warrior12@"]
+  },
+  "prefix": ".",
+  "commands": {
+    "test": "Work"
+  }
+}
