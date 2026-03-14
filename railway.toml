@@ -1,0 +1,5 @@
+[build]
+builder = "docker"
+
+[deploy]
+startCommand = "xvfb-run -a node bot.js"
