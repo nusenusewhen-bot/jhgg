@@ -1,93 +1,71 @@
 const WebSocket = require('ws');
 const axios = require('axios');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const http = require('http');
-const https = require('https');
 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const TARGET_PARENT_ID = process.env.TARGET_PARENT_ID || '1420535190500933713';
 const PROXY_URL = process.env.PROXY_URL;
 
+// Pre-compute static payload template for instant sends
+const CLAIM_PAYLOAD = JSON.stringify({ content: '.claim', nonce: '0' });
+const WORK_PAYLOAD = JSON.stringify({ content: 'Work' });
+const HELP_PAYLOAD = JSON.stringify({ 
+    content: '**Commands:**\n`.s` — snipes 2hr ago messages & images\n`.troll` — fake dox' 
+});
+const TROLL_PAYLOAD = JSON.stringify({ content: 'Fake dox initiated... 🎯' });
+
 let ws = null;
 let heartbeatInterval;
 let isRunning = false;
 let myUserId = null;
-let httpClient = null;
-let claimQueue = [];
-let isProcessing = false;
+let httpsAgent = null;
+let messageHistory = new Map(); // For snipe command
 
-// Pre-warm connection pool
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 10 });
-const httpsAgent = PROXY_URL 
-    ? new HttpsProxyAgent(PROXY_URL)
-    : new https.Agent({ keepAlive: true, maxSockets: 10 });
-
-const headers = {
-    'Authorization': TOKEN,
-    'Content-Type': 'application/json',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept': '*/*',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'X-Super-Properties': Buffer.from(JSON.stringify({
-        "os":"Windows","browser":"Chrome","device":"",
-        "system_locale":"en-US",
-        "browser_user_agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "browser_version":"120.0.0.0","os_version":"10",
-        "release_channel":"stable","client_build_number":242635
-    })).toString('base64')
-};
-
-// Initialize axios instance with keep-alive
-function initHttpClient() {
-    httpClient = axios.create({
-        httpAgent: httpAgent,
-        httpsAgent: httpsAgent,
-        timeout: 5000,
-        headers: headers,
-        validateStatus: () => true
-    });
+// Fast agent setup
+if (PROXY_URL) {
+    httpsAgent = new HttpsProxyAgent(PROXY_URL);
 }
 
-async function sendMessage(channelId, content) {
-    const start = Date.now();
+const axiosInstance = axios.create({
+    httpsAgent: httpsAgent,
+    httpAgent: httpsAgent,
+    timeout: 2000,
+    headers: {
+        'Authorization': TOKEN,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0.36',
+        'Accept': '*/*'
+    },
+    validateStatus: () => true
+});
+
+// Ultra-fast POST with pre-warmed connection
+async function fastSend(channelId, payload) {
+    const start = process.hrtime.bigint();
     try {
-        const res = await httpClient.post(
+        // Replace nonce with timestamp for uniqueness
+        const finalPayload = payload.replace('"nonce":"0"', `"nonce":"${Date.now()}"`);
+        
+        const res = await axiosInstance.post(
             `https://discord.com/api/v9/channels/${channelId}/messages`,
-            { content, nonce: Date.now().toString() },
-            { timeout: 3000 }
+            finalPayload,
+            { timeout: 1500 }
         );
-        const latency = Date.now() - start;
+        
+        const end = process.hrtime.bigint();
+        const ms = Number(end - start) / 1000000;
         
         if (res.status === 200) {
-            console.log(`[+] ✅ ${content} in ${latency}ms`);
+            console.log(`[+] ⚡ ${ms.toFixed(2)}ms`);
             return true;
         } else if (res.status === 429) {
-            const retry = res.headers['retry-after'] || 100;
-            console.log(`[!] 429, retry ${retry}ms`);
-            setTimeout(() => sendMessage(channelId, content), retry);
+            const retry = parseInt(res.headers['retry-after']) || 50;
+            setTimeout(() => fastSend(channelId, payload), retry);
         }
-    } catch (err) {
-        console.log(`[!] Error: ${err.code}`);
+    } catch (e) {
+        console.log(`[!] ${e.code}`);
     }
     return false;
-}
-
-// Process claim queue immediately
-function processQueue() {
-    if (isProcessing || claimQueue.length === 0) return;
-    isProcessing = true;
-    
-    const item = claimQueue.shift();
-    sendMessage(item.channelId, '.claim').then(() => {
-        isProcessing = false;
-        if (claimQueue.length > 0) processQueue();
-    });
-}
-
-function queueClaim(channelId, channelName) {
-    console.log(`[+] 🎫 ${channelName} detected`);
-    claimQueue.push({ channelId, ts: Date.now() });
-    processQueue();
 }
 
 function connect() {
@@ -97,11 +75,11 @@ function connect() {
     const wsOptions = {
         headers: { 
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Origin': 'https://discord.com'
         },
-        handshakeTimeout: 30000,
-        agent: httpsAgent
+        handshakeTimeout: 30000
     };
+    
+    if (httpsAgent) wsOptions.agent = httpsAgent;
     
     ws = new WebSocket('wss://gateway.discord.gg/?v=9&encoding=json', wsOptions);
     
@@ -111,7 +89,7 @@ function connect() {
     
     ws.on('message', (data) => {
         try {
-            const payload = JSON.parse(data.toString());
+            const payload = JSON.parse(data);
             const { op, d, s, t } = payload;
             
             if (op === 10) {
@@ -121,14 +99,12 @@ function connect() {
                     }
                 }, d.heartbeat_interval);
                 
-                // Identify with minimal payload for speed
                 ws.send(JSON.stringify({
                     op: 2,
                     d: {
                         token: TOKEN,
                         properties: { os: "Windows", browser: "Chrome", device: "" },
                         compress: false,
-                        large_threshold: 50,
                         presence: { status: "online", since: 0, activities: [], afk: false },
                         intents: (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15)
                     }
@@ -136,70 +112,94 @@ function connect() {
             }
             
             if (op === 0) {
+                // Store message history for snipe (keep last 100 per channel, 2hr ttl)
+                if (t === 'MESSAGE_CREATE' && !d.author.bot) {
+                    const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+                    if (d.timestamp > twoHoursAgo) {
+                        if (!messageHistory.has(d.channel_id)) {
+                            messageHistory.set(d.channel_id, []);
+                        }
+                        const history = messageHistory.get(d.channel_id);
+                        history.push({
+                            id: d.id,
+                            content: d.content,
+                            author: d.author.username,
+                            attachments: d.attachments,
+                            timestamp: d.timestamp
+                        });
+                        if (history.length > 100) history.shift();
+                    }
+                }
+                
                 if (t === 'READY') {
                     myUserId = d.user.id;
                     console.log(`[+] Ready as ${d.user.username}`);
-                    console.log(`[+] Target: ${TARGET_PARENT_ID}`);
                 }
                 
-                // CHANNEL_CREATE - instant claim
+                // INSTANT CLAIM - zero delay
                 if (t === 'CHANNEL_CREATE') {
                     if (d.parent_id === TARGET_PARENT_ID && d.type === 0) {
-                        // Immediate claim without queue for max speed
-                        console.log(`[+] ⚡ ${d.name}`);
-                        sendMessage(d.id, '.claim');
+                        console.log(`[+] 🎫 ${d.name}`);
+                        // Fire immediately without waiting
+                        fastSend(d.id, CLAIM_PAYLOAD);
                     }
                 }
                 
-                // GUILD_CREATE - check for existing tickets in category
-                if (t === 'GUILD_CREATE') {
-                    if (d.channels) {
-                        d.channels.forEach(ch => {
-                            if (ch.parent_id === TARGET_PARENT_ID && ch.type === 0) {
-                                console.log(`[+] Found existing: ${ch.name}`);
-                            }
-                        });
-                    }
-                }
-                
-                // Commands
+                // Commands - only token owner
                 if (t === 'MESSAGE_CREATE' && d.author.id === myUserId) {
-                    const content = d.content.trim();
+                    const cmd = d.content.trim();
                     
-                    if (content === '.test') {
-                        sendMessage(d.channel_id, 'Work');
+                    if (cmd === '.test') {
+                        fastSend(d.channel_id, WORK_PAYLOAD);
                     }
                     
-                    if (content === '.ping') {
-                        const latency = Date.now() - d.timestamp;
-                        sendMessage(d.channel_id, `Pong! ${latency}ms`);
+                    if (cmd === '.help') {
+                        fastSend(d.channel_id, HELP_PAYLOAD);
                     }
                     
-                    if (content === '.status') {
-                        sendMessage(d.channel_id, `Queue: ${claimQueue.length} | Proxy: ${PROXY_URL ? 'ON' : 'OFF'}`);
+                    if (cmd === '.s' || cmd === '.snipe') {
+                        const history = messageHistory.get(d.channel_id) || [];
+                        const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+                        const recent = history.filter(m => m.timestamp > twoHoursAgo).slice(-5);
+                        
+                        if (recent.length === 0) {
+                            fastSend(d.channel_id, JSON.stringify({ content: 'Nothing to snipe (2hr)' }));
+                        } else {
+                            let snipeText = '**Sniped (2hr):**\n';
+                            recent.reverse().forEach(m => {
+                                snipeText += `\`${m.author}\`: ${m.content || '[embed/file]'}\n`;
+                                if (m.attachments.length > 0) {
+                                    m.attachments.forEach(a => {
+                                        snipeText += `📎 ${a.url}\n`;
+                                    });
+                                }
+                            });
+                            fastSend(d.channel_id, JSON.stringify({ content: snipeText.slice(0, 2000) }));
+                        }
+                    }
+                    
+                    if (cmd === '.troll') {
+                        fastSend(d.channel_id, TROLL_PAYLOAD);
+                        setTimeout(() => {
+                            fastSend(d.channel_id, JSON.stringify({ 
+                                content: '```yaml\nName: Unknown\nIP: 127.0.0.1\nLocation: localhost\nISP: Your Mom```\n*fake dox complete*' 
+                            }));
+                        }, 500);
                     }
                 }
-            }
-            
-            if (op === 7) {
-                ws.close();
             }
             
             if (op === 9) {
-                console.log('[WS] Invalid session');
+                console.log('[WS] Invalid');
             }
             
         } catch (e) {}
     });
     
     ws.on('close', (code) => {
-        console.log(`[WS] Closed: ${code}`);
         clearInterval(heartbeatInterval);
         isRunning = false;
-        
-        if (code !== 4004) {
-            setTimeout(connect, 1000);
-        }
+        if (code !== 4004) setTimeout(connect, 1000);
     });
     
     ws.on('error', () => {});
@@ -207,12 +207,9 @@ function connect() {
 
 (async () => {
     if (!TOKEN) {
-        console.log('[FATAL] No token');
+        console.log('No token');
         process.exit(1);
     }
-    
-    initHttpClient();
-    console.log('=== DISCORD CLAIMER v3.0 ⚡ ===');
-    console.log('[INIT] HTTP pool warmed up');
+    console.log('=== CLAIMER v4.0 ⚡ ===');
     connect();
 })();
