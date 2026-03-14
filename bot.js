@@ -14,26 +14,11 @@ async function launch() {
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
       '--disable-blink-features=AutomationControlled',
-      '--window-size=1920,1080',
-      '--start-maximized'
+      '--window-size=1920,1080'
     ],
     headless: false,
     ignoreHTTPSErrors: true
   });
-}
-
-async function waitForAnySelector(page, selectors, timeout = 15000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    for (const sel of selectors) {
-      try {
-        const el = await page.$(sel);
-        if (el) return el;
-      } catch(e) {}
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`None of ${selectors.join(', ')} found`);
 }
 
 async function login(page) {
@@ -44,175 +29,106 @@ async function login(page) {
     timeout: 60000 
   });
   
-  // Wait for page to fully render
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(8000);
   
-  // Screenshot for debug
-  await page.screenshot({path: '/tmp/login_page.png'});
-  console.log('[*] Screenshot saved');
+  // Check for iframes
+  const frames = page.frames();
+  console.log(`[*] Found ${frames.length} frames`);
   
-  // Find username field
-  console.log('[*] Looking for username field...');
-  const userSelectors = [
-    'input[name="username"]',
-    'input[id="username"]',
-    'input[placeholder*="username" i]',
-    'input[placeholder*="phone" i]',
-    'input[type="text"]',
-    'input[autocomplete="username"]',
-    'input'
-  ];
-  
-  const userInput = await waitForAnySelector(page, userSelectors, 20000);
-  console.log('[+] Found username input');
-  
-  await userInput.click();
-  await userInput.type(EMAIL, {delay: 50});
-  console.log('[*] Username entered');
-  
-  await page.waitForTimeout(1000);
-  
-  // Find password field
-  console.log('[*] Looking for password field...');
-  const passSelectors = [
-    'input[name="password"]',
-    'input[id="password"]',
-    'input[type="password"]',
-    'input[placeholder*="password" i]'
-  ];
-  
-  const passInput = await waitForAnySelector(page, passSelectors, 20000);
-  console.log('[+] Found password input');
-  
-  await passInput.click();
-  await passInput.type(PASSWORD, {delay: 50});
-  console.log('[*] Password entered');
-  
-  await page.waitForTimeout(1000);
-  
-  // Find submit button
-  console.log('[*] Looking for login button...');
-  const btnSelectors = [
-    'button[type="submit"]',
-    'button:has-text("Log In")',
-    'button:has-text("Sign In")',
-    'input[type="submit"]',
-    'button'
-  ];
-  
-  let btn = null;
-  for (const sel of btnSelectors) {
+  let loginFrame = page;
+  for (const frame of frames) {
     try {
-      btn = await page.$(sel);
-      if (btn) {
-        const text = await page.evaluate(el => el.innerText, btn);
-        if (text.toLowerCase().includes('log') || text.toLowerCase().includes('sign') || sel === 'button[type="submit"]') {
-          console.log(`[+] Found button: ${text || sel}`);
-          break;
-        }
+      const hasForm = await frame.$('input[name="username"]') || await frame.$('input[type="text"]');
+      if (hasForm) {
+        console.log('[+] Found login frame');
+        loginFrame = frame;
+        break;
       }
     } catch(e) {}
   }
   
-  if (!btn) btn = await page.$('button');
+  // Username
+  console.log('[*] Entering username...');
+  await loginFrame.waitForSelector('input[name="username"], input[type="text"], input[id="username"]', {timeout: 20000});
+  await loginFrame.type('input[name="username"], input[type="text"], input[id="username"]', EMAIL, {delay: 100});
   
-  console.log('[*] Clicking login...');
-  await Promise.all([
-    btn.click(),
-    page.waitForNavigation({waitUntil: 'networkidle0', timeout: 30000}).catch(() => {})
-  ]);
+  // TAB to password (human-like)
+  await page.keyboard.press('Tab');
+  await page.waitForTimeout(1000);
   
-  await page.waitForTimeout(8000);
+  // Try typing password with Tab focus
+  console.log('[*] Entering password via Tab...');
+  for (const char of PASSWORD) {
+    await page.keyboard.sendCharacter(char);
+    await page.waitForTimeout(50);
+  }
+  
+  await page.waitForTimeout(1000);
+  
+  // Submit with Enter
+  console.log('[*] Submitting...');
+  await page.keyboard.press('Enter');
+  
+  await page.waitForTimeout(10000);
   
   const url = page.url();
-  console.log(`[*] Current URL: ${url}`);
+  console.log(`[*] URL after login: ${url}`);
   
-  // Check success
-  if (!url.includes('login') && !url.includes('accounts.snapchat.com/accounts')) {
+  if (!url.includes('login')) {
     console.log('[+] LOGIN SUCCESS');
     return true;
   }
   
-  // Check for errors
-  const errorText = await page.evaluate(() => document.body.innerText);
-  if (errorText.includes('incorrect') || errorText.includes('wrong')) {
-    console.log('[-] Invalid credentials');
-    return false;
+  // Fallback: Look for password field again after username submit
+  console.log('[*] Checking for password page...');
+  const passInput = await page.$('input[type="password"]');
+  if (passInput) {
+    console.log('[+] Found password field on next page');
+    await passInput.type(PASSWORD, {delay: 100});
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(8000);
+    
+    if (!page.url().includes('login')) {
+      console.log('[+] LOGIN SUCCESS (2-step)');
+      return true;
+    }
   }
   
-  if (errorText.includes('verify') || errorText.includes('code')) {
-    console.log('[!] 2FA required - waiting 60s for manual solve');
-    await page.waitForTimeout(60000);
-    return true;
-  }
-  
-  // Final check
-  const finalUrl = page.url();
-  if (finalUrl.includes('web.snapchat.com')) {
-    console.log('[+] LOGIN SUCCESS (redirected to web)');
-    return true;
-  }
-  
-  throw new Error(`Login failed. URL: ${finalUrl}`);
+  throw new Error('Login failed');
 }
 
 async function watchChat(page) {
-  console.log('[*] Navigating to web.snapchat.com...');
-  
-  await page.goto('https://web.snapchat.com/', { 
-    waitUntil: 'networkidle0',
-    timeout: 60000 
-  });
-  
+  console.log('[*] Opening web.snapchat.com...');
+  await page.goto('https://web.snapchat.com/', { waitUntil: 'networkidle0', timeout: 60000 });
   await page.waitForTimeout(10000);
-  console.log('[+] BOT ACTIVE - waiting for .test commands');
+  
+  console.log('[+] BOT ACTIVE');
   
   const seen = new Set();
   
-  while (true) {
+  setInterval(async () => {
     try {
-      const msgs = await page.$$eval('[data-testid="message-content"], .Message__body, .conversation-message, div[dir="auto"]', 
-        els => els.slice(-5).map((el, i) => ({
-          id: i + '-' + el.innerText.slice(0, 20),
+      const msgs = await page.$$eval('[data-testid="message-content"], .Message__body, div[dir="auto"]', 
+        els => els.slice(-3).map((el, i) => ({
+          id: i + '-' + el.innerText,
           text: el.innerText.trim(),
-          mine: el.className.includes('outgoing') || el.closest('[data-self="true"]') !== null
+          mine: el.className.includes('outgoing')
         }))
       );
       
       for (const msg of msgs) {
         if (!msg.mine && msg.text === '.test' && !seen.has(msg.id)) {
           seen.add(msg.id);
-          console.log(`[+] Got .test command`);
-          
-          // Try multiple input selectors
-          const inputSelectors = [
-            'div[contenteditable="true"]',
-            '[data-testid="message-input"]',
-            'textarea',
-            'input[placeholder*="Send"]'
-          ];
-          
-          for (const sel of inputSelectors) {
-            const input = await page.$(sel);
-            if (input) {
-              await input.click();
-              await input.type('Work', {delay: 30});
-              await page.keyboard.press('Enter');
-              console.log('[>] Replied: Work');
-              break;
-            }
+          const input = await page.$('div[contenteditable="true"]');
+          if (input) {
+            await input.type('Work', {delay: 30});
+            await page.keyboard.press('Enter');
+            console.log('[>] Sent: Work');
           }
         }
       }
-      
-      if (seen.size > 100) seen.clear();
-      
-    } catch(e) {
-      // Silent continue
-    }
-    
-    await page.waitForTimeout(2000);
-  }
+    } catch(e) {}
+  }, 3000);
 }
 
 (async () => {
@@ -220,30 +136,19 @@ async function watchChat(page) {
   try {
     browser = await launch();
     const page = await browser.newPage();
-    
     await page.setViewport({width: 1920, height: 1080});
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
     
-    // Stealth measures
+    // Stealth
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
       Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-      Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-      window.chrome = { runtime: {} };
-      delete navigator.__proto__.webdriver;
     });
     
-    const success = await login(page);
-    if (success) {
-      await watchChat(page);
-    } else {
-      console.log('[-] Login failed, exiting');
-      await browser.close();
-      process.exit(1);
-    }
+    await login(page);
+    await watchChat(page);
     
   } catch(err) {
-    console.error('[-] CRASH:', err.message);
+    console.error('[-] ERROR:', err.message);
     if (browser) await browser.close();
     process.exit(1);
   }
