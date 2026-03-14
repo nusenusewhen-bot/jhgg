@@ -1,20 +1,11 @@
 {
   "name": "snap-emergency",
   "version": "1.0.0",
-  "lockfileVersion": 3,
-  "requires": true,
-  "packages": {
-    "": {
-      "name": "snap-emergency",
-      "version": "1.0.0",
-      "dependencies": {
-        "puppeteer-core": "^21.6.0"
-      }
-    }
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
   },
   "dependencies": {
-    "puppeteer-core": {
-      "version": "^21.6.0"
-    }
+    "puppeteer-core": "21.6.1"
   }
 }
