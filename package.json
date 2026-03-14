@@ -4,9 +4,8 @@
   "main": "bot.js",
   "scripts": {"start": "node bot.js"},
   "dependencies": {
-    "puppeteer-core": "^21.0.0",
-    "@sparticuz/chromium": "^119.0.0",
-    "ws": "^8.14.0"
+    "puppeteer-core": "^21.6.0",
+    "@sparticuz/chromium": "^119.0.0"
   },
   "engines": {"node": "18.x"}
 }
