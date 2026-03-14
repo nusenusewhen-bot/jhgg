@@ -1,17 +1,18 @@
 {
-  "name": "discord-selfbot-proxy",
-  "version": "1.0.0",
-  "description": "Selfbot with proxy rotation",
-  "main": "index.js",
+  "name": "discord-claimer",
+  "version": "2.0.0",
+  "description": "Ticket claimer with proxy rotation",
+  "main": "claimer.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node claimer.js",
+    "test": "node -e \"console.log('Token:', process.env.DISCORD_TOKEN ? 'Present' : 'Missing')\""
   },
   "dependencies": {
-    "discord.js": "^14.16.3",
-    "https-proxy-agent": "^7.0.5",
-    "node-fetch": "^2.7.0"
+    "ws": "^8.14.2",
+    "axios": "^1.6.2",
+    "https-proxy-agent": "^7.0.2"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=18.0.0"
   }
 }
