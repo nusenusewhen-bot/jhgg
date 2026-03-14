@@ -5,7 +5,7 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     DISPLAY=:99
 
 RUN apt-get update && apt-get install -y \
-    chromium xvfb xauth libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 \
+    chromium xvfb xauth libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2 \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -13,5 +13,4 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 
-# Run without xauth check
-CMD xvfb-run -a --auto-servernum --server-num=1 node bot.js
+CMD xvfb-run -a --server-args="-screen 0 1920x1080x24" node bot.js
