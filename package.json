@@ -1,11 +1,16 @@
 {
-  "name": "snap-emergency",
-  "version": "1.0.0",
-  "main": "bot.js",
+  "name": "jhgg",
+  "version": "2.0.0",
+  "main": "index.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node index.js",
+    "deploy": "bash deploy.sh"
   },
   "dependencies": {
-    "puppeteer-core": "21.6.1"
+    "axios": "^1.6.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "puppeteer-extra-plugin-adblocker": "^2.13.6",
+    "dotenv": "^16.3.0"
   }
 }
