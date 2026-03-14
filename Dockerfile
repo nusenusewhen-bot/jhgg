@@ -1,10 +1,12 @@
 FROM node:18-slim
 
-# Install Chromium dependencies
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf \
     libxss1 \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libgtk-3-0 \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -13,7 +15,7 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --production
 COPY . .
 
 CMD ["node", "bot.js"]
