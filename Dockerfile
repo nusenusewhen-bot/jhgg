@@ -10,6 +10,6 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --production
+RUN npm install
 COPY . .
 CMD xvfb-run -a node bot.js
