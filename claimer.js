@@ -5,6 +5,7 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const TARGET_PARENT_ID = process.env.TARGET_PARENT_ID || '1420535190500933713';
 const PROXY_URL = process.env.PROXY_URL;
+const PREFIX = '$';
 
 let ws = null;
 let heartbeatInterval;
@@ -12,15 +13,18 @@ let isRunning = false;
 let myUserId = null;
 let httpsAgent = null;
 let messageHistory = new Map();
-let processedChannels = new Set(); // Prevent double-claims
+let processedChannels = new Set();
+let autoClaimEnabled = true;
 
-const HELP_TEXT = `**Commands Available:**
-\`.test\` — Test bot response
-\`.help\` — Show this menu
-\`.s\` / \`.snipe\` — Snipe deleted messages (2hr)
-\`.troll\` — Fake dox prank
+const HELP_TEXT = `**Commands:**
+\`$test\` — Test response
+\`$help\` — This menu
+\`$s\` / \`$snipe\` — Snipe 2hr history
+\`$troll\` — Fake dox
+\`$stop\` — Disable auto-claim
+\`$start\` — Enable auto-claim
 
-_Only you can use these._`;
+_Status: ${autoClaimEnabled ? '🟢 ON' : '🔴 OFF'}_`;
 
 if (PROXY_URL) {
     httpsAgent = new HttpsProxyAgent(PROXY_URL);
@@ -39,21 +43,20 @@ const axiosInstance = axios.create({
     validateStatus: () => true
 });
 
-async function sendMessage(channelId, content) {
+async function sendMessage(channelId, content, delay = 0) {
+    if (delay > 0) {
+        await new Promise(r => setTimeout(r, delay));
+    }
+    
     try {
-        const payload = { 
-            content: content, 
-            nonce: Date.now().toString() 
-        };
-        
         const res = await axiosInstance.post(
             `https://discord.com/api/v9/channels/${channelId}/messages`,
-            payload,
+            { content, nonce: Date.now().toString() },
             { timeout: 2000 }
         );
         
         if (res.status === 200) {
-            console.log(`[+] Sent in ${channelId}`);
+            console.log(`[+] Sent to ${channelId}`);
             return true;
         } else if (res.status === 429) {
             const retry = parseInt(res.headers['retry-after']) || 100;
@@ -70,9 +73,7 @@ function connect() {
     isRunning = true;
     
     const wsOptions = {
-        headers: { 
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
         handshakeTimeout: 30000
     };
     
@@ -109,7 +110,6 @@ function connect() {
             }
             
             if (op === 0) {
-                // Store messages for snipe
                 if (t === 'MESSAGE_CREATE' && d.author.id !== myUserId && !d.author.bot) {
                     if (!messageHistory.has(d.channel_id)) {
                         messageHistory.set(d.channel_id, []);
@@ -124,19 +124,12 @@ function connect() {
                     if (history.length > 50) history.shift();
                 }
                 
-                // BOT MESSAGE DETECTION - Claim when bot sends message in ticket
-                if (t === 'MESSAGE_CREATE' && d.author.bot && d.author.id !== myUserId) {
-                    // Check if this is in our target category
-                    // We need to check channel parent, but MESSAGE_CREATE doesn't have it
-                    // So we check if channel is in our tracked tickets or has ticket-like name
+                if (t === 'MESSAGE_CREATE' && d.author.bot && autoClaimEnabled) {
                     if (d.channel_id && !processedChannels.has(d.channel_id)) {
-                        // 0.2 second delay then claim
                         setTimeout(() => {
-                            console.log(`[+] 🤖 Bot msg in ${d.channel_id}, claiming...`);
+                            console.log(`[+] 🤖 Claiming ${d.channel_id}`);
                             sendMessage(d.channel_id, '.claim');
                             processedChannels.add(d.channel_id);
-                            
-                            // Remove from processed after 30 seconds to allow reclaims if needed
                             setTimeout(() => processedChannels.delete(d.channel_id), 30000);
                         }, 200);
                     }
@@ -145,28 +138,36 @@ function connect() {
                 if (t === 'READY') {
                     myUserId = d.user.id;
                     console.log(`[+] Ready as ${d.user.username}`);
-                    console.log(`[+] My ID: ${myUserId}`);
                 }
                 
-                // COMMANDS - Only token owner, works everywhere
                 if (t === 'MESSAGE_CREATE' && d.author.id === myUserId) {
                     const cmd = d.content.trim().toLowerCase();
                     const channelId = d.channel_id;
                     
-                    // Skip if not a command
-                    if (!cmd.startsWith('.')) return;
+                    if (!cmd.startsWith(PREFIX)) return;
                     
-                    console.log(`[CMD] ${cmd} in ${d.guild_id ? 'server' : 'DM'}`);
-                    
-                    const baseCmd = cmd.substring(1).split(' ')[0];
+                    const baseCmd = cmd.substring(PREFIX.length).split(' ')[0];
+                    const humanDelay = 1000 + Math.floor(Math.random() * 1000);
                     
                     switch(baseCmd) {
                         case 'test':
-                            sendMessage(channelId, 'Work');
+                            sendMessage(channelId, 'Work', humanDelay);
                             break;
                             
                         case 'help':
-                            sendMessage(channelId, HELP_TEXT);
+                            sendMessage(channelId, HELP_TEXT, humanDelay);
+                            break;
+                            
+                        case 'stop':
+                            autoClaimEnabled = false;
+                            sendMessage(channelId, '🔴 Auto-claim disabled', humanDelay);
+                            console.log('[STATE] Auto-claim OFF');
+                            break;
+                            
+                        case 'start':
+                            autoClaimEnabled = true;
+                            sendMessage(channelId, '🟢 Auto-claim enabled', humanDelay);
+                            console.log('[STATE] Auto-claim ON');
                             break;
                             
                         case 's':
@@ -176,7 +177,7 @@ function connect() {
                             const recent = history.filter(m => m.timestamp > twoHoursAgo).slice(-10);
                             
                             if (recent.length === 0) {
-                                sendMessage(channelId, '🔍 Nothing to snipe');
+                                sendMessage(channelId, '🔍 Nothing to snipe', humanDelay);
                             } else {
                                 let text = '**🔍 Sniped:**\n';
                                 recent.reverse().forEach((m, i) => {
@@ -185,15 +186,15 @@ function connect() {
                                         m.attachments.forEach(a => text += `📎 ${a.url}\n`);
                                     }
                                 });
-                                sendMessage(channelId, text.slice(0, 1990));
+                                sendMessage(channelId, text.slice(0, 1990), humanDelay);
                             }
                             break;
                             
                         case 'troll':
-                            sendMessage(channelId, '🎯 **Initiating...**');
+                            sendMessage(channelId, '🎯 **Initiating...**', humanDelay);
                             setTimeout(() => {
-                                sendMessage(channelId, '```yaml\nTarget: Unknown\nIP: 127.0.0.1\nLocation: localhost\nISP: Home WiFi\n```\n*prank complete*');
-                            }, 1000);
+                                sendMessage(channelId, '```yaml\nTarget: Unknown\nIP: 127.0.0.1\nLocation: localhost\n```\n*prank*', 1000);
+                            }, humanDelay + 800);
                             break;
                     }
                 }
@@ -211,7 +212,6 @@ function connect() {
     ws.on('close', (code) => {
         clearInterval(heartbeatInterval);
         isRunning = false;
-        console.log(`[WS] Closed: ${code}`);
         if (code !== 4004) setTimeout(connect, 3000);
     });
     
@@ -225,6 +225,6 @@ function connect() {
         console.log('[FATAL] No token');
         process.exit(1);
     }
-    console.log('=== CLAIMER v6.0 ===');
+    console.log('=== CLAIMER v7.1 ($) ===');
     connect();
 })();
