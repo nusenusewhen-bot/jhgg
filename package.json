@@ -1,18 +1,14 @@
 {
-  "name": "discord-claimer",
-  "version": "2.0.0",
-  "description": "Ticket claimer with proxy rotation",
-  "main": "claimer.js",
+  "name": "snapchat-selfbot",
+  "version": "1.0.0",
+  "description": "Snapchat automation bot",
+  "main": "index.js",
   "scripts": {
-    "start": "node claimer.js",
-    "test": "node -e \"console.log('Token:', process.env.DISCORD_TOKEN ? 'Present' : 'Missing')\""
+    "start": "node index.js"
   },
   "dependencies": {
-    "ws": "^8.14.2",
-    "axios": "^1.6.2",
-    "https-proxy-agent": "^7.0.2"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "axios": "^1.6.0",
+    "puppeteer": "^21.0.0",
+    "dotenv": "^16.3.0"
   }
 }
