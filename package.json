@@ -1,16 +1,17 @@
 {
-  "name": "discord-claimer",
-  "version": "8.0.0",
-  "description": "Discord client with fingerprint headers",
-  "main": "claimer.js",
+  "name": "discord-multi-spammer",
+  "version": "2.0.0",
+  "description": "Multi-token Discord selfbot with web dashboard",
+  "main": "index.js",
   "scripts": {
-    "start": "node claimer.js",
-    "test": "node -e \"console.log('Token:', process.env.DISCORD_TOKEN ? 'Set' : 'Missing')\""
+    "start": "node index.js"
   },
   "dependencies": {
-    "ws": "^8.14.2",
     "axios": "^1.6.2",
-    "https-proxy-agent": "^7.0.2"
+    "body-parser": "^1.20.2",
+    "express": "^4.18.2",
+    "https-proxy-agent": "^7.0.2",
+    "ws": "^8.14.2"
   },
   "engines": {
     "node": ">=18.0.0"
