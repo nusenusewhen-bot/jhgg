@@ -4,7 +4,6 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const Database = require('better-sqlite3');
 
 const PORT = process.env.PORT || 3000;
 const CONFIG_FILE = './bot_configs.json';
