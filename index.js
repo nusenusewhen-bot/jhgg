@@ -8,13 +8,12 @@ const http = require('http');
 const PORT = process.env.PORT || 3000;
 const CONFIG_FILE = './bot_configs.json';
 
-// Enhanced Super Properties
 const SUPER_PROPS = {
     os: "Windows",
     browser: "Chrome",
     device: "",
     system_locale: "en-US",
-    browser_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    browser_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     browser_version: "121.0.0.0",
     os_version: "10",
     release_channel: "stable",
@@ -22,7 +21,6 @@ const SUPER_PROPS = {
     client_event_source: null
 };
 
-// Load configs
 let savedConfigs = {};
 if (fs.existsSync(CONFIG_FILE)) {
     try {
@@ -40,7 +38,6 @@ function saveToDisk() {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2));
 }
 
-// Load all tokens from env
 const TOKENS = [];
 let idx = 1;
 while (process.env[`DISCORD_TOKEN${idx === 1 ? '' : idx}`]) {
@@ -56,7 +53,6 @@ while (process.env[`DISCORD_TOKEN${idx === 1 ? '' : idx}`]) {
         resumeGatewayUrl: null,
         lastSequence: null,
         reconnectAttempts: 0,
-        messageQueue: [],
         config: savedConfigs[idx] || {
             serverId: '',
             channelId: '',
@@ -110,20 +106,19 @@ async function sendMessage(bot, channelId, content, priority = false) {
         );
         
         if (res.status === 200) {
-            console.log(`[Bot ${bot.id}] ✓ Sent to ${channelId}`);
+            console.log(`[Bot ${bot.id}] Sent`);
             return true;
         }
         
         if (res.status === 429) {
             const retry = parseInt(res.headers['retry-after']) || 5000;
-            console.log(`[Bot ${bot.id}] Rate limited, retrying in ${retry}ms`);
             setTimeout(() => sendMessage(bot, channelId, content, true), retry);
         } else if (res.status === 401) {
             console.log(`[Bot ${bot.id}] Invalid token`);
             bot.running = false;
         }
     } catch (e) {
-        console.log(`[Bot ${bot.id}] Send error: ${e.message}`);
+        console.log(`[Bot ${bot.id}] Error: ${e.message}`);
     }
     return false;
 }
@@ -137,9 +132,7 @@ function startSpamming(bot) {
         await sendMessage(bot, bot.config.channelId, bot.config.message);
         
         const delay = bot.config.burstMode ? 800 : bot.config.delay;
-        const jitter = Math.random() * 500;
-        
-        setTimeout(loop, delay + jitter);
+        setTimeout(loop, delay + Math.random() * 500);
     };
     
     loop();
@@ -147,14 +140,24 @@ function startSpamming(bot) {
 
 function connectBot(bot, isResume = false) {
     return new Promise((resolve) => {
-        if (bot.running && bot.ws?.readyState === WebSocket.OPEN) {
+        if (bot.ws && (bot.ws.readyState === WebSocket.OPEN || bot.ws.readyState === WebSocket.CONNECTING)) {
+            console.log(`[Bot ${bot.id}] Already connecting`);
             resolve();
             return;
         }
 
-        const gatewayUrl = isResume && bot.resumeGatewayUrl 
-            ? bot.resumeGatewayUrl 
+        if (bot.ws) {
+            try {
+                bot.ws.terminate();
+            } catch (e) {}
+            bot.ws = null;
+        }
+
+        const gatewayUrl = isResume && bot.resumeGatewayUrl && bot.sessionId
+            ? `${bot.resumeGatewayUrl}/?v=9&encoding=json`
             : 'wss://gateway.discord.gg/?v=9&encoding=json';
+
+        console.log(`[Bot ${bot.id}] Connecting...`);
 
         const ws = new WebSocket(gatewayUrl, {
             headers: {
@@ -165,9 +168,18 @@ function connectBot(bot, isResume = false) {
         });
         
         bot.ws = ws;
+        let resolved = false;
+        
+        const cleanup = () => {
+            clearInterval(bot.heartbeat);
+            if (!resolved) {
+                resolved = true;
+                resolve();
+            }
+        };
         
         ws.on('open', () => {
-            console.log(`[Bot ${bot.id}] WebSocket opened`);
+            console.log(`[Bot ${bot.id}] Socket opened`);
             bot.reconnectAttempts = 0;
             
             if (isResume && bot.sessionId) {
@@ -176,7 +188,7 @@ function connectBot(bot, isResume = false) {
                     d: {
                         token: bot.token,
                         session_id: bot.sessionId,
-                        seq: bot.lastSequence
+                        seq: bot.lastSequence || 0
                     }
                 }));
             }
@@ -187,9 +199,8 @@ function connectBot(bot, isResume = false) {
                 const payload = JSON.parse(data);
                 const { op, d, s, t } = payload;
                 
-                if (s) bot.lastSequence = s;
+                if (s !== null) bot.lastSequence = s;
                 
-                // Hello
                 if (op === 10) {
                     bot.heartbeat = setInterval(() => {
                         if (ws.readyState === WebSocket.OPEN) {
@@ -197,57 +208,55 @@ function connectBot(bot, isResume = false) {
                         }
                     }, d.heartbeat_interval);
                     
-                    // Identify
-                    ws.send(JSON.stringify({
-                        op: 2,
-                        d: {
-                            token: bot.token,
-                            capabilities: 30717,
-                            properties: SUPER_PROPS,
-                            presence: {
-                                status: "online",
-                                since: 0,
-                                activities: [{
-                                    name: "Spotify",
-                                    type: 2,
-                                    state: "Playing",
-                                    details: "Online"
-                                }],
-                                afk: false
-                            },
-                            compress: false,
-                            client_state: {
-                                guild_versions: {},
-                                highest_last_message_id: "0",
-                                read_state_version: 0,
-                                user_guild_settings_version: -1
-                            },
-                            intents: (1 << 0) | (1 << 1) | (1 << 9) | (1 << 12)
-                        }
-                    }));
+                    if (!isResume || !bot.sessionId) {
+                        ws.send(JSON.stringify({
+                            op: 2,
+                            d: {
+                                token: bot.token,
+                                capabilities: 30717,
+                                properties: SUPER_PROPS,
+                                presence: {
+                                    status: "online",
+                                    since: 0,
+                                    activities: [{
+                                        name: "Spotify",
+                                        type: 2,
+                                        state: "Playing",
+                                        details: "Online"
+                                    }],
+                                    afk: false
+                                },
+                                compress: false,
+                                client_state: {
+                                    guild_versions: {},
+                                    highest_last_message_id: "0",
+                                    read_state_version: 0,
+                                    user_guild_settings_version: -1
+                                },
+                                intents: (1 << 0) | (1 << 1) | (1 << 9) | (1 << 12)
+                            }
+                        }));
+                    }
                 }
                 
-                // Heartbeat ACK
                 if (op === 11) {
-                    // Heartbeat acknowledged
+                    // Heartbeat ACK
                 }
                 
-                // Reconnect requested
                 if (op === 7) {
                     console.log(`[Bot ${bot.id}] Reconnect requested`);
+                    ws.close(4000, "Reconnect requested");
+                    return;
+                }
+                
+                if (op === 9) {
+                    console.log(`[Bot ${bot.id}] Invalid session`);
+                    bot.sessionId = null;
+                    bot.resumeGatewayUrl = null;
                     ws.close();
                     return;
                 }
                 
-                // Invalid session
-                if (op === 9) {
-                    console.log(`[Bot ${bot.id}] Invalid session`);
-                    bot.sessionId = null;
-                    setTimeout(() => connectBot(bot, false), 5000);
-                    return;
-                }
-                
-                // Ready
                 if (t === 'READY') {
                     bot.userId = d.user.id;
                     bot.username = d.user.username;
@@ -259,50 +268,62 @@ function connectBot(bot, isResume = false) {
                     if (bot.config.enabled && bot.config.spamming) {
                         startSpamming(bot);
                     }
-                    resolve();
+                    
+                    if (!resolved) {
+                        resolved = true;
+                        resolve();
+                    }
                 }
                 
-                // Resumed
                 if (t === 'RESUMED') {
-                    console.log(`[Bot ${bot.id}] Session resumed`);
+                    console.log(`[Bot ${bot.id}] Resumed`);
                     bot.running = true;
-                    resolve();
+                    if (!resolved) {
+                        resolved = true;
+                        resolve();
+                    }
                 }
                 
             } catch (e) {
-                console.log(`[Bot ${bot.id}] Message error: ${e.message}`);
+                console.log(`[Bot ${bot.id}] Parse error: ${e.message}`);
             }
         });
         
-        ws.on('close', (code) => {
-            clearInterval(bot.heartbeat);
+        ws.on('close', (code, reason) => {
+            console.log(`[Bot ${bot.id}] Closed: ${code}`);
             bot.running = false;
-            console.log(`[Bot ${bot.id}] Disconnected (code: ${code})`);
+            cleanup();
             
-            const delay = Math.min(5000 * (bot.reconnectAttempts + 1), 30000);
+            const delay = Math.min(5000 * (bot.reconnectAttempts + 1), 60000);
             bot.reconnectAttempts++;
             
             setTimeout(() => {
-                const shouldResume = code < 4000 && bot.sessionId;
+                const shouldResume = code < 4000 && bot.sessionId && bot.resumeGatewayUrl;
                 connectBot(bot, shouldResume);
             }, delay);
         });
         
         ws.on('error', (err) => {
-            console.log(`[Bot ${bot.id}] WebSocket error: ${err.message}`);
+            console.log(`[Bot ${bot.id}] Error: ${err.message}`);
+            cleanup();
         });
     });
 }
 
-// Connect all tokens simultaneously
 async function connectAllBots() {
-    console.log(`🤖 Connecting ${TOKENS.length} bot(s)...`);
-    const promises = TOKENS.map(bot => connectBot(bot));
-    await Promise.all(promises);
-    console.log('✅ All connection attempts completed');
+    console.log(`Starting ${TOKENS.length} bot(s)...`);
+    
+    for (let i = 0; i < TOKENS.length; i++) {
+        const bot = TOKENS[i];
+        connectBot(bot);
+        if (i < TOKENS.length - 1) {
+            await new Promise(r => setTimeout(r, 2500));
+        }
+    }
+    
+    console.log('All bots started');
 }
 
-// Web server
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -319,9 +340,8 @@ app.get('/api/bots', (req, res) => {
     res.json(TOKENS.map(t => ({
         id: t.id,
         username: t.username || `Bot ${t.id}`,
-        connected: t.running,
-        config: t.config,
-        queueSize: t.messageQueue.length
+        connected: t.running && t.ws?.readyState === WebSocket.OPEN,
+        config: t.config
     })));
 });
 
@@ -374,7 +394,6 @@ app.post('/api/bot/:id/sendnow', (req, res) => {
 
 const server = http.createServer(app);
 server.listen(PORT, () => {
-    console.log(`⚡ Multi-Token Spammer v4.2`);
-    console.log(`🌐 Dashboard: http://localhost:${PORT}`);
+    console.log(`Spammer v4.2 - Port ${PORT}`);
     connectAllBots();
 });
