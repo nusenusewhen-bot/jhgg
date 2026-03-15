@@ -2,37 +2,68 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Bot Controller</title>
+    <title>Spammer v4</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
-        body { background: #1a1a1a; color: #fff; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        h1 { text-align: center; margin-bottom: 20px; color: #00ff88; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px; }
-        .card { background: #2d2d2d; padding: 15px; border-radius: 8px; border: 1px solid #444; }
-        .header { display: flex; justify-content: space-between; margin-bottom: 10px; }
-        .status { padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+        body { background: #0f0f0f; color: #fff; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { text-align: center; color: #00ff88; text-shadow: 0 0 10px #00ff88; margin-bottom: 20px; }
+        .stats { display: flex; justify-content: center; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+        .stat { background: #1a1a1a; padding: 10px 20px; border-radius: 8px; border: 1px solid #333; }
+        .stat-value { color: #00ff88; font-size: 24px; font-weight: bold; }
+        .stat-label { color: #888; font-size: 12px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 15px; }
+        .card { background: #1a1a1a; padding: 15px; border-radius: 8px; border: 1px solid #333; transition: border-color 0.3s; }
+        .card:hover { border-color: #00ff88; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .bot-name { font-weight: bold; font-size: 16px; }
+        .status { padding: 4px 12px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; }
         .online { background: #00ff88; color: #000; }
         .offline { background: #ff4444; color: #fff; }
-        input, textarea { width: 100%; margin: 5px 0; padding: 8px; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; }
-        textarea { height: 60px; resize: vertical; }
-        .btn-group { display: flex; gap: 5px; margin-top: 10px; }
-        button { flex: 1; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        input, textarea { width: 100%; margin: 6px 0; padding: 10px; background: #0f0f0f; border: 1px solid #444; color: #fff; border-radius: 6px; font-size: 13px; }
+        input:focus, textarea:focus { outline: none; border-color: #00ff88; }
+        textarea { height: 70px; resize: vertical; }
+        .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .btn-group { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 12px; }
+        button { padding: 10px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 12px; transition: all 0.2s; }
+        button:hover { transform: translateY(-2px); }
         .save { background: #0088ff; color: #fff; }
         .start { background: #00ff88; color: #000; }
         .stop { background: #ff4444; color: #fff; }
-        .global { text-align: center; margin-bottom: 20px; }
-        .global button { padding: 10px 20px; margin: 0 5px; }
+        .burst { background: #ffaa00; color: #000; }
+        .send { background: #aa00ff; color: #fff; }
+        .info { display: flex; justify-content: space-between; margin-top: 10px; font-size: 11px; color: #666; }
+        .spamming { color: #00ff88; font-weight: bold; }
+        .controls { text-align: center; margin-bottom: 20px; }
+        .controls button { margin: 0 5px; padding: 12px 24px; font-size: 14px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔥 Multi-Bot Spammer</h1>
-        <div class="global">
-            <button class="save" onclick="loadBots()">🔄 Refresh</button>
-            <button class="start" onclick="startAll()">▶️ All</button>
-            <button class="stop" onclick="stopAll()">⏹️ All</button>
+        <h1>⚡ SPAMMER v4.0</h1>
+        
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value" id="totalBots">0</div>
+                <div class="stat-label">TOTAL BOTS</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="onlineBots">0</div>
+                <div class="stat-label">ONLINE</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="activeSpammers">0</div>
+                <div class="stat-label">SPAMMING</div>
+            </div>
         </div>
+        
+        <div class="controls">
+            <button class="save" onclick="loadBots()">🔄 REFRESH</button>
+            <button class="start" onclick="startAll()">▶️ START ALL</button>
+            <button class="stop" onclick="stopAll()">⏹️ STOP ALL</button>
+            <button class="burst" onclick="burstAll()">⚡ BURST ALL</button>
+        </div>
+        
         <div id="bots" class="grid"></div>
     </div>
 
@@ -43,10 +74,17 @@
             try {
                 const res = await fetch('/api/bots');
                 bots = await res.json();
+                updateStats();
                 render();
             } catch (e) {
-                console.error('Failed to load:', e);
+                console.error('Load failed:', e);
             }
+        }
+        
+        function updateStats() {
+            document.getElementById('totalBots').textContent = bots.length;
+            document.getElementById('onlineBots').textContent = bots.filter(b => b.connected).length;
+            document.getElementById('activeSpammers').textContent = bots.filter(b => b.config.spamming).length;
         }
         
         function render() {
@@ -54,22 +92,39 @@
             div.innerHTML = bots.map(b => `
                 <div class="card">
                     <div class="header">
-                        <strong>Bot #${b.id}</strong>
+                        <span class="bot-name">Bot #${b.id} ${b.username ? `• ${b.username}` : ''}</span>
                         <span class="status ${b.connected ? 'online' : 'offline'}">
                             ${b.connected ? 'ONLINE' : 'OFFLINE'}
                         </span>
                     </div>
-                    <input type="text" id="srv-${b.id}" placeholder="Server ID" value="${b.config.serverId || ''}">
-                    <input type="text" id="ch-${b.id}" placeholder="Channel ID" value="${b.config.channelId || ''}">
-                    <textarea id="msg-${b.id}" placeholder="Message">${b.config.message || ''}</textarea>
-                    <input type="number" id="del-${b.id}" placeholder="Delay (ms)" value="${b.config.delay || 5000}">
+                    
+                    <div class="row">
+                        <input type="text" id="srv-${b.id}" placeholder="Server ID" value="${b.config.serverId || ''}">
+                        <input type="text" id="ch-${b.id}" placeholder="Channel ID" value="${b.config.channelId || ''}">
+                    </div>
+                    
+                    <textarea id="msg-${b.id}" placeholder="Spam message...">${b.config.message || ''}</textarea>
+                    
+                    <div class="row">
+                        <input type="number" id="del-${b.id}" placeholder="Delay (ms)" value="${b.config.delay || 3000}">
+                        <button class="burst" onclick="toggleBurst(${b.id})" style="margin:6px 0">
+                            ${b.config.burstMode ? '⚡ BURST ON' : '⚡ BURST OFF'}
+                        </button>
+                    </div>
+                    
                     <div class="btn-group">
                         <button class="save" onclick="save(${b.id})">💾 SAVE</button>
                         <button class="start" onclick="start(${b.id})">▶️</button>
                         <button class="stop" onclick="stop(${b.id})">⏹️</button>
                     </div>
-                    <div style="margin-top:8px;font-size:12px;color:#888">
-                        Spamming: ${b.config.spamming ? 'YES' : 'NO'}
+                    
+                    <button class="send" onclick="sendNow(${b.id})" style="width:100%;margin-top:8px">📤 SEND ONCE</button>
+                    
+                    <div class="info">
+                        <span>Queue: ${b.queueSize || 0}</span>
+                        <span class="${b.config.spamming ? 'spamming' : ''}">
+                            ${b.config.spamming ? '🔥 SPAMMING' : '⏸️ IDLE'}
+                        </span>
                     </div>
                 </div>
             `).join('');
@@ -80,7 +135,7 @@
                 serverId: document.getElementById(`srv-${id}`).value,
                 channelId: document.getElementById(`ch-${id}`).value,
                 message: document.getElementById(`msg-${id}`).value,
-                delay: parseInt(document.getElementById(`del-${id}`).value) || 5000,
+                delay: parseInt(document.getElementById(`del-${id}`).value) || 3000,
                 enabled: true
             };
             
@@ -92,40 +147,90 @@
                 });
                 const data = await res.json();
                 if (data.success) {
-                    alert('Saved! Config persists now.');
+                    showToast('Saved!');
                     loadBots();
                 }
             } catch (e) {
-                alert('Error saving: ' + e.message);
+                showToast('Error: ' + e.message);
+            }
+        }
+        
+        async function toggleBurst(id) {
+            const bot = bots.find(b => b.id === id);
+            const res = await fetch(`/api/bot/${id}/configure`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ burstMode: !bot.config.burstMode })
+            });
+            if (res.ok) {
+                showToast(`Burst ${!bot.config.burstMode ? 'ON' : 'OFF'}`);
+                loadBots();
             }
         }
         
         async function start(id) {
             await fetch(`/api/bot/${id}/spam/start`, { method: 'POST' });
-            alert('Started!');
+            showToast('Started!');
             loadBots();
         }
         
         async function stop(id) {
             await fetch(`/api/bot/${id}/spam/stop`, { method: 'POST' });
-            alert('Stopped!');
+            showToast('Stopped!');
             loadBots();
+        }
+        
+        async function sendNow(id) {
+            const bot = bots.find(b => b.id === id);
+            const msg = document.getElementById(`msg-${id}`).value || bot.config.message;
+            const ch = document.getElementById(`ch-${id}`).value || bot.config.channelId;
+            
+            await fetch(`/api/bot/${id}/sendnow`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: msg, channelId: ch })
+            });
+            showToast('Sent!');
         }
         
         async function startAll() {
             for (const b of bots) {
                 if (b.config.channelId) await fetch(`/api/bot/${b.id}/spam/start`, { method: 'POST' });
             }
+            showToast('All started!');
             loadBots();
         }
         
         async function stopAll() {
-            for (const b of bots) await fetch(`/api/bot/${b.id}/spam/stop`, { method: 'POST' });
+            for (const b of bots) {
+                await fetch(`/api/bot/${b.id}/spam/stop`, { method: 'POST' });
+            }
+            showToast('All stopped!');
             loadBots();
         }
         
+        async function burstAll() {
+            for (const b of bots) {
+                await fetch(`/api/bot/${b.id}/configure`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ burstMode: true })
+                });
+            }
+            showToast('Burst mode enabled for all!');
+            loadBots();
+        }
+        
+        function showToast(msg) {
+            const div = document.createElement('div');
+            div.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#00ff88;color:#000;padding:12px 24px;border-radius:8px;font-weight:bold;z-index:9999;';
+            div.textContent = msg;
+            document.body.appendChild(div);
+            setTimeout(() => div.remove(), 2000);
+        }
+        
         loadBots();
-        setInterval(loadBots, 3000);
+        setInterval(loadBots, 2000);
     </script>
 </body>
 </html>
