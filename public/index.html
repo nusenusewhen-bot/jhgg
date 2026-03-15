@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Multi-Bot Controller</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+        body { background: #36393f; color: #dcddde; min-height: 100vh; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        h1 { color: #fff; margin-bottom: 20px; text-align: center; }
+        .bot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; }
+        .bot-card { background: #2f3136; border-radius: 8px; padding: 20px; border: 1px solid #202225; }
+        .bot-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .bot-name { font-weight: bold; color: #fff; font-size: 1.2em; }
+        .status { padding: 4px 12px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
+        .status.online { background: #3ba55d; color: white; }
+        .status.offline { background: #ed4245; color: white; }
+        .form-group { margin-bottom: 12px; }
+        label { display: block; margin-bottom: 5px; font-size: 0.9em; color: #b9bbbe; }
+        input, textarea { width: 100%; padding: 8px 12px; background: #202225; border: 1px solid #040405; border-radius: 4px; color: #dcddde; font-size: 0.9em; }
+        textarea { resize: vertical; min-height: 60px; }
+        .btn-group { display: flex; gap: 10px; margin-top: 15px; }
+        button { flex: 1; padding: 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: opacity 0.2s; }
+        button:hover { opacity: 0.8; }
+        .btn-primary { background: #5865f2; color: white; }
+        .btn-success { background: #3ba55d; color: white; }
+        .btn-danger { background: #ed4245; color: white; }
+        .btn-warning { background: #faa61a; color: black; }
+        .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px solid #40444b; font-size: 0.85em; }
+        .stat { text-align: center; }
+        .stat-value { color: #fff; font-weight: bold; font-size: 1.1em; }
+        .stat-label { color: #72767d; margin-top: 2px; }
+        .global-controls { background: #2f3136; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 10px; justify-content: center; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Discord Multi-Bot Controller</h1>
+        
+        <div class="global-controls">
+            <button class="btn-primary" onclick="loadBots()">🔄 Refresh Status</button>
+            <button class="btn-success" onclick="startAll()">▶️ Start All</button>
+            <button class="btn-danger" onclick="stopAll()">⏹️ Stop All</button>
+        </div>
+        
+        <div id="botContainer" class="bot-grid"></div>
+    </div>
+
+    <script>
+        let bots = [];
+
+        async function loadBots() {
+            const res = await fetch('/api/bots');
+            bots = await res.json();
+            renderBots();
+        }
+
+        function renderBots() {
+            const container = document.getElementById('botContainer');
+            container.innerHTML = bots.map(bot => `
+                <div class="bot-card">
+                    <div class="bot-header">
+                        <span class="bot-name">Bot #${bot.id} ${bot.username ? `(${bot.username})` : ''}</span>
+                        <span class="status ${bot.connected ? 'online' : 'offline'}">
+                            ${bot.connected ? '🟢 Online' : '🔴 Offline'}
+                        </span>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Server ID</label>
+                        <input type="text" id="server-${bot.id}" value="${bot.config.serverId || ''}" placeholder="Server ID">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Channel ID</label>
+                        <input type="text" id="channel-${bot.id}" value="${bot.config.channelId || ''}" placeholder="Channel ID">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Message</label>
+                        <textarea id="message-${bot.id}" placeholder="Message to spam">${bot.config.message || ''}</textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Delay (ms)</label>
+                        <input type="number" id="delay-${bot.id}" value="${bot.config.delay || 5000}" min="1000" step="500">
+                    </div>
+                    
+                    <div class="btn-group">
+                        <button class="btn-primary" onclick="saveConfig(${bot.id})">💾 Save</button>
+                        <button class="btn-success" onclick="startSpam(${bot.id})">▶️ Start</button>
+                        <button class="btn-danger" onclick="stopSpam(${bot.id})">⏹️ Stop</button>
+                    </div>
+                    
+                    <div class="stats">
+                        <div class="stat">
+                            <div class="stat-value">${bot.config.spamming ? 'YES' : 'NO'}</div>
+                            <div class="stat-label">Spamming</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-value">${bot.config.delay || 5000}ms</div>
+                            <div class="stat-label">Delay</div>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function saveConfig(id) {
+            const config = {
+                serverId: document.getElementById(`server-${id}`).value,
+                channelId: document.getElementById(`channel-${id}`).value,
+                message: document.getElementById(`message-${id}`).value,
+                delay: parseInt(document.getElementById(`delay-${id}`).value),
+                enabled: true
+            };
+            
+            await fetch(`/api/bot/${id}/configure`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+            
+            alert('Configuration saved!');
+            loadBots();
+        }
+
+        async function startSpam(id) {
+            await fetch(`/api/bot/${id}/spam/start`, { method: 'POST' });
+            alert('Spamming started!');
+            loadBots();
+        }
+
+        async function stopSpam(id) {
+            await fetch(`/api/bot/${id}/spam/stop`, { method: 'POST' });
+            alert('Spamming stopped!');
+            loadBots();
+        }
+
+        async function startAll() {
+            for (const bot of bots) {
+                if (bot.config.channelId) await fetch(`/api/bot/${bot.id}/spam/start`, { method: 'POST' });
+            }
+            alert('Started all configured bots!');
+            loadBots();
+        }
+
+        async function stopAll() {
+            for (const bot of bots) {
+                await fetch(`/api/bot/${bot.id}/spam/stop`, { method: 'POST' });
+            }
+            alert('Stopped all bots!');
+            loadBots();
+        }
+
+        // Auto-refresh every 5 seconds
+        loadBots();
+        setInterval(loadBots, 5000);
+    </script>
+</body>
+</html>
