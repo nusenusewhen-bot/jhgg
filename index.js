@@ -1,7 +1,6 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 const Database = require('better-sqlite3');
-const superProps = require('./superprops.js');
 
 const db = new Database('./data.db');
 db.exec(`
@@ -74,6 +73,32 @@ function updateManagerMessage(interaction, userData, selfbotRunning = false) {
     .setTimestamp();
   
   return { embeds: [embed], components: [row, row2], ephemeral: true };
+}
+
+// Validate token using EXACT same method as auto claim
+async function validateToken(token) {
+    const testClient = new SelfbotClient({ 
+        checkUpdate: false, 
+        ws: { 
+            properties: { 
+                os: 'Windows', 
+                browser: 'Chrome', 
+                device: '', 
+                browser_user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 
+                os_version: '10', 
+                client_build_number: 9999 
+            } 
+        } 
+    });
+    
+    try {
+        await testClient.login(token);
+        const user = testClient.user;
+        await testClient.destroy();
+        return { valid: true, user };
+    } catch (err) { 
+        return { valid: false, error: err.message }; 
+    }
 }
 
 botClient.once('clientReady', () => {
@@ -214,9 +239,22 @@ botClient.on('interactionCreate', async interaction => {
         old.client.destroy();
       }
       
-      const selfbot = new SelfbotClient({ checkUpdate: false });
+      // Use EXACT same login method as auto claim
+      const selfbot = new SelfbotClient({ 
+        checkUpdate: false, 
+        ws: { 
+          properties: { 
+            os: 'Windows', 
+            browser: 'Chrome', 
+            device: '', 
+            browser_user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 
+            os_version: '10', 
+            client_build_number: 9999 
+          } 
+        } 
+      });
       
-      selfbot.on('clientReady', async () => {
+      selfbot.once('ready', async () => {
         console.log(`Selfbot running: ${selfbot.user.tag}`);
         db.prepare('UPDATE users SET status = ? WHERE user_id = ?').run('running', userId);
         
@@ -239,14 +277,15 @@ botClient.on('interactionCreate', async interaction => {
         
         const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
         const replyData = updateManagerMessage(interaction, newData, true);
-        await interaction.update(replyData);
+        try { await interaction.update(replyData); } catch {}
       });
       
-      try {
-        Object.assign(selfbot.options, { http: { headers: { 'x-super-properties': Buffer.from(JSON.stringify(superProps.getSuperProperties())).toString('base64') } } });
-      } catch (e) {}
+      selfbot.on('error', async (err) => {
+        console.log('Selfbot error:', err.message);
+      });
       
-      selfbot.login(userData.token).catch(async () => {
+      selfbot.login(userData.token).catch(async (err) => {
+        console.log('Login failed:', err.message);
         await interaction.reply({ content: '❌ Failed to start selfbot!', ephemeral: true });
       });
       
@@ -277,48 +316,26 @@ botClient.on('interactionCreate', async interaction => {
       
       await interaction.deferReply({ ephemeral: true });
       
-      const testClient = new SelfbotClient({ checkUpdate: false });
-      let validated = false;
+      const validation = await validateToken(token);
       
-      testClient.on('clientReady', async () => {
-        validated = true;
-        const username = testClient.user.tag;
-        testClient.destroy();
-        
+      if (validation.valid) {
         db.prepare('UPDATE users SET token = ?, token_valid = ?, token_username = ? WHERE user_id = ?')
-          .run(token, 'yes', username, userId);
+          .run(token, 'yes', validation.user.tag, userId);
         
         const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
         const running = activeSelfbots.has(userId);
         
         await interaction.editReply({ 
-          content: `✅ **Token Valid!** Logged in as **@${username}**`,
-          ...updateManagerMessage(interaction, newData, running)
+          content: `✅ **Token Valid!** Logged in as **@${validation.user.tag}**`,
+          embeds: updateManagerMessage(interaction, newData, running).embeds,
+          components: updateManagerMessage(interaction, newData, running).components
         });
-      });
-      
-      testClient.on('error', async () => {
-        if (!validated) {
-          testClient.destroy();
-          await interaction.editReply({ content: '❌ **Invalid Token!**' });
-        }
-      });
-      
-      setTimeout(async () => {
-        if (!validated) {
-          testClient.destroy();
-          await interaction.editReply({ content: '❌ **Token Validation Timeout**' });
-        }
-      }, 15000);
-      
-      try {
-        Object.assign(testClient.options, { http: { headers: { 'x-super-properties': Buffer.from(JSON.stringify(superProps.getSuperProperties())).toString('base64') } } });
-      } catch (e) {}
-      
-      testClient.login(token).catch(async () => {
-        await interaction.editReply({ content: '❌ **Invalid Token!**' });
-      });
-      
+      } else {
+        await interaction.editReply({ 
+          content: `❌ **Invalid Token!** ${validation.error}`,
+          ephemeral: true 
+        });
+      }
       return;
     }
     
