@@ -125,7 +125,7 @@ botClient.once('clientReady', () => {
       .toJSON(),
     new SlashCommandBuilder()
       .setName('sales')
-      .setDescription('DMs owner all tokens (Owner only)')
+      .setDescription('View How many key redeemed and active')
       .toJSON()
   ];
   
