@@ -196,11 +196,15 @@ botClient.on('interactionCreate', async interaction => {
         let current = 0;
         
         const sendMessage = async () => {
-          if (channels.length === 0) return;
-          const chId = channels[current];
-          try { const ch = await selfbot.channels.fetch(chId); if (ch) await ch.send(userData.message); } catch (e) {}
-          current = (current + 1) % channels.length;
-        };
+  if (channels.length === 0) return;
+  for (const chId of channels) {
+    try {
+      const ch = await selfbot.channels.fetch(chId);
+      if (ch) await ch.send(userData.message);
+    } catch (e) {}
+  }
+};
+
         
         await sendMessage();
         const interval = setInterval(sendMessage, userData.delay * 1000);
