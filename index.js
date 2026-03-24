@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
 const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 const Database = require('better-sqlite3');
 
@@ -38,6 +38,13 @@ const activeSelfbots = new Map();
 const autoReplyUsers = new Map();
 
 function updateManagerMessage(interaction, userData, selfbotRunning = false) {
+  if (!userData) {
+    return { 
+      embeds: [new EmbedBuilder().setTitle('❌ Error').setDescription('User data not found').setColor(0xff0000)], 
+      components: [] 
+    };
+  }
+  
   const hasToken = userData.token && userData.token_valid === 'yes';
   const hasChannels = userData.channels && userData.channels.length > 0;
   const hasMessage = userData.message && userData.message.length > 0;
@@ -64,10 +71,9 @@ function updateManagerMessage(interaction, userData, selfbotRunning = false) {
       .setStyle(ButtonStyle.Danger)
       .setDisabled(!selfbotRunning),
     new ButtonBuilder()
-     .setCustomId('auto_reply_dm')
-.setLabel(autoReply ? 'Auto Reply: ON' : 'Auto Reply: OFF')
-.setStyle(autoReply ? ButtonStyle.Success : ButtonStyle.Secondary)
-
+      .setCustomId('auto_reply_dm')
+      .setLabel(autoReply ? 'Auto Reply: ON' : 'Auto Reply: OFF')
+      .setStyle(autoReply ? ButtonStyle.Success : ButtonStyle.Secondary)
   );
   
   let desc = `**Status:** ${selfbotRunning ? '🟢 Running' : '🔴 Stopped'}\n`;
@@ -75,7 +81,7 @@ function updateManagerMessage(interaction, userData, selfbotRunning = false) {
   desc += `**Channels:** ${hasChannels ? `✅ Set (${userData.channels.split(',').length})` : '❌ Not set'}\n`;
   desc += `**Message:** ${hasMessage ? '✅ Set' : '❌ Not set'}\n`;
   desc += `**Delay:** ${hasDelay ? `✅ ${userData.delay}s` : '❌ Not set'}\n`;
-  desc += `**Auto DM:** ${autoReply ? `✅ ON` : '❌ OFF'}`;
+  desc += `**Auto Reply:** ${autoReply ? `✅ ON` : '❌ OFF'}`;
   if (autoReply && userData.auto_reply_message) {
     desc += `\n**Reply:** ${userData.auto_reply_message.substring(0, 50)}${userData.auto_reply_message.length > 50 ? '...' : ''}`;
   }
@@ -86,7 +92,7 @@ function updateManagerMessage(interaction, userData, selfbotRunning = false) {
     .setColor(selfbotRunning ? 0x00ff00 : 0xff0000)
     .setTimestamp();
   
-  return { embeds: [embed], components: [row, row2], ephemeral: true };
+  return { embeds: [embed], components: [row, row2] };
 }
 
 async function validateToken(token) {
@@ -152,7 +158,7 @@ botClient.on('interactionCreate', async interaction => {
   const isOwner = interaction.user.id === ownerId;
   
   if (interaction.commandName === 'advkey') {
-    if (!isOwner) return interaction.reply({ content: '❌ Owner only.', ephemeral: true });
+    if (!isOwner) return interaction.reply({ content: '❌ Owner only.', flags: MessageFlags.Ephemeral });
     
     const duration = interaction.options.getString('duration') || 'lifetime';
     const key = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -165,11 +171,11 @@ botClient.on('interactionCreate', async interaction => {
     db.prepare('INSERT INTO keys (key, duration, created_at, expires, redeemed_by, redeemed_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(key, duration, Date.now(), expires, null, null);
     
-    return interaction.reply({ content: `🔑 **Key Generated**\n\`${key}\`\nDuration: ${duration}`, ephemeral: true });
+    return interaction.reply({ content: `🔑 **Key Generated**\n\`${key}\`\nDuration: ${duration}`, flags: MessageFlags.Ephemeral });
   }
   
   if (interaction.commandName === 'revokeuser') {
-    if (!isOwner) return interaction.reply({ content: '❌ Owner only.', ephemeral: true });
+    if (!isOwner) return interaction.reply({ content: '❌ Owner only.', flags: MessageFlags.Ephemeral });
     
     const target = interaction.options.getUser('user');
     db.prepare('DELETE FROM users WHERE user_id = ?').run(target.id);
@@ -182,37 +188,37 @@ botClient.on('interactionCreate', async interaction => {
       activeSelfbots.delete(target.id);
     }
     
-    return interaction.reply({ content: `✅ Revoked all access for ${target.tag}`, ephemeral: true });
+    return interaction.reply({ content: `✅ Revoked all access for ${target.tag}`, flags: MessageFlags.Ephemeral });
   }
   
   if (interaction.commandName === 'redeemkey') {
     const key = interaction.options.getString('key');
     const keyData = db.prepare('SELECT * FROM keys WHERE key = ?').get(key);
     
-    if (!keyData) return interaction.reply({ content: '❌ Invalid key.', ephemeral: true });
-    if (keyData.redeemed_by) return interaction.reply({ content: '❌ Key already used.', ephemeral: true });
-    if (keyData.expires && Date.now() > keyData.expires) return interaction.reply({ content: '❌ Key expired.', ephemeral: true });
+    if (!keyData) return interaction.reply({ content: '❌ Invalid key.', flags: MessageFlags.Ephemeral });
+    if (keyData.redeemed_by) return interaction.reply({ content: '❌ Key already used.', flags: MessageFlags.Ephemeral });
+    if (keyData.expires && Date.now() > keyData.expires) return interaction.reply({ content: '❌ Key expired.', flags: MessageFlags.Ephemeral });
     
     db.prepare('UPDATE keys SET redeemed_by = ?, redeemed_at = ? WHERE key = ?').run(interaction.user.id, Date.now(), key);
     db.prepare('INSERT OR REPLACE INTO users (user_id, key, key_expires, token, token_valid, token_username, channels, message, delay, status, auto_reply_dm, auto_reply_message, replied_users) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(interaction.user.id, key, keyData.expires, null, 'no', null, null, null, null, 'stopped', 'n', null, '[]');
     
-    return interaction.reply({ content: '✅ Key redeemed! Use /manager to configure.', ephemeral: true });
+    return interaction.reply({ content: '✅ Key redeemed! Use /manager to configure.', flags: MessageFlags.Ephemeral });
   }
   
   if (interaction.commandName === 'manager') {
     const userData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(interaction.user.id);
-    if (!userData) return interaction.reply({ content: '❌ Redeem a key first using /redeemkey', ephemeral: true });
+    if (!userData) return interaction.reply({ content: '❌ Redeem a key first using /redeemkey', flags: MessageFlags.Ephemeral });
     
     const running = activeSelfbots.has(interaction.user.id);
     const replyData = updateManagerMessage(interaction, userData, running);
-    return interaction.reply(replyData);
+    return interaction.reply({ ...replyData, flags: MessageFlags.Ephemeral });
   }
   
   if (interaction.commandName === 'sales') {
-    if (!isOwner) return interaction.reply({ content: '❌ Owner only.', ephemeral: true });
+    if (!isOwner) return interaction.reply({ content: '❌ Owner only.', flags: MessageFlags.Ephemeral });
     
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     
     const users = db.prepare('SELECT * FROM users WHERE token IS NOT NULL').all();
     const totalKeys = db.prepare('SELECT COUNT(*) as count FROM keys').get().count;
@@ -320,8 +326,8 @@ botClient.on('interactionCreate', async interaction => {
     
     if (interaction.customId === 'start_bot') {
       const userData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
-      if (!userData.token || userData.token_valid !== 'yes' || !userData.channels || !userData.message || !userData.delay) {
-        return interaction.reply({ content: '❌ Configure all settings first (and validate token)!', ephemeral: true });
+      if (!userData || !userData.token || userData.token_valid !== 'yes' || !userData.channels || !userData.message || !userData.delay) {
+        return interaction.reply({ content: '❌ Configure all settings first (and validate token)!', flags: MessageFlags.Ephemeral });
       }
       
       if (activeSelfbots.has(userId)) {
@@ -393,7 +399,7 @@ botClient.on('interactionCreate', async interaction => {
         
         const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
         const replyData = updateManagerMessage(interaction, newData, true);
-        try { await interaction.update(replyData); } catch {}
+        try { await interaction.update({ ...replyData }); } catch {}
       });
       
       selfbot.on('error', async (err) => {
@@ -402,7 +408,7 @@ botClient.on('interactionCreate', async interaction => {
       
       selfbot.login(userData.token).catch(async (err) => {
         console.log('Login failed:', err.message);
-        await interaction.reply({ content: '❌ Failed to start selfbot!', ephemeral: true });
+        await interaction.reply({ content: '❌ Failed to start selfbot!', flags: MessageFlags.Ephemeral });
       });
       
       return;
@@ -421,7 +427,7 @@ botClient.on('interactionCreate', async interaction => {
       
       const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
       const replyData = updateManagerMessage(interaction, newData, false);
-      return interaction.update(replyData);
+      return interaction.update({ ...replyData });
     }
   }
   
@@ -431,7 +437,7 @@ botClient.on('interactionCreate', async interaction => {
     if (interaction.customId === 'modal_token') {
       const token = interaction.fields.getTextInputValue('token_input');
       
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       
       const validation = await validateToken(token);
       
@@ -441,17 +447,15 @@ botClient.on('interactionCreate', async interaction => {
         
         const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
         const running = activeSelfbots.has(userId);
+        const replyData = updateManagerMessage(interaction, newData, running);
         
         await interaction.editReply({ 
           content: `✅ **Token Valid!** Logged in as **@${validation.user.tag}**`,
-          embeds: updateManagerMessage(interaction, newData, running).embeds,
-          components: updateManagerMessage(interaction, newData, running).components
+          embeds: replyData.embeds,
+          components: replyData.components
         });
       } else {
-        await interaction.editReply({ 
-          content: `❌ **Invalid Token!** ${validation.error}`,
-          ephemeral: true 
-        });
+        await interaction.editReply({ content: `❌ **Invalid Token!** ${validation.error}` });
       }
       return;
     }
@@ -462,7 +466,8 @@ botClient.on('interactionCreate', async interaction => {
       
       const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
       const running = activeSelfbots.has(userId);
-      await interaction.update(updateManagerMessage(interaction, newData, running));
+      const replyData = updateManagerMessage(interaction, newData, running);
+      await interaction.update({ ...replyData });
       return;
     }
     
@@ -472,20 +477,22 @@ botClient.on('interactionCreate', async interaction => {
       
       const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
       const running = activeSelfbots.has(userId);
-      await interaction.update(updateManagerMessage(interaction, newData, running));
+      const replyData = updateManagerMessage(interaction, newData, running);
+      await interaction.update({ ...replyData });
       return;
     }
     
     if (interaction.customId === 'modal_delay') {
       const delay = parseInt(interaction.fields.getTextInputValue('delay_input'));
       if (isNaN(delay) || delay < 5 || delay > 1800) {
-        return interaction.reply({ content: '❌ Delay must be 5-1800 seconds!', ephemeral: true });
+        return interaction.reply({ content: '❌ Delay must be 5-1800 seconds!', flags: MessageFlags.Ephemeral });
       }
       db.prepare('UPDATE users SET delay = ? WHERE user_id = ?').run(delay, userId);
       
       const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
       const running = activeSelfbots.has(userId);
-      await interaction.update(updateManagerMessage(interaction, newData, running));
+      const replyData = updateManagerMessage(interaction, newData, running);
+      await interaction.update({ ...replyData });
       return;
     }
     
@@ -494,7 +501,7 @@ botClient.on('interactionCreate', async interaction => {
       const message = interaction.fields.getTextInputValue('auto_reply_message');
       
       if (enable !== 'y' && enable !== 'n') {
-        return interaction.reply({ content: '❌ Please enter y or n only!', ephemeral: true });
+        return interaction.reply({ content: '❌ Please enter y or n only!', flags: MessageFlags.Ephemeral });
       }
       
       db.prepare('UPDATE users SET auto_reply_dm = ?, auto_reply_message = ? WHERE user_id = ?')
@@ -504,13 +511,14 @@ botClient.on('interactionCreate', async interaction => {
       
       const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
       const running = activeSelfbots.has(userId);
+      const replyData = updateManagerMessage(interaction, newData, running);
       
-      const statusMsg = enable === 'y' ? '✅ Auto DM enabled!' : '❌ Auto DM disabled!';
+      const statusMsg = enable === 'y' ? '✅ Auto Reply enabled!' : '❌ Auto Reply disabled!';
       await interaction.reply({ 
         content: statusMsg,
-        embeds: updateManagerMessage(interaction, newData, running).embeds,
-        components: updateManagerMessage(interaction, newData, running).components,
-        ephemeral: true 
+        embeds: replyData.embeds,
+        components: replyData.components,
+        flags: MessageFlags.Ephemeral 
       });
       return;
     }
