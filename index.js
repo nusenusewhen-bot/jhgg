@@ -64,9 +64,10 @@ function updateManagerMessage(interaction, userData, selfbotRunning = false) {
       .setStyle(ButtonStyle.Danger)
       .setDisabled(!selfbotRunning),
     new ButtonBuilder()
-      .setCustomId('auto_reply_dm')
-      .setLabel(autoReply ? 'Auto DM: ON' : 'Auto DM: OFF')
-      .setStyle(autoReply ? ButtonStyle.Success : ButtonStyle.Secondary)
+     .setCustomId('auto_reply_dm')
+.setLabel(autoReply ? 'Auto Reply: ON' : 'Auto Reply: OFF')
+.setStyle(autoReply ? ButtonStyle.Success : ButtonStyle.Secondary)
+
   );
   
   let desc = `**Status:** ${selfbotRunning ? '🟢 Running' : '🔴 Stopped'}\n`;
