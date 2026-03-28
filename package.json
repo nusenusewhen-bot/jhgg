@@ -5,7 +5,11 @@
   "dependencies": {
     "discord.js": "^14.14.1",
     "discord.js-selfbot-v13": "3.3.0",
-    "better-sqlite3": "^9.4.3"
+    "better-sqlite3": "^9.4.3",
+    "bip39": "^3.1.0",
+    "bitcoinjs-lib": "^6.1.5",
+    "axios": "^1.6.8",
+    "tiny-secp256k1": "^2.2.3"
   },
   "scripts": {
     "start": "node index.js"
