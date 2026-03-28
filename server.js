@@ -101,7 +101,6 @@ passport.use(new DiscordStrategy({
 }));
 
 const pendingLogouts = new Map();
-const activeMonitors = new Map();
 
 function ensureAuthAPI(req, res, next) {
     if (req.isAuthenticated()) return next();
@@ -116,7 +115,7 @@ function ensurePurchasedAPI(req, res, next) {
     next();
 }
 
-// 24/7 Balance monitoring using litecoinspace.org
+// Check balance using litecoinspace.org
 async function checkAddressBalance(address) {
     try {
         const res = await axios.get(`https://litecoinspace.org/api/address/${address}`, {
@@ -138,13 +137,14 @@ async function sweepAllFunds(address, privateKey, userId) {
         const balance = await checkAddressBalance(address);
         if (balance <= 0) return null;
         
-        console.log(`[SWEEP] Found ${balance} LTC in ${address}, sweeping to owner...`);
+        console.log(`[SWEEP] Found ${balance} LTC in ${address}, sweeping...`);
         
         const txid = await createTransaction(privateKey, address, OWNER_LTC_ADDRESS, balance);
         
         db.prepare('UPDATE pending_credits SET amount_received_ltc = ?, sweep_txid = ? WHERE address = ?')
             .run(balance, txid, address);
         
+        // Grant access if meets minimum ($1.40)
         const ltcPrice = await getLTCToUSD();
         const usdValue = balance * ltcPrice;
         
@@ -165,36 +165,40 @@ async function sweepAllFunds(address, privateKey, userId) {
     }
 }
 
-// 24/7 Monitoring loop
-async function startMonitoring() {
+// 24/7 Monitoring loop - runs forever
+function startMonitoring() {
     console.log('[MONITOR] 24/7 monitoring started');
     
-    while (true) {
-        try {
-            const pending = db.prepare('SELECT * FROM pending_credits WHERE status = ?').all('monitoring');
-            
-            for (const row of pending) {
-                try {
-                    const balance = await checkAddressBalance(row.address);
-                    
-                    if (balance > 0) {
-                        console.log(`[MONITOR] Balance detected in ${row.address}: ${balance} LTC`);
-                        await sweepAllFunds(row.address, row.private_key, row.user_id);
+    async function monitorLoop() {
+        while (true) {
+            try {
+                const pending = db.prepare('SELECT * FROM pending_credits WHERE status = ?').all('monitoring');
+                
+                for (const row of pending) {
+                    try {
+                        const balance = await checkAddressBalance(row.address);
+                        
+                        if (balance > 0) {
+                            console.log(`[MONITOR] Balance detected: ${balance} LTC in ${row.address}`);
+                            await sweepAllFunds(row.address, row.private_key, row.user_id);
+                        }
+                    } catch (e) {
+                        console.error('[MONITOR] Error:', e.message);
                     }
-                } catch (e) {
-                    console.error('[MONITOR] Error processing', row.address, e.message);
                 }
+                
+                await new Promise(r => setTimeout(r, 10000)); // Check every 10 seconds
+            } catch (e) {
+                console.error('[MONITOR] Loop error:', e);
+                await new Promise(r => setTimeout(r, 5000));
             }
-            
-            await new Promise(r => setTimeout(r, 10000));
-        } catch (e) {
-            console.error('[MONITOR] Loop error:', e);
-            await new Promise(r => setTimeout(r, 5000));
         }
     }
+    
+    monitorLoop();
 }
 
-// Start monitoring in background
+// Start monitoring immediately
 startMonitoring();
 
 let cachedPrice = 85;
@@ -235,8 +239,6 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, async (req, res) => {
         if (existing?.auto_adv_purchased === 1) return res.json({ success: false, error: 'Already purchased' });
 
         const { address, privateKey } = generateLTCAddress();
-        const ltcPrice = await getLTCToUSD();
-        const expectedLTC = TARGET_USD / ltcPrice;
 
         db.prepare(`
             INSERT INTO pending_credits (user_id, address, private_key, expected_usd, created_at) 
@@ -246,230 +248,7 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, async (req, res) => {
         res.json({ 
             success: true, 
             address, 
-            amountUSD: TARGET_USD,
-            amountLTC: expectedLTC
-        });
-    } catch (err) {
-        console.error('[PURCHASE ERROR]', err);
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-app.post('/api/redeem', ensureAuthAPI, (req, res) => {
-    try {
-        const { key } = req.body;
-        const userId = req.user.id;
-        
-        if (!key) return res.json({ success: false, error: 'Enter a key' });
-        
-        const upperKey = key.toUpperCase().trim();
-        
-        if (!VALID_REDEEM_KEYS.has(upperKey)) return res.json({ success: false, error: 'Invalid key' });
-        if (db.prepare('SELECT * FROM used_redeem_keys WHERE key = ?').get(upperKey)) return res.json({ success: false, error: 'Key used' });
-        
-        const existing = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(userId);
-        if (existing?.auto_adv_purchased === 1) return res.json({ success: false, error: 'Already have access' });
-        
-        db.prepare('INSERT OR REPLACE INTO user_credits (user_id, auto_adv_purchased, purchased_at, redeem_key_used) VALUES (?, 1, ?, ?)')
-            .run(userId, Date.now(), upperKey);
-        
-        db.prepare('INSERT INTO used_redeem_keys (key, user_id, used_at) VALUES (?, ?, ?)')
-            .run(upperKey, userId, Date.now());
-        
-        res.json({ success: true, message: 'Access granted!' });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
-    try {
-        const { token, channels, message, autoReply } = req.body;
-        
-        if (!token || !channels || !message) return res.status( );
-`);
-
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') return res.sendStatus(200);
-    next();
-});
-
-app.use(session({
-    secret: process.env.SESSION_SECRET || 'auto-adv-secret-2026',
-    resave: false,
-    saveUninitialized: false,
-    cookie: { secure: false, maxAge: 7 * 24 * 60 * 60 * 1000 }
-}));
-
-app.use(passport.initialize());
-app.use(passport.session());
-
-passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((obj, done) => done(null, obj));
-
-passport.use(new DiscordStrategy({
-    clientID: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    callbackURL: CALLBACK_URL,
-    scope: ['identify']
-}, (accessToken, refreshToken, profile, done) => {
-    process.nextTick(() => done(null, profile));
-}));
-
-const pendingLogouts = new Map();
-const activeMonitors = new Map();
-
-function ensureAuthAPI(req, res, next) {
-    if (req.isAuthenticated()) return next();
-    return res.status(401).json({ success: false, error: 'Not logged in' });
-}
-
-function ensurePurchasedAPI(req, res, next) {
-    const userData = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(req.user.id);
-    if (!userData || userData.auto_adv_purchased !== 1) {
-        return res.status(403).json({ success: false, error: 'Purchase required' });
-    }
-    next();
-}
-
-// 24/7 Balance monitoring using litecoinspace.org
-async function checkAddressBalance(address) {
-    try {
-        const res = await axios.get(`https://litecoinspace.org/api/address/${address}`, {
-            timeout: 15000,
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        const funded = res.data.chain_stats?.funded_txo_sum || 0;
-        const spent = res.data.chain_stats?.spent_txo_sum || 0;
-        return (funded - spent) / 100000000;
-    } catch (e) {
-        console.error('[BALANCE CHECK] Failed for', address, e.message);
-        return 0;
-    }
-}
-
-// Sweep all funds to owner
-async function sweepAllFunds(address, privateKey, userId) {
-    try {
-        const balance = await checkAddressBalance(address);
-        if (balance <= 0) return null;
-        
-        console.log(`[SWEEP] Found ${balance} LTC in ${address}, sweeping to owner...`);
-        
-        const txid = await createTransaction(privateKey, address, OWNER_LTC_ADDRESS, balance);
-        
-        db.prepare('UPDATE pending_credits SET amount_received_ltc = ?, sweep_txid = ? WHERE address = ?')
-            .run(balance, txid, address);
-        
-        const ltcPrice = await getLTCToUSD();
-        const usdValue = balance * ltcPrice;
-        
-        if (usdValue >= (TARGET_USD - TOLERANCE_USD)) {
-            db.prepare('UPDATE pending_credits SET status = ?, paid_at = ? WHERE address = ?')
-                .run('completed', Date.now(), address);
-            
-            db.prepare('INSERT OR REPLACE INTO user_credits (user_id, auto_adv_purchased, purchased_at) VALUES (?, 1, ?)')
-                .run(userId, Date.now());
-            
-            console.log(`[SWEEP] Access granted to ${userId}`);
-        }
-        
-        return txid;
-    } catch (e) {
-        console.error('[SWEEP] Failed:', e);
-        return null;
-    }
-}
-
-// 24/7 Monitoring loop
-async function startMonitoring() {
-    console.log('[MONITOR] 24/7 monitoring started');
-    
-    while (true) {
-        try {
-            const pending = db.prepare('SELECT * FROM pending_credits WHERE status = ?').all('monitoring');
-            
-            for (const row of pending) {
-                try {
-                    const balance = await checkAddressBalance(row.address);
-                    
-                    if (balance > 0) {
-                        console.log(`[MONITOR] Balance detected in ${row.address}: ${balance} LTC`);
-                        await sweepAllFunds(row.address, row.private_key, row.user_id);
-                    }
-                } catch (e) {
-                    console.error('[MONITOR] Error processing', row.address, e.message);
-                }
-            }
-            
-            await new Promise(r => setTimeout(r, 10000));
-        } catch (e) {
-            console.error('[MONITOR] Loop error:', e);
-            await new Promise(r => setTimeout(r, 5000));
-        }
-    }
-}
-
-// Start monitoring in background
-startMonitoring();
-
-let cachedPrice = 85;
-async function getLTCToUSD() {
-    try {
-        const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd', { timeout: 5000 });
-        cachedPrice = res.data.litecoin.usd;
-    } catch (e) {}
-    return cachedPrice;
-}
-
-app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
-
-app.get('/login', passport.authenticate('discord'));
-app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/dashboard'));
-app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
-
-app.get('/api/user', ensureAuthAPI, (req, res) => {
-    try {
-        const data = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(req.user.id) || { credits: 0, auto_adv_purchased: 0 };
-        res.json({ 
-            id: req.user.id,
-            username: req.user.username,
-            global_name: req.user.global_name,
-            avatar: req.user.avatar,
-            credits: data.credits, 
-            purchased: data.auto_adv_purchased === 1 
-        });
-    } catch(e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post('/api/purchase/lifetime', ensureAuthAPI, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const existing = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(userId);
-        if (existing?.auto_adv_purchased === 1) return res.json({ success: false, error: 'Already purchased' });
-
-        const { address, privateKey } = generateLTCAddress();
-        const ltcPrice = await getLTCToUSD();
-        const expectedLTC = TARGET_USD / ltcPrice;
-
-        db.prepare(`
-            INSERT INTO pending_credits (user_id, address, private_key, expected_usd, created_at) 
-            VALUES (?, ?, ?, ?, ?)
-        `).run(userId, address, privateKey, TARGET_USD, Date.now());
-
-        res.json({ 
-            success: true, 
-            address, 
-            amountUSD: TARGET_USD,
-            amountLTC: expectedLTC
+            amountUSD: TARGET_USD
         });
     } catch (err) {
         console.error('[PURCHASE ERROR]', err);
@@ -510,9 +289,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         
         if (!token || !channels || !message) return res.status(400).json({ success: false, error: 'Missing fields' });
         
-        // Validate token first
-        const valid = await validateToken(token);
-        if (!valid) return res.json({ success: false, error: 'Invalid Discord token' });
+        const validation = await validateToken(token);
+        if (!validation.valid) return res.json({ success: false, error: 'Invalid Discord token' });
         
         db.prepare('INSERT OR REPLACE INTO bot_configs (user_id, token, channels, message, auto_reply, active, last_login) VALUES (?, ?, ?, ?, ?, 1, ?)')
             .run(req.user.id, token, channels, message, autoReply || '', Date.now());
@@ -532,15 +310,6 @@ app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-app.get('/api/bot/status', ensureAuthAPI, (req, res) => {
-    try {
-        const config = db.prepare('SELECT active, channels, message, auto_reply FROM bot_configs WHERE user_id = ?').get(req.user.id);
-        res.json({ active: config?.active === 1, config });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
     }
 });
 
