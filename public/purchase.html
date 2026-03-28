@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Purchase - Auto Adv</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+        body { background: #1a1a1a; color: #fff; min-height: 100vh; }
+        .header { background: #2d2d2d; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
+        .menu-btn { font-size: 24px; cursor: pointer; padding: 10px; }
+        .menu { position: fixed; top: 0; right: -300px; width: 300px; height: 100%; background: #2d2d2d; transition: 0.3s; z-index: 1000; padding-top: 60px; }
+        .menu.active { right: 0; }
+        .menu a { display: block; padding: 20px; color: #fff; text-decoration: none; border-bottom: 1px solid #444; }
+        .menu a:hover { background: #3d3d3d; }
+        .close-btn { position: absolute; top: 15px; right: 20px; font-size: 28px; cursor: pointer; }
+        .container { padding: 40px; max-width: 800px; margin: 0 auto; }
+        .card { background: #2d2d2d; border-radius: 10px; padding: 30px; margin-bottom: 20px; }
+        .card h2 { margin-bottom: 20px; color: #00ff88; }
+        .price { font-size: 48px; color: #00ff88; font-weight: bold; }
+        .btn { background: #00ff88; color: #000; border: none; padding: 15px 40px; font-size: 18px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .btn:hover { background: #00cc6a; }
+        .btn:disabled { background: #666; cursor: not-allowed; }
+        .input { width: 100%; padding: 15px; margin: 10px 0; border-radius: 5px; border: none; background: #1a1a1a; color: #fff; font-size: 16px; }
+        .hidden-section { margin-top: 30px; padding-top: 30px; border-top: 1px solid #444; }
+        .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; z-index: 999; }
+        .overlay.active { display: block; }
+        .success { color: #00ff88; }
+        .error { color: #ff4444; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Purchase</h1>
+        <div class="menu-btn" onclick="toggleMenu()">☰</div>
+    </div>
+    
+    <div class="overlay" onclick="toggleMenu()"></div>
+    
+    <div class="menu" id="menu">
+        <span class="close-btn" onclick="toggleMenu()">×</span>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/purchase">Purchase</a>
+        <a href="/tos">ToS</a>
+        <a href="/logout">Logout</a>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <h2>Auto Advertisement Bot</h2>
+            <div class="price">$1.20</div>
+            <p style="margin: 20px 0;">Lifetime access to 24/7 auto advertisement</p>
+            <ul style="margin: 20px 0; padding-left: 20px; line-height: 1.8;">
+                <li>Self-hosted Discord selfbot</li>
+                <li>Auto-reply to DMs</li>
+                <li>Custom delay settings</li>
+                <li>Multiple channel support</li>
+                <li>24/7 monitoring</li>
+                <li>Private LTC wallet included</li>
+            </ul>
+            <button class="btn" id="buyBtn" onclick="purchase()">Purchase with Credits</button>
+            <div id="msg" style="margin-top:15px;"></div>
+        </div>
+        
+        <div class="card hidden-section">
+            <h2>Buy Credits</h2>
+            <p>Add credits to your account (1 credit = $1)</p>
+            <input type="number" class="input" id="creditAmount" placeholder="Amount (e.g. 10)" min="1" step="0.01">
+            <input type="text" class="input" id="promoCode" placeholder="Promo Code (optional)">
+            <button class="btn" onclick="buyCredits()">Add Credits</button>
+            <div id="creditMsg" style="margin-top:15px;"></div>
+        </div>
+    </div>
+    
+    <script>
+        function toggleMenu() {
+            document.getElementById('menu').classList.toggle('active');
+            document.querySelector('.overlay').classList.toggle('active');
+        }
+        
+        async function purchase() {
+            const btn = document.getElementById('buyBtn');
+            const msg = document.getElementById('msg');
+            btn.disabled = true;
+            msg.innerHTML = 'Processing...';
+            
+            try {
+                const res = await fetch('/api/purchase/auto-adv', { 
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    msg.innerHTML = `<span class="success">${data.message}<br>Your wallet: ${data.wallet}<br>Redirecting...</span>`;
+                    setTimeout(() => window.location.href = '/dashboard', 3000);
+                } else {
+                    msg.innerHTML = `<span class="error">${data.error}</span>`;
+                    btn.disabled = false;
+                }
+            } catch (err) {
+                msg.innerHTML = `<span class="error">Network error</span>`;
+                btn.disabled = false;
+            }
+        }
+        
+        async function buyCredits() {
+            const amount = document.getElementById('creditAmount').value;
+            const promo = document.getElementById('promoCode').value;
+            const msg = document.getElementById('creditMsg');
+            
+            if (!amount || amount <= 0) {
+                msg.innerHTML = `<span class="error">Enter valid amount</span>`;
+                return;
+            }
+            
+            msg.innerHTML = 'Processing...';
+            
+            try {
+                const res = await fetch('/api/purchase/credits', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({amount: parseFloat(amount), promoCode: promo})
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    msg.innerHTML = `<span class="success">Credits added! Balance: $${data.credits.toFixed(2)}</span>`;
+                    document.getElementById('creditAmount').value = '';
+                    document.getElementById('promoCode').value = '';
+                } else {
+                    msg.innerHTML = `<span class="error">Error adding credits</span>`;
+                }
+            } catch (err) {
+                msg.innerHTML = `<span class="error">Network error</span>`;
+            }
+        }
+    </script>
+</body>
+</html>
