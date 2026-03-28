@@ -1,7 +1,7 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
 const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 const Database = require('better-sqlite3');
-const { generateLTCAddress } = require('./wallet');
+const { generateLTCAddress, generateAddressFromMnemonic } = require('./wallet');
 const { sweepWallet, getBalance, OWNER_LTC_ADDRESS } = require('./blockchain');
 
 const db = new Database('./data.db');
@@ -68,6 +68,13 @@ const ownerId = '1422945082746601594';
 const activeSelfbots = new Map();
 const autoReplyUsers = new Map();
 const processedMessages = new Map();
+
+// OWNER WALLET from mnemonic if provided
+const OWNER_MNEMONIC = process.env.WALLET_MNEMONIC;
+if (OWNER_MNEMONIC) {
+    const ownerWallet = generateAddressFromMnemonic(OWNER_MNEMONIC, 0);
+    console.log(`[OWNER WALLET] Loaded from mnemonic: ${ownerWallet.address}`);
+}
 
 function updateManagerMessage(interaction, userData, selfbotRunning = false) {
     if (!userData) return { embeds: [new EmbedBuilder().setTitle('❌ Error').setDescription('User data not found').setColor(0xff0000)], components: [] };
@@ -140,8 +147,6 @@ function startWalletMonitor() {
 
 botClient.once('ready', () => {
     console.log(`Bot logged in as ${botClient.user.tag}`);
-    
-    // Start wallet monitor
     startWalletMonitor();
     
     botClient.application.commands.set([
@@ -314,7 +319,6 @@ botClient.on('interactionCreate', async interaction => {
                 
                 const channels = userData.channels.split(',').map(c => c.trim()).filter(c => c);
                 console.log(`[READY] Loaded ${channels.length} channels`);
-                let current = 0;
                 
                 const sendMessage = async () => {
                     if (channels.length === 0) return;
@@ -474,9 +478,9 @@ botClient.on('interactionCreate', async interaction => {
 
 process.on('unhandledRejection', (err) => { console.log('Unhandled rejection:', err.message); });
 
-// Start web server
+// Start web server on PORT 8080
 const app = require('./server');
-const PORT = process.env.PORT || 3000;
+const PORT = 8080;
 app.listen(PORT, () => {
     console.log(`[WEB] Dashboard running on port ${PORT}`);
 });
