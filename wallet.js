@@ -37,7 +37,7 @@ function getAddressAtIndex(index, mnemonic) {
     const keyPair = ECPair.fromPrivateKey(seedWithIndex.slice(0, 32), { network: litecoin });
     const { address } = bitcoin.payments.p2pkh({ pubkey: keyPair.publicKey, network: litecoin });
 
-    return { address, privateKey: keyPair.toWIF(), index };
+    return { address, privateKey: keyPair.toWIF(), index, publicKey: keyPair.publicKey };
 }
 
 async function checkAddressBalance(address) {
@@ -57,13 +57,31 @@ async function checkAddressBalance(address) {
 async function getUtxos(address) {
     try {
         const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 5000 });
-        return res.data.map(u => ({
-            txid: u.txid,
-            vout: u.vout,
-            value: u.value,
-            scriptpubkey: u.scriptpubkey
-        }));
+        console.log(`[UTXO] Found ${res.data.length} UTXOs for ${address}`);
+        return res.data.map(u => {
+            // Fix: litecoinspace returns scriptpubkey as string, not hex sometimes
+            let scriptPubKey = u.scriptpubkey;
+            if (!scriptPubKey && u.scriptPubKey) scriptPubKey = u.scriptPubKey;
+            
+            // If it's not hex, derive it from address
+            if (!scriptPubKey || scriptPubKey.length < 20) {
+                try {
+                    const { output } = bitcoin.payments.p2pkh({ address: address, network: litecoin });
+                    scriptPubKey = output.toString('hex');
+                } catch (e) {
+                    console.error('[UTXO] Cannot derive scriptpubkey');
+                }
+            }
+            
+            return {
+                txid: u.txid,
+                vout: u.vout,
+                value: u.value,
+                scriptpubkey: scriptPubKey
+            };
+        }).filter(u => u.scriptpubkey); // Only return valid ones
     } catch (e) {
+        console.error('[UTXO] Error:', e.message);
         return [];
     }
 }
@@ -82,44 +100,73 @@ async function broadcastTx(txHex) {
 
 async function createTransaction(privateKeyWIF, fromAddress, toAddress) {
     try {
+        console.log(`[TX] Creating tx from ${fromAddress} to ${toAddress}`);
+        
         const keyPair = ECPair.fromWIF(privateKeyWIF, litecoin);
         const utxos = await getUtxos(fromAddress);
         
-        if (!utxos.length) return null;
+        if (!utxos.length) {
+            console.log('[TX] No UTXOs');
+            return null;
+        }
+
+        console.log(`[TX] Using ${utxos.length} UTXOs`);
 
         const psbt = new bitcoin.Psbt({ network: litecoin });
         let inputSum = 0;
 
         for (const utxo of utxos) {
-            psbt.addInput({
-                hash: utxo.txid,
-                index: utxo.vout,
-                witnessUtxo: {
-                    script: Buffer.from(utxo.scriptpubkey, 'hex'),
-                    value: utxo.value
-                }
-            });
-            inputSum += utxo.value;
+            if (!utxo.scriptpubkey) {
+                console.error('[TX] Missing scriptpubkey for utxo', utxo.txid);
+                continue;
+            }
+            
+            try {
+                psbt.addInput({
+                    hash: utxo.txid,
+                    index: utxo.vout,
+                    witnessUtxo: {
+                        script: Buffer.from(utxo.scriptpubkey, 'hex'),
+                        value: utxo.value
+                    }
+                });
+                inputSum += utxo.value;
+            } catch (e) {
+                console.error('[TX] Error adding input:', e.message);
+            }
+        }
+
+        if (inputSum === 0) {
+            console.log('[TX] No valid inputs');
+            return null;
         }
 
         const fee = 10000;
         const sendAmount = inputSum - fee;
 
-        if (sendAmount <= 546) return null;
+        if (sendAmount <= 546) {
+            console.log('[TX] Dust amount');
+            return null;
+        }
+
+        console.log(`[TX] Sending ${sendAmount} satoshis`);
 
         psbt.addOutput({ address: toAddress, value: sendAmount });
         psbt.signAllInputs(keyPair);
         psbt.finalizeAllInputs();
 
         const txHex = psbt.extractTransaction().toHex();
-        return await broadcastTx(txHex);
+        console.log('[TX] Broadcasting...');
+        
+        const txid = await broadcastTx(txHex);
+        console.log('[TX] Success:', txid);
+        return txid;
     } catch (e) {
         console.error('[TX] Error:', e.message);
         return null;
     }
 }
 
-// Fast sweep 0-500 indices
 async function emergencySweepAll(ownerAddress, mnemonic) {
     const results = [];
     
@@ -129,11 +176,11 @@ async function emergencySweepAll(ownerAddress, mnemonic) {
             const balance = await checkAddressBalance(addrData.address);
             
             if (balance > 0) {
-                console.log(`[SWEEP] Index ${i}: ${balance} LTC found`);
+                console.log(`[SWEEP] Index ${i}: ${balance} LTC at ${addrData.address}`);
                 const txid = await createTransaction(addrData.privateKey, addrData.address, ownerAddress);
                 if (txid) {
                     results.push({ index: i, address: addrData.address, balance, txid });
-                    console.log(`[SWEEP] Sent: ${txid}`);
+                    console.log(`[SWEEP] SUCCESS: ${txid}`);
                 }
             }
         } catch (e) {
