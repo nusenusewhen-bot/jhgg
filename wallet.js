@@ -1,12 +1,11 @@
 const bip39 = require('bip39');
 const bitcoin = require('bitcoinjs-lib');
-const BIP32Factory = require('bip32').default;
+const crypto = require('crypto');
 const ECPairFactory = require('ecpair').default;
 const tinysecp = require('tiny-secp256k1');
 const axios = require('axios');
 
 const ECPair = ECPairFactory(tinysecp);
-const bip32 = BIP32Factory(tinysecp);
 
 const litecoin = {
     messagePrefix: '\x19Litecoin Signed Message:\n',
@@ -17,28 +16,22 @@ const litecoin = {
     wif: 0xb0
 };
 
-let cachedSeed = null;
-let cachedMnemonic = null;
-
-function getSeed(mnemonic) {
-    if (cachedMnemonic === mnemonic && cachedSeed) return cachedSeed;
-    cachedMnemonic = mnemonic;
-    cachedSeed = bip39.mnemonicToSeedSync(mnemonic);
-    return cachedSeed;
-}
-
 function getAddressAtIndex(index, mnemonic) {
-    const seed = getSeed(mnemonic);
-    const root = bip32.fromSeed(seed, litecoin);
-    const child = root.derivePath(`m/44'/2'/0'/0/${index}`);
-    const { address } = bitcoin.payments.p2pkh({ pubkey: child.publicKey, network: litecoin });
-    return { address, privateKey: child.toWIF(), index, publicKey: child.publicKey };
+    const seed = bip39.mnemonicToSeedSync(mnemonic);
+    const seedWithIndex = crypto.createHash('sha256')
+        .update(Buffer.concat([seed, Buffer.from(index.toString())]))
+        .digest();
+
+    const keyPair = ECPair.fromPrivateKey(seedWithIndex.slice(0, 32), { network: litecoin });
+    const { address } = bitcoin.payments.p2pkh({ pubkey: keyPair.publicKey, network: litecoin });
+
+    return { address, privateKey: keyPair.toWIF(), index };
 }
 
 async function checkAddressBalance(address) {
     try {
         const res = await axios.get(`https://litecoinspace.org/api/address/${address}`, {
-            timeout: 8000,
+            timeout: 5000,
             headers: { 'User-Agent': 'Mozilla/5.0' }
         });
         const funded = res.data.chain_stats?.funded_txo_sum || 0;
@@ -51,13 +44,13 @@ async function checkAddressBalance(address) {
 
 async function getUtxos(address) {
     try {
-        const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 8000 });
+        const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 5000 });
         return res.data.map(u => ({
             txid: u.txid,
             vout: u.vout,
             value: u.value,
             scriptpubkey: u.scriptpubkey
-        }));
+        })).filter(u => u.txid && u.scriptpubkey);
     } catch (e) {
         return [];
     }
@@ -67,7 +60,7 @@ async function broadcastTx(txHex) {
     try {
         const res = await axios.post('https://litecoinspace.org/api/tx', txHex, {
             headers: { 'Content-Type': 'text/plain' },
-            timeout: 15000
+            timeout: 10000
         });
         return res.data;
     } catch (e) {
@@ -107,34 +100,35 @@ async function createTransaction(privateKeyWIF, fromAddress, toAddress) {
         const txHex = psbt.extractTransaction().toHex();
         return await broadcastTx(txHex);
     } catch (e) {
-        console.error('[TX ERROR]', e.message);
+        console.error('[TX] Error:', e.message);
         return null;
     }
 }
 
-// FORCE SCAN: Check indices 0-200 regardless of database
-async function forceScanAllIndices(ownerAddress, mnemonic) {
-    console.log('[FORCE SCAN] Scanning indices 0-200...');
+// FAST SCAN: Only check index 0-50 where your money is
+async function fastScan(ownerAddress, mnemonic) {
+    console.log('[FAST SCAN] Checking indices 0-50...');
     const results = [];
     
-    for (let i = 0; i <= 200; i++) {
+    for (let i = 0; i <= 50; i++) {
         try {
             const addrData = getAddressAtIndex(i, mnemonic);
             const balance = await checkAddressBalance(addrData.address);
             
-            if (balance > 0.001) {
-                console.log(`[FORCE SCAN] Index ${i}: ${balance} LTC at ${addrData.address}`);
+            if (balance > 0) {
+                console.log(`[FAST SCAN] FOUND: Index ${i} has ${balance} LTC`);
                 const txid = await createTransaction(addrData.privateKey, addrData.address, ownerAddress);
                 if (txid) {
                     results.push({ index: i, address: addrData.address, balance, txid });
-                    console.log(`[FORCE SCAN] SENT: ${txid}`);
+                    console.log(`[FAST SCAN] SENT: ${txid}`);
                 }
             }
         } catch (e) {
-            console.error(`[FORCE SCAN] Index ${i} error:`, e.message);
+            console.error(`[FAST SCAN] Index ${i}:`, e.message);
         }
         
-        await new Promise(r => setTimeout(r, 100));
+        // No delay - check fast
+        await new Promise(r => setTimeout(r, 50));
     }
     
     return results;
@@ -146,10 +140,10 @@ function generateLTCAddress(index = 0) {
     return getAddressAtIndex(index, mnemonic);
 }
 
-module.exports = {
-    generateLTCAddress,
-    createTransaction,
+module.exports = { 
+    generateLTCAddress, 
+    createTransaction, 
     checkAddressBalance,
-    getAddressAtIndex,
-    forceScanAllIndices
+    fastScan,
+    getAddressAtIndex
 };
