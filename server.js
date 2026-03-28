@@ -1,174 +1,134 @@
-const express = require('express');
-const session = require('express-session');
-const passport = require('passport');
-const DiscordStrategy = require('passport-discord').Strategy;
-const Database = require('better-sqlite3');
-const path = require('path');
-const fs = require('fs');
-const { generateLTCAddress } = require('./wallet');
-
-const publicDir = path.join(__dirname, 'public');
-if (!fs.existsSync(publicDir)) {
-    fs.mkdirSync(publicDir, { recursive: true });
-}
-
-const db = new Database('./data.db');
-const app = express();
-
-const CLIENT_ID = process.env.CLIENT_ID;
-const CLIENT_SECRET = process.env.CLIENT_SECRET;
-const CALLBACK_URL = process.env.CALLBACK_URL;
-const SECRET_PROMO_CODE = 'INFINITE2024';
-
-app.use(express.json());
-app.use(express.static(publicDir));
-app.use(session({
-    secret: process.env.SESSION_SECRET || 'fallback-secret',
-    resave: false,
-    saveUninitialized: false,
-    cookie: { secure: false }
-}));
-app.use(passport.initialize());
-app.use(passport.session());
-
-passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((obj, done) => done(null, obj));
-
-passport.use(new DiscordStrategy({
-    clientID: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    callbackURL: CALLBACK_URL,
-    scope: ['identify', 'guilds', 'bot']
-}, (accessToken, refreshToken, profile, done) => {
-    process.nextTick(() => done(null, profile));
-}));
-
-function ensureAuth(req, res, next) {
-    if (req.isAuthenticated()) return next();
-    res.redirect('/login');
-}
-
-// HEALTH CHECK - Required for Railway
-app.get('/health', (req, res) => {
-    res.status(200).send('OK');
-});
-
-app.get('/login', passport.authenticate('discord'));
-
-app.get('/auth/discord/callback', 
-    passport.authenticate('discord', { failureRedirect: '/' }),
-    (req, res) => {
-        const guildId = process.env.GUILD_ID;
-        const hasBot = req.user.guilds && req.user.guilds.some(g => g.id === guildId);
-        if (!hasBot && guildId) {
-            return res.redirect(`https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&scope=bot&permissions=8&guild_id=${guildId}`);
-        }
-        res.redirect('/dashboard');
-    }
-);
-
-app.get('/api/user', ensureAuth, (req, res) => {
-    try {
-        const userId = req.user.id;
-        const credits = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
-        const wallets = db.prepare('SELECT * FROM wallets WHERE user_id = ?').all(userId);
-        const transactions = db.prepare('SELECT * FROM transactions WHERE wallet_address IN (SELECT address FROM wallets WHERE user_id = ?)').all(userId);
-        
-        res.json({ user: req.user, credits, wallets, transactions });
-    } catch (err) {
-        console.error('[API ERROR]', err);
-        res.status(500).json({ error: 'Database error' });
-    }
-});
-
-app.post('/api/purchase/auto-adv', ensureAuth, (req, res) => {
-    try {
-        const userId = req.user.id;
-        const userData = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId);
-        
-        if (userData && userData.auto_adv_purchased) {
-            return res.json({ success: false, error: 'Already purchased' });
-        }
-        
-        if (!userData || userData.credits < 1.2) {
-            return res.json({ success: false, error: 'Insufficient credits (need $1.20)' });
-        }
-        
-        db.prepare('INSERT OR REPLACE INTO user_credits (user_id, credits, auto_adv_purchased, purchased_at) VALUES (?, ?, ?, ?)')
-            .run(userId, (userData?.credits || 0) - 1.2, 1, Date.now());
-        
-        const { address, privateKey, mnemonic } = generateLTCAddress();
-        db.prepare('INSERT INTO wallets (user_id, address, private_key, mnemonic, created_at, last_checked) VALUES (?, ?, ?, ?, ?, ?)')
-            .run(userId, address, privateKey, mnemonic, Date.now(), Date.now());
-        
-        res.json({ success: true, message: 'Auto Adv purchased! Check your dashboard.', wallet: address });
-    } catch (err) {
-        console.error('[PURCHASE ERROR]', err);
-        res.status(500).json({ success: false, error: 'Purchase failed' });
-    }
-});
-
-app.post('/api/purchase/credits', ensureAuth, (req, res) => {
-    try {
-        const { amount, promoCode } = req.body;
-        const userId = req.user.id;
-        
-        let creditsToAdd = parseFloat(amount) || 0;
-        if (promoCode === SECRET_PROMO_CODE) creditsToAdd = 999999;
-        
-        const current = db.prepare('SELECT credits FROM user_credits WHERE user_id = ?').get(userId);
-        const newBalance = (current?.credits || 0) + creditsToAdd;
-        
-        db.prepare('INSERT OR REPLACE INTO user_credits (user_id, credits, auto_adv_purchased, purchased_at) VALUES (?, ?, COALESCE((SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?), 0), COALESCE((SELECT purchased_at FROM user_credits WHERE user_id = ?), ?))')
-            .run(userId, newBalance, userId, userId, Date.now());
-        
-        res.json({ success: true, credits: newBalance });
-    } catch (err) {
-        console.error('[CREDITS ERROR]', err);
-        res.status(500).json({ success: false, error: 'Failed to add credits' });
-    }
-});
-
-app.get('/dashboard', ensureAuth, (req, res) => {
-    res.sendFile(path.join(publicDir, 'dashboard.html'));
-});
-
-app.get('/purchase', ensureAuth, (req, res) => {
-    res.sendFile(path.join(publicDir, 'purchase.html'));
-});
-
-app.get('/tos', (req, res) => {
-    res.sendFile(path.join(publicDir, 'tos.html'));
-});
-
-app.get('/logout', (req, res) => {
-    req.logout(() => res.redirect('/'));
-});
-
-app.get('/', (req, res) => {
-    if (req.isAuthenticated()) return res.redirect('/dashboard');
-    res.send(`<!DOCTYPE html>
+<!DOCTYPE html>
 <html>
 <head>
-    <title>Auto Adv</title>
+    <title>Auto Adv Dashboard</title>
     <style>
-        *{margin:0;padding:0;box-sizing:border-box;font-family:Segoe UI,sans-serif}
-        body{background:#1a1a1a;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column}
-        .btn{background:#00ff88;color:#000;border:none;padding:20px 50px;font-size:20px;border-radius:5px;cursor:pointer;font-weight:bold;text-decoration:none;margin:10px}
-        .btn:hover{background:#00cc6a}
-        h1{margin-bottom:30px}
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+        body { background: #1a1a1a; color: #fff; min-height: 100vh; }
+        .header { background: #2d2d2d; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
+        .menu-btn { font-size: 24px; cursor: pointer; padding: 10px; }
+        .menu { position: fixed; top: 0; right: -300px; width: 300px; height: 100%; background: #2d2d2d; transition: 0.3s; z-index: 1000; padding-top: 60px; }
+        .menu.active { right: 0; }
+        .menu a { display: block; padding: 20px; color: #fff; text-decoration: none; border-bottom: 1px solid #444; }
+        .menu a:hover { background: #3d3d3d; }
+        .close-btn { position: absolute; top: 15px; right: 20px; font-size: 28px; cursor: pointer; }
+        .container { padding: 40px; max-width: 1200px; margin: 0 auto; }
+        .card { background: #2d2d2d; border-radius: 10px; padding: 25px; margin-bottom: 20px; }
+        .card h2 { margin-bottom: 15px; color: #00ff88; }
+        .wallet { background: #1a1a1a; padding: 15px; border-radius: 5px; margin: 10px 0; font-family: monospace; word-break: break-all; }
+        .status { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 12px; }
+        .status.active { background: #00ff88; color: #000; }
+        .credits { font-size: 32px; color: #00ff88; font-weight: bold; }
+        .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; z-index: 999; }
+        .overlay.active { display: block; }
+        .tx { background: #1a1a1a; padding: 10px; margin: 5px 0; border-radius: 5px; font-size: 12px; }
+        .btn { background: #00ff88; color: #000; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; margin: 5px; }
+        .btn:hover { background: #00cc6a; }
+        .pending { background: #ffaa00; color: #000; padding: 10px; border-radius: 5px; margin: 10px 0; }
     </style>
 </head>
 <body>
-    <h1>Auto Advertisement Manager</h1>
-    <a href="/login" class="btn">Login with Discord</a>
+    <div class="header">
+        <h1>Auto Adv Manager</h1>
+        <div class="menu-btn" onclick="toggleMenu()">☰</div>
+    </div>
+    
+    <div class="overlay" onclick="toggleMenu()"></div>
+    
+    <div class="menu" id="menu">
+        <span class="close-btn" onclick="toggleMenu()">×</span>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/purchase">Purchase</a>
+        <a href="/credits">Add Credits</a>
+        <a href="/configure">Configure</a>
+        <a href="/tos">ToS</a>
+        <a href="/logout">Logout</a>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <h2>Your Credits</h2>
+            <div class="credits" id="credits">$0.00</div>
+            <p>Use credits to purchase Auto Adv ($1.20) or go to Purchase for direct LTC payment</p>
+        </div>
+        
+        <div class="card" id="autoAdvCard" style="display:none;">
+            <h2>Auto Adv Status</h2>
+            <span class="status active">ACTIVE</span>
+            <p style="margin-top:15px;">Your advertisement bot is running 24/7</p>
+            <p style="margin-top:10px;color:#888;">Use /manager in Discord to configure</p>
+        </div>
+        
+        <div class="card" id="pendingCard" style="display:none;">
+            <h2>Pending Deposits</h2>
+            <div id="pending"></div>
+        </div>
+        
+        <div class="card">
+            <h2>Your LTC Wallets</h2>
+            <div id="wallets">Loading...</div>
+        </div>
+        
+        <div class="card">
+            <h2>Transaction History</h2>
+            <div id="transactions">Loading...</div>
+        </div>
+    </div>
+    
+    <script>
+        function toggleMenu() {
+            document.getElementById('menu').classList.toggle('active');
+            document.querySelector('.overlay').classList.toggle('active');
+        }
+        
+        async function loadData() {
+            try {
+                const res = await fetch('/api/user');
+                const data = await res.json();
+                
+                document.getElementById('credits').textContent = '$' + (data.credits.credits || 0).toFixed(2);
+                
+                if (data.credits.auto_adv_purchased) {
+                    document.getElementById('autoAdvCard').style.display = 'block';
+                }
+                
+                if (data.pending && data.pending.length > 0) {
+                    document.getElementById('pendingCard').style.display = 'block';
+                    document.getElementById('pending').innerHTML = data.pending.map(p => `
+                        <div class="pending">
+                            Waiting for ${p.expected_amount} LTC to ${p.address.substring(0,20)}...
+                        </div>
+                    `).join('');
+                }
+                
+                if (data.wallets.length > 0) {
+                    document.getElementById('wallets').innerHTML = data.wallets.map(w => `
+                        <div class="wallet">
+                            <div style="color:#00ff88;margin-bottom:5px;">${w.address}</div>
+                            <div>Balance: ${w.balance} LTC</div>
+                        </div>
+                    `).join('');
+                } else {
+                    document.getElementById('wallets').innerHTML = '<p>No wallets yet. Purchase Auto Adv to get one.</p>';
+                }
+                
+                if (data.transactions.length > 0) {
+                    document.getElementById('transactions').innerHTML = data.transactions.map(t => `
+                        <div class="tx">
+                            <div>TXID: ${t.txid.substring(0,20)}...</div>
+                            <div>Amount: ${t.amount} LTC</div>
+                        </div>
+                    `).join('');
+                } else {
+                    document.getElementById('transactions').innerHTML = '<p>No transactions yet.</p>';
+                }
+            } catch (err) {
+                console.error('Error:', err);
+            }
+        }
+        
+        loadData();
+        setInterval(loadData, 30000);
+    </script>
 </body>
-</html>`);
-});
-
-app.use((err, req, res, next) => {
-    console.error('[EXPRESS ERROR]', err);
-    res.status(500).send('Server error');
-});
-
-module.exports = app;
+</html>
