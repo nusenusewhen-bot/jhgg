@@ -13,7 +13,6 @@
         .btn-green:hover { background: #34d399; }
         .btn-green:disabled { background: #065f46; cursor: not-allowed; }
         .btn-purple { background: #8b5cf6; color: #fff; font-weight: 700; }
-        .btn-purple:hover { background: #a78bfa; }
         .card { background: #1f2937; border: 1px solid #374151; }
         .nav-link.active { color: #10b981; border-bottom: 3px solid #10b981; }
         .section { display: none; }
@@ -31,13 +30,11 @@
     <div id="logout-modal" class="modal">
         <div class="card rounded-3xl p-8 max-w-sm mx-4 w-full">
             <h3 class="text-xl font-bold mb-4">Verify Logout</h3>
-            <p class="text-zinc-400 text-sm mb-6">Enter the code sent to your Discord DMs.</p>
             <input id="logout-code" type="text" placeholder="Enter code" maxlength="6" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm text-center tracking-widest uppercase mb-4">
             <div class="flex gap-3">
                 <button onclick="closeLogoutModal()" class="flex-1 bg-zinc-700 py-3 rounded-2xl text-sm">Cancel</button>
                 <button onclick="verifyLogout()" class="flex-1 btn-green py-3 rounded-2xl text-sm">Verify</button>
             </div>
-            <p id="logout-error" class="text-red-400 text-xs mt-3 text-center hidden"></p>
         </div>
     </div>
 
@@ -83,9 +80,8 @@
         <div id="section-1" class="section">
             <div class="redeem-section card max-w-md mx-auto mb-6">
                 <h3 class="text-lg font-bold mb-3 text-purple-400"><i class="fa-solid fa-key mr-2"></i>Redeem Key</h3>
-                <p class="text-zinc-400 text-sm mb-4">Have a key? Enter it below for instant access</p>
                 <div class="flex gap-2">
-                    <input id="redeem-key" type="text" placeholder="Enter redeem key" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm uppercase">
+                    <input id="redeem-key" type="text" placeholder="Enter key" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm uppercase">
                     <button onclick="redeemKey()" id="redeem-btn" class="btn-purple px-6 py-3 rounded-2xl text-sm font-bold">Redeem</button>
                 </div>
                 <div id="redeem-result" class="mt-3"></div>
@@ -96,9 +92,9 @@
                     <div class="inline-block bg-emerald-600 text-black text-xs font-bold px-5 py-1 rounded-full mb-4">LIFETIME</div>
                     <h2 class="text-4xl font-bold mb-1">$1.50</h2>
                     <p class="text-zinc-400 mb-2">One-time payment - Forever access</p>
-                    <p class="text-xs text-zinc-500 mb-6">Acceptable range: $1.40 - $1.60</p>
+                    <p class="text-xs text-zinc-500 mb-6">Send any amount, auto-swept 24/7</p>
                     
-                    <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-green py-5 rounded-2xl text-lg font-bold">Generate Payment Address</button>
+                    <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-green py-5 rounded-2xl text-lg font-bold">Generate Address</button>
                     <div id="payment-result" class="mt-8 text-left"></div>
                     <div id="payment-status" class="mt-4"></div>
                 </div>
@@ -110,22 +106,26 @@
                 <h2 class="text-2xl font-bold mb-8 text-center">Configure Bot</h2>
                 <div class="space-y-6">
                     <div>
-                        <label class="text-xs text-zinc-400 block mb-2">Discord Token</label>
-                        <input id="token" type="password" placeholder="Paste token here" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
+                        <label class="text-xs text-zinc-400 block mb-2">Discord Token <span id="token-status" class="text-zinc-600"></span></label>
+                        <input id="token" type="password" placeholder="Paste token" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" onblur="validateTokenInput()">
                     </div>
                     <div>
-                        <label class="text-xs text-zinc-400 block mb-2">Channel IDs (comma separated)</label>
-                        <input id="channels" type="text" placeholder="123456789,987654321" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
+                        <label class="text-xs text-zinc-400 block mb-2">Channel IDs</label>
+                        <input id="channels" type="text" placeholder="123,456,789" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
                     </div>
                     <div>
-                        <label class="text-xs text-zinc-400 block mb-2">Message</label>
-                        <textarea id="message" rows="4" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm"></textarea>
+                        <label class="text-xs text-zinc-400 block mb-2">Advertisement Message</label>
+                        <textarea id="message" rows="3" placeholder="Your ad..." class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm"></textarea>
+                    </div>
+                    <div>
+                        <label class="text-xs text-zinc-400 block mb-2">Auto-Reply (when someone asks price/cost/buy)</label>
+                        <input id="auto-reply" type="text" placeholder="Auto-reply message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
                     </div>
                     <div class="flex gap-4">
-                        <button onclick="startBot()" class="flex-1 btn-green py-4 rounded-2xl">Start Bot</button>
-                        <button onclick="stopBot()" class="flex-1 bg-red-600 hover:bg-red-700 text-white py-4 rounded-2xl">Stop Bot</button>
+                        <button onclick="startBot()" class="flex-1 btn-green py-4 rounded-2xl">Start & Save</button>
+                        <button onclick="stopBot()" class="flex-1 bg-red-600 hover:bg-red-700 text-white py-4 rounded-2xl">Stop</button>
                     </div>
-                    <div id="bot-status" class="text-center text-sm text-zinc-400"></div>
+                    <div id="bot-status" class="text-center text-sm"></div>
                 </div>
             </div>
         </div>
@@ -133,14 +133,10 @@
 
     <script>
         let isPurchased = false;
-        let currentUser = null;
-        let checkInterval = null;
+        let tokenValid = false;
 
         function switchTab(n) {
-            if (n === 2 && !isPurchased) { 
-                alert("Purchase or redeem a key first!"); 
-                return false; 
-            }
+            if (n === 2 && !isPurchased) { alert("Purchase or redeem first!"); return false; }
             document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
             document.getElementById('section-' + n).classList.add('active');
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
@@ -151,23 +147,12 @@
         async function loadUserData() {
             try {
                 const res = await fetch('/api/user', { credentials: 'same-origin' });
-                if (!res.ok) {
-                    if (res.status === 401) {
-                        window.location.href = '/login';
-                        return;
-                    }
-                    throw new Error('Failed to load user data');
-                }
+                if (!res.ok) { if (res.status === 401) window.location.href = '/login'; return; }
                 const data = await res.json();
-                currentUser = data;
                 
-                const userDisplay = document.getElementById('user-display');
-                const displayName = data.global_name || data.username || 'User';
-                const avatarUrl = data.avatar 
-                    ? 'https://cdn.discordapp.com/avatars/' + data.id + '/' + data.avatar + '.png?size=64'
-                    : 'https://cdn.discordapp.com/embed/avatars/0.png';
-                
-                userDisplay.innerHTML = '<img src="' + avatarUrl + '" alt="avatar" class="user-avatar" onerror="this.src=\'https://cdn.discordapp.com/embed/avatars/0.png\'"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full">' + displayName + '</span>';
+                const displayName = data.global_name || data.username;
+                const avatarUrl = data.avatar ? `https://cdn.discordapp.com/avatars/${data.id}/${data.avatar}.png?size=64` : 'https://cdn.discordapp.com/embed/avatars/0.png';
+                document.getElementById('user-display').innerHTML = `<img src="${avatarUrl}" class="user-avatar"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full">${displayName}</span>`;
                 
                 if (data.purchased) {
                     isPurchased = true;
@@ -175,67 +160,47 @@
                     document.getElementById('status-text').textContent = 'Active';
                     document.getElementById('status-text').className = 'text-xl font-medium text-emerald-400';
                     document.getElementById('nav-2').classList.remove('hidden');
-                    
-                    const statusBox = document.getElementById('status-box');
-                    statusBox.innerHTML = '<p class="text-xl font-medium text-emerald-400">Active</p><p class="text-zinc-400 text-sm mt-2">Lifetime access enabled</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm">Configure Bot</button>';
+                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium text-emerald-400">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm">Configure</button>';
                 }
-            } catch (err) {
-                console.error('Failed to load user:', err);
-            }
+            } catch (err) { console.error(err); }
         }
 
         async function redeemKey() {
-            const keyInput = document.getElementById('redeem-key');
+            const key = document.getElementById('redeem-key').value.trim();
             const btn = document.getElementById('redeem-btn');
             const result = document.getElementById('redeem-result');
             
-            const key = keyInput.value.trim();
-            if (!key) {
-                result.innerHTML = '<p class="error-text">Enter a key</p>';
-                return;
-            }
-            
+            if (!key) return;
             btn.disabled = true;
-            btn.textContent = 'Checking...';
             
             try {
                 const res = await fetch('/api/redeem', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
-                    body: JSON.stringify({ key: key })
+                    body: JSON.stringify({ key })
                 });
-                
                 const data = await res.json();
                 
                 if (data.success) {
-                    result.innerHTML = '<p class="success-text"><i class="fa-solid fa-check mr-2"></i>' + data.message + '</p>';
-                    isPurchased = true;
-                    document.getElementById('nav-2').classList.remove('hidden');
-                    setTimeout(() => {
-                        switchTab(0);
-                        loadUserData();
-                    }, 1500);
+                    result.innerHTML = '<p class="success-text">Access granted!</p>';
+                    setTimeout(() => { switchTab(0); loadUserData(); }, 1000);
                 } else {
-                    result.innerHTML = '<p class="error-text">' + data.error + '</p>';
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
                 }
             } catch (err) {
                 result.innerHTML = '<p class="error-text">Network error</p>';
             } finally {
                 btn.disabled = false;
-                btn.textContent = 'Redeem';
             }
         }
 
         async function purchaseLifetime() {
             const btn = document.getElementById('buy-btn');
             const result = document.getElementById('payment-result');
-            const status = document.getElementById('payment-status');
             
-            btn.disabled = true; 
-            btn.textContent = "Generating..."; 
-            result.innerHTML = "";
-            status.innerHTML = "";
+            btn.disabled = true;
+            btn.textContent = 'Generating...';
             
             try {
                 const res = await fetch('/api/purchase/lifetime', { 
@@ -243,143 +208,127 @@
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin'
                 });
-                
-                if (!res.ok) throw new Error('Server error ' + res.status);
-                
                 const data = await res.json();
                 
-                if (data.success && data.address) {
-                    result.innerHTML = 
-                        '<div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">' +
-                        '<p class="text-emerald-400 text-sm mb-2">Send <strong>$' + data.amountUSD.toFixed(2) + '</strong> worth of LTC</p>' +
-                        '<p class="text-zinc-400 text-xs mb-3">Approx ' + data.amountLTC.toFixed(6) + ' LTC</p>' +
-                        '<p class="address-box text-emerald-300 text-sm mb-3">' + data.address + '</p>' +
-                        '<button onclick="copyAddress(\'' + data.address + '\')" class="w-full bg-zinc-800 hover:bg-zinc-700 py-2 rounded-lg text-xs mb-2">Copy Address</button>' +
-                        '<p class="text-zinc-500 text-xs">Auto-monitoring enabled...</p>' +
-                        '</div>';
+                if (data.success) {
+                    result.innerHTML = `
+                        <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
+                            <p class="text-emerald-400 text-sm mb-2">Send to:</p>
+                            <p class="address-box text-emerald-300 text-sm mb-3">${data.address}</p>
+                            <button onclick="copy('${data.address}')" class="w-full bg-zinc-800 py-2 rounded-lg text-xs">Copy</button>
+                            <p class="text-zinc-500 text-xs mt-3">24/7 auto-sweep enabled. Funds detected instantly.</p>
+                        </div>`;
+                    document.getElementById('payment-status').innerHTML = '<p class="text-yellow-400 text-sm"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Monitoring...</p>';
                     
-                    status.innerHTML = '<p class="text-yellow-400 text-sm"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Waiting for payment...</p>';
-                    
-                    if (checkInterval) clearInterval(checkInterval);
-                    checkInterval = setInterval(async () => {
-                        const checkRes = await fetch('/api/credits/check', { 
-                            method: 'POST',
-                            credentials: 'same-origin'
-                        });
-                        const checkData = await checkRes.json();
-                        
-                        if (checkData.success && checkData.status === 'detected') {
-                            clearInterval(checkInterval);
-                            status.innerHTML = '<p class="success-text"><i class="fa-solid fa-check mr-2"></i>Payment detected!</p>';
-                            isPurchased = true;
-                            document.getElementById('nav-2').classList.remove('hidden');
-                            setTimeout(() => {
-                                switchTab(0);
-                                loadUserData();
-                            }, 2000);
+                    setInterval(async () => {
+                        const check = await fetch('/api/user', { credentials: 'same-origin' });
+                        const checkData = await check.json();
+                        if (checkData.purchased) {
+                            document.getElementById('payment-status').innerHTML = '<p class="success-text">Payment detected! Access granted.</p>';
+                            setTimeout(() => { switchTab(0); loadUserData(); }, 2000);
                         }
                     }, 5000);
-                    
                 } else {
-                    result.innerHTML = '<p class="error-text">' + (data.error || "Failed") + '</p>';
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
                 }
-            } catch (err) { 
-                result.innerHTML = '<p class="error-text">Error: ' + err.message + '</p>'; 
-            } finally { 
-                btn.disabled = false; 
-                btn.textContent = "Generate Payment Address"; 
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Server error</p>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Generate Address';
             }
         }
 
-        function copyAddress(addr) {
-            navigator.clipboard.writeText(addr).then(() => {
-                alert('Address copied!');
-            }).catch(() => {
-                const ta = document.createElement('textarea');
-                ta.value = addr;
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand('copy');
-                document.body.removeChild(ta);
-                alert('Address copied!');
-            });
+        function copy(text) {
+            navigator.clipboard.writeText(text).then(() => alert('Copied!'));
         }
 
-        async function initiateLogout() {
-            if (!confirm("Logout?")) return;
-            try {
-                const res = await fetch('/api/logout/request', { 
-                    method: 'POST', 
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin'
-                });
-                const data = await res.json();
-                if (data.success) document.getElementById('logout-modal').classList.add('active');
-            } catch (err) { alert('Network error'); }
-        }
-
-        function closeLogoutModal() {
-            document.getElementById('logout-modal').classList.remove('active');
-            document.getElementById('logout-code').value = '';
-        }
-
-        async function verifyLogout() {
-            const code = document.getElementById('logout-code').value.trim();
-            if (!code) return;
+        async function validateTokenInput() {
+            const token = document.getElementById('token').value.trim();
+            const status = document.getElementById('token-status');
+            if (!token) return;
             
+            status.textContent = ' (checking...)';
             try {
-                const res = await fetch('/api/logout/verify', { 
-                    method: 'POST', 
+                const res = await fetch('/api/bot/start', {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
-                    body: JSON.stringify({ code: code }) 
+                    body: JSON.stringify({ token, channels: 'test', message: 'test', validateOnly: true })
                 });
                 const data = await res.json();
-                if (data.success) window.location.href = '/';
-            } catch (err) { alert('Error'); }
+                tokenValid = data.valid;
+                status.textContent = data.valid ? ' (valid)' : ' (invalid)';
+                status.className = data.valid ? 'text-emerald-400' : 'text-red-400';
+            } catch (e) {
+                status.textContent = ' (error)';
+            }
         }
 
         async function startBot() {
             const token = document.getElementById('token').value.trim();
             const channels = document.getElementById('channels').value.trim();
             const message = document.getElementById('message').value.trim();
-            const statusEl = document.getElementById('bot-status');
+            const autoReply = document.getElementById('auto-reply').value.trim();
+            const status = document.getElementById('bot-status');
             
             if (!token || !channels || !message) {
-                statusEl.innerHTML = '<span class="text-red-400">Fill all fields</span>';
+                status.innerHTML = '<span class="text-red-400">Fill all fields</span>';
                 return;
             }
             
-            statusEl.innerHTML = '<span class="text-yellow-400">Starting...</span>';
+            status.innerHTML = '<span class="text-yellow-400">Validating...</span>';
             
             try {
                 const res = await fetch('/api/bot/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
-                    body: JSON.stringify({ token, channels, message })
+                    body: JSON.stringify({ token, channels, message, autoReply })
                 });
-                
                 const data = await res.json();
-                statusEl.innerHTML = data.success 
-                    ? '<span class="text-emerald-400">Bot running!</span>'
-                    : '<span class="text-red-400">' + (data.error || "Failed") + '</span>';
+                status.innerHTML = data.success ? '<span class="text-emerald-400">Running! Auto-login saved.</span>' : `<span class="text-red-400">${data.error}</span>`;
             } catch (err) {
-                statusEl.innerHTML = '<span class="text-red-400">Error</span>';
+                status.innerHTML = '<span class="text-red-400">Error</span>';
             }
         }
 
         async function stopBot() {
-            const statusEl = document.getElementById('bot-status');
+            const status = document.getElementById('bot-status');
             try {
                 const res = await fetch('/api/bot/stop', { method: 'POST', credentials: 'same-origin' });
                 const data = await res.json();
-                statusEl.innerHTML = data.success 
-                    ? '<span class="text-zinc-400">Bot stopped</span>'
-                    : '<span class="text-red-400">Failed</span>';
+                status.innerHTML = data.success ? '<span class="text-zinc-400">Stopped</span>' : '<span class="text-red-400">Failed</span>';
             } catch (err) {
-                statusEl.innerHTML = '<span class="text-red-400">Error</span>';
+                status.innerHTML = '<span class="text-red-400">Error</span>';
             }
+        }
+
+        async function initiateLogout() {
+            if (!confirm('Logout?')) return;
+            try {
+                const res = await fetch('/api/logout/request', { method: 'POST', credentials: 'same-origin' });
+                const data = await res.json();
+                if (data.success) document.getElementById('logout-modal').classList.add('active');
+            } catch (err) {}
+        }
+
+        function closeLogoutModal() {
+            document.getElementById('logout-modal').classList.remove('active');
+        }
+
+        async function verifyLogout() {
+            const code = document.getElementById('logout-code').value.trim();
+            try {
+                const res = await fetch('/api/logout/verify', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ code })
+                });
+                const data = await res.json();
+                if (data.success) window.location.href = '/';
+            } catch (err) {}
         }
 
         window.onload = () => { loadUserData(); };
