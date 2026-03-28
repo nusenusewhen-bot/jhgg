@@ -20,7 +20,6 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
 
-// Initialize database tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS user_credits (
     user_id TEXT PRIMARY KEY,
@@ -110,7 +109,9 @@ function ensurePurchasedAPI(req, res, next) {
     next();
 }
 
-app.get('/health', (req, res) => res.status(200).send('OK'));
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: Date.now() });
+});
 
 app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/dashboard'));
