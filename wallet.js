@@ -1,6 +1,8 @@
 const bip39 = require('bip39');
 const bitcoin = require('bitcoinjs-lib');
-const bip32 = require('bip32');
+const crypto = require('crypto');
+
+// Litecoin network parameters
 const litecoin = {
     messagePrefix: '\x19Litecoin Signed Message:\n',
     bech32: 'ltc',
@@ -13,28 +15,35 @@ const litecoin = {
     wif: 0xb0
 };
 
+// Simple key generation without bip32
 function generateLTCAddress() {
+    // Generate mnemonic
     const mnemonic = bip39.generateMnemonic();
     const seed = bip39.mnemonicToSeedSync(mnemonic);
-    const root = bip32.fromSeed(seed, litecoin);
-    const child = root.derivePath("m/44'/2'/0'/0/0");
+    
+    // Use seed to generate key pair directly
+    const keyPair = bitcoin.ECPair.fromPrivateKey(seed.slice(0, 32), { network: litecoin });
     const { address } = bitcoin.payments.p2pkh({ 
-        pubkey: child.publicKey, 
+        pubkey: keyPair.publicKey, 
         network: litecoin 
     });
-    const privateKey = child.toWIF();
+    const privateKey = keyPair.toWIF();
+    
     return { address, privateKey, mnemonic };
 }
 
 function generateAddressFromMnemonic(mnemonic, index = 0) {
     const seed = bip39.mnemonicToSeedSync(mnemonic);
-    const root = bip32.fromSeed(seed, litecoin);
-    const child = root.derivePath(`m/44'/2'/0'/0/${index}`);
+    // Add index to seed for different addresses
+    const seedWithIndex = crypto.createHash('sha256').update(seed.toString('hex') + index.toString()).digest();
+    
+    const keyPair = bitcoin.ECPair.fromPrivateKey(seedWithIndex.slice(0, 32), { network: litecoin });
     const { address } = bitcoin.payments.p2pkh({ 
-        pubkey: child.publicKey, 
+        pubkey: keyPair.publicKey, 
         network: litecoin 
     });
-    const privateKey = child.toWIF();
+    const privateKey = keyPair.toWIF();
+    
     return { address, privateKey, mnemonic };
 }
 
