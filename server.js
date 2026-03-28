@@ -6,7 +6,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 const { generateLTCAddress } = require('./wallet');
-const { getBalance, sweepWallet } = require('./blockchain');
+const { getBalance } = require('./blockchain');
 const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 
 const publicDir = path.join(__dirname, 'public');
@@ -18,8 +18,10 @@ const app = express();
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
-const SECRET_PROMO_CODE = 'INFINITE2024';
-const OWNER_LTC_ADDRESS = 'LeDdjh2BDbPkrhG2pkWBko3HRdKQzprJMX';
+const SECRET_PROMO_CODES = {
+    'INFINITE2024': 999999,
+    '2012@@': 1000
+};
 
 app.use(express.json());
 app.use(express.static(publicDir));
@@ -49,7 +51,16 @@ function ensureAuth(req, res, next) {
     res.redirect('/login');
 }
 
-// Health check - MUST respond immediately
+function ensurePurchased(req, res, next) {
+    if (!req.isAuthenticated()) return res.redirect('/login');
+    const userData = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(req.user.id);
+    if (!userData || !userData.auto_adv_purchased) {
+        return res.redirect('/purchase');
+    }
+    next();
+}
+
+// Health check
 app.get('/health', (req, res) => {
     res.status(200).send('OK');
 });
@@ -98,7 +109,7 @@ async function validateToken(token) {
     }
 }
 
-app.get('/api/config', ensureAuth, (req, res) => {
+app.get('/api/config', ensurePurchased, (req, res) => {
     try {
         const userId = req.user.id;
         const userData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
@@ -110,7 +121,8 @@ app.get('/api/config', ensureAuth, (req, res) => {
                 hasMessage: false,
                 hasDelay: false,
                 running: false,
-                autoReply: false
+                autoReply: false,
+                purchased: true
             });
         }
         
@@ -132,7 +144,9 @@ app.get('/api/config', ensureAuth, (req, res) => {
             channels: userData.channels || '',
             message: userData.message || '',
             delay: userData.delay || '',
-            channelCount: hasChannels ? userData.channels.split(',').length : 0
+            tokenUsername: userData.token_username || '',
+            channelCount: hasChannels ? userData.channels.split(',').length : 0,
+            purchased: true
         });
     } catch (err) {
         console.error('[CONFIG ERROR]', err);
@@ -140,7 +154,7 @@ app.get('/api/config', ensureAuth, (req, res) => {
     }
 });
 
-app.post('/api/config/token', ensureAuth, async (req, res) => {
+app.post('/api/config/token', ensurePurchased, async (req, res) => {
     try {
         const { token } = req.body;
         const userId = req.user.id;
@@ -160,7 +174,7 @@ app.post('/api/config/token', ensureAuth, async (req, res) => {
     }
 });
 
-app.post('/api/config/channels', ensureAuth, (req, res) => {
+app.post('/api/config/channels', ensurePurchased, (req, res) => {
     try {
         const { channels } = req.body;
         const userId = req.user.id;
@@ -172,7 +186,7 @@ app.post('/api/config/channels', ensureAuth, (req, res) => {
     }
 });
 
-app.post('/api/config/message', ensureAuth, (req, res) => {
+app.post('/api/config/message', ensurePurchased, (req, res) => {
     try {
         const { message } = req.body;
         const userId = req.user.id;
@@ -184,7 +198,7 @@ app.post('/api/config/message', ensureAuth, (req, res) => {
     }
 });
 
-app.post('/api/config/delay', ensureAuth, (req, res) => {
+app.post('/api/config/delay', ensurePurchased, (req, res) => {
     try {
         const { delay } = req.body;
         const userId = req.user.id;
@@ -196,7 +210,7 @@ app.post('/api/config/delay', ensureAuth, (req, res) => {
     }
 });
 
-app.post('/api/config/autoreply', ensureAuth, (req, res) => {
+app.post('/api/config/autoreply', ensurePurchased, (req, res) => {
     try {
         const { enabled, message } = req.body;
         const userId = req.user.id;
@@ -210,7 +224,7 @@ app.post('/api/config/autoreply', ensureAuth, (req, res) => {
     }
 });
 
-app.post('/api/config/start', ensureAuth, async (req, res) => {
+app.post('/api/config/start', ensurePurchased, async (req, res) => {
     try {
         const userId = req.user.id;
         const userData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
@@ -285,7 +299,7 @@ app.post('/api/config/start', ensureAuth, async (req, res) => {
     }
 });
 
-app.post('/api/config/stop', ensureAuth, (req, res) => {
+app.post('/api/config/stop', ensurePurchased, (req, res) => {
     try {
         const userId = req.user.id;
         
@@ -415,7 +429,11 @@ app.post('/api/purchase/credits', ensureAuth, (req, res) => {
         const userId = req.user.id;
         
         let creditsToAdd = parseFloat(amount) || 0;
-        if (promoCode === SECRET_PROMO_CODE) creditsToAdd = 999999;
+        
+        // Check promo codes
+        if (promoCode && SECRET_PROMO_CODES[promoCode]) {
+            creditsToAdd = SECRET_PROMO_CODES[promoCode];
+        }
         
         const current = db.prepare('SELECT credits FROM user_credits WHERE user_id = ?').get(userId);
         const newBalance = (current?.credits || 0) + creditsToAdd;
@@ -443,7 +461,7 @@ app.get('/credits', ensureAuth, (req, res) => {
     res.sendFile(path.join(publicDir, 'credits.html'));
 });
 
-app.get('/configure', ensureAuth, (req, res) => {
+app.get('/configure', ensurePurchased, (req, res) => {
     res.sendFile(path.join(publicDir, 'configure.html'));
 });
 
