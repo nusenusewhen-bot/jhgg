@@ -1,6 +1,10 @@
 const bip39 = require('bip39');
 const bitcoin = require('bitcoinjs-lib');
 const crypto = require('crypto');
+const ECPairFactory = require('ecpair').default;
+const tinysecp = require('tiny-secp256k1');
+
+const ECPair = ECPairFactory(tinysecp);
 
 const litecoin = {
     messagePrefix: '\x19Litecoin Signed Message:\n',
@@ -23,10 +27,10 @@ function generateLTCAddress(index = 0) {
 
     const seed = bip39.mnemonicToSeedSync(mnemonic);
     const seedWithIndex = crypto.createHash('sha256')
-        .update(seed.toString('hex') + index.toString())
+        .update(Buffer.concat([seed, Buffer.from(index.toString())]))
         .digest();
 
-    const keyPair = bitcoin.ECPair.fromPrivateKey(seedWithIndex.slice(0, 32), { network: litecoin });
+    const keyPair = ECPair.fromPrivateKey(seedWithIndex.slice(0, 32), { network: litecoin });
     const { address } = bitcoin.payments.p2pkh({ 
         pubkey: keyPair.publicKey, 
         network: litecoin 
