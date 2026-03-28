@@ -13,7 +13,7 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 class SimpleDB {
     constructor() {
         this.file = path.join(dataDir, 'db.json');
-        this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0 };
+        this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0, serverJoins: {} };
         this.load();
     }
     
@@ -40,7 +40,6 @@ class SimpleDB {
         this.save();
     }
     
-    // Global index for unique addresses across all users
     getNextGlobalIndex() {
         this.data.globalIndex = (this.data.globalIndex || 0) + 1;
         this.save();
@@ -85,7 +84,6 @@ class SimpleDB {
         return !!this.data.usedKeys[key];
     }
     
-    // Support multiple configs per user (array)
     getConfigs(userId) {
         return this.data.configs[userId] || [];
     }
@@ -117,10 +115,27 @@ class SimpleDB {
         }
     }
     
-    // Get all active bot instances for a user
     getActiveConfigs(userId) {
         const configs = this.getConfigs(userId);
         return configs.filter(c => c.active === 1);
+    }
+    
+    // Server join tracking
+    addServerJoin(userId, inviteCode, configId) {
+        const joinId = `${userId}_${Date.now()}`;
+        this.data.serverJoins[joinId] = {
+            user_id: userId,
+            invite_code: inviteCode,
+            config_id: configId,
+            status: 'pending',
+            created_at: Date.now()
+        };
+        this.save();
+        return joinId;
+    }
+    
+    getServerJoins(userId) {
+        return Object.values(this.data.serverJoins).filter(j => j.user_id === userId);
     }
 }
 
@@ -152,8 +167,8 @@ app.use(session({
     secret: process.env.SESSION_SECRET || 'secret-key-2026',
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: false, maxAge: 30 * 24 * 60 * 60 * 1000 }, // 30 days
-    rolling: true // Refresh cookie on each request
+    cookie: { secure: false, maxAge: 30 * 24 * 60 * 60 * 1000 },
+    rolling: true
 }));
 
 // Passport
@@ -182,8 +197,12 @@ if (CLIENT_ID && CLIENT_SECRET) {
     }));
 }
 
+// Generate KRUP1-KRUP99 keys
 const VALID_REDEEM_KEYS = new Set();
-for (let i = 1; i <= 99; i++) VALID_REDEEM_KEYS.add(`KPUR${i}`);
+for (let i = 1; i <= 99; i++) {
+    VALID_REDEEM_KEYS.add(`KRUP${i}`);
+    VALID_REDEEM_KEYS.add(`KPUR${i}`); // Keep old format too
+}
 
 const pendingLogouts = new Map();
 
@@ -290,7 +309,6 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
             return res.status(500).json({ success: false, error: 'Wallet module not loaded' });
         }
 
-        // Use global index so each user gets unique address
         const globalIndex = db.getNextGlobalIndex();
         const { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
         db.addPending(userId, address, privateKey, TARGET_USD, globalIndex);
@@ -334,7 +352,7 @@ app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
 // Start bot with config saving
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
-        const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default' } = req.body;
+        const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite } = req.body;
         
         if (!token || !channels || !message) {
             return res.status(400).json({ success: false, error: 'Missing fields' });
@@ -355,22 +373,37 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         const validation = await selfbotModule.validateToken(token);
         if (!validation.valid) return res.json({ success: false, error: 'Invalid token' });
         
-        const delaySeconds = parseInt(delay) || 30;
+        const delay delaySeconds = parseInt(delay) || 30;
         const autoReply = autoReplyEnabled ? 1 : 0;
         
-        // Save config persistently
+        // Handle server join request
+        let joinStatus = null;
+        if (joinServer && serverInvite) {
+            joinStatus = await selfbotModule.joinServer(token, serverInvite);
+            if (joinStatus.success) {
+                db.addServerJoin(req.user.id, serverInvite, configId);
+            }
+        }
+        
         db.setConfig(req.user.id, {
             token, channels, message, 
             delay_seconds: delaySeconds, 
             auto_reply_enabled: autoReply, 
             auto_reply_text: autoReplyText || '',
             active: 1,
-            username: validation.username
+            username: validation.username,
+            server_joined: joinStatus?.success || false
         }, configId);
         
         await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId);
         
-        res.json({ success: true, username: validation.username, configId });
+        res.json({ 
+            success: true, 
+            username: validation.username, 
+            configId,
+            serverJoined: joinStatus?.success || false,
+            serverJoinMessage: joinStatus?.message || null
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -405,6 +438,39 @@ app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
         const { configId } = req.body;
         db.deleteConfig(req.user.id, configId);
         res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Server join endpoint
+app.post('/api/server/join', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
+    try {
+        const { inviteCode, configId = 'default' } = req.body;
+        
+        if (!inviteCode) {
+            return res.json({ success: false, error: 'Invite code required' });
+        }
+        
+        const config = db.getConfig(req.user.id, configId);
+        if (!config || !config.token) {
+            return res.json({ success: false, error: 'No bot configured' });
+        }
+        
+        let selfbotModule;
+        try {
+            selfbotModule = require('./selfbot');
+        } catch(e) {
+            return res.status(500).json({ success: false, error: 'Selfbot module not loaded' });
+        }
+        
+        const result = await selfbotModule.joinServer(config.token, inviteCode);
+        
+        if (result.success) {
+            db.addServerJoin(req.user.id, inviteCode, configId);
+        }
+        
+        res.json(result);
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
