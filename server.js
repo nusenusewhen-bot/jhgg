@@ -59,7 +59,7 @@ function ensurePurchased(req, res, next) {
     next();
 }
 
-// ====================== HEALTH & AUTH ======================
+// Health & Auth
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
 app.get('/login', passport.authenticate('discord'));
@@ -73,12 +73,11 @@ app.get('/logout', (req, res) => {
     req.logout(() => res.redirect('/'));
 });
 
-// ====================== API - USER ======================
+// API - User info
 app.get('/api/user', ensureAuth, (req, res) => {
     try {
         const userId = req.user.id;
         const creditsData = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
-        
         res.json({
             credits: creditsData.credits,
             purchased: creditsData.auto_adv_purchased === 1
@@ -88,7 +87,7 @@ app.get('/api/user', ensureAuth, (req, res) => {
     }
 });
 
-// ====================== LIFETIME PURCHASE ($1.50) ======================
+// Lifetime Purchase - $1.50
 app.post('/api/purchase/lifetime', ensureAuth, (req, res) => {
     try {
         const userId = req.user.id;
@@ -114,7 +113,7 @@ app.post('/api/purchase/lifetime', ensureAuth, (req, res) => {
     }
 });
 
-// ====================== CHECK PAYMENT ======================
+// Check payment
 app.post('/api/credits/check', ensureAuth, async (req, res) => {
     try {
         const userId = req.user.id;
@@ -132,7 +131,6 @@ app.post('/api/credits/check', ensureAuth, async (req, res) => {
                 db.prepare('INSERT OR REPLACE INTO user_credits (user_id, auto_adv_purchased, purchased_at) VALUES (?, 1, ?)')
                     .run(userId, Date.now());
             }
-
             return res.json({ success: true });
         }
 
@@ -143,22 +141,21 @@ app.post('/api/credits/check', ensureAuth, async (req, res) => {
     }
 });
 
-// ====================== PAGE ROUTES (IMPORTANT) ======================
+// Page Routes - All point to overall.html
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) return res.redirect('/dashboard');
     res.sendFile(path.join(publicDir, 'overall.html'));
 });
 
 app.get('/dashboard', ensureAuth, (req, res) => {
-    res.sendFile(path.join(publicDir, 'overall.html'));   // ← This must point to overall.html
+    res.sendFile(path.join(publicDir, 'overall.html'));
 });
 
-// Redirect old pages
 app.get('/purchase', ensureAuth, (req, res) => res.redirect('/dashboard'));
 app.get('/configure', ensureAuth, (req, res) => res.redirect('/dashboard'));
 app.get('/credits', ensureAuth, (req, res) => res.redirect('/dashboard'));
 
-// ====================== ERROR HANDLING ======================
+// Error handling
 app.use((err, req, res, next) => {
     console.error('[SERVER ERROR]', err);
     res.status(500).send('Server error');
