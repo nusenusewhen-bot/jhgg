@@ -23,11 +23,11 @@ const CALLBACK_URL = process.env.CALLBACK_URL;
 app.use(express.json());
 app.use(express.static(publicDir));
 
-// ← THIS FIXES THE NETWORK ERROR (CORS)
+// CORS fix for API calls
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
 });
@@ -54,6 +54,12 @@ passport.use(new DiscordStrategy({
     process.nextTick(() => done(null, profile));
 }));
 
+// NEW: API version of auth (returns JSON instead of redirect)
+function ensureAuthAPI(req, res, next) {
+    if (req.isAuthenticated()) return next();
+    return res.status(401).json({ success: false, error: 'Not logged in' });
+}
+
 function ensureAuth(req, res, next) {
     if (req.isAuthenticated()) return next();
     res.redirect('/login');
@@ -74,9 +80,14 @@ app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/dashboard'));
 app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
 
-// Lifetime purchase route
-app.post('/api/purchase/lifetime', ensureAuth, (req, res) => {
-    console.log('Purchase route hit');
+// API routes
+app.get('/api/user', ensureAuthAPI, (req, res) => {
+    const userId = req.user.id;
+    const data = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
+    res.json({ credits: data.credits, purchased: data.auto_adv_purchased === 1 });
+});
+
+app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     try {
         const userId = req.user.id;
         const existing = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(userId);
@@ -97,8 +108,7 @@ app.post('/api/purchase/lifetime', ensureAuth, (req, res) => {
     }
 });
 
-// Check payment
-app.post('/api/credits/check', ensureAuth, async (req, res) => {
+app.post('/api/credits/check', ensureAuthAPI, async (req, res) => {
     try {
         const userId = req.user.id;
         const pending = db.prepare('SELECT * FROM pending_credits WHERE user_id = ? AND (status = "pending" OR status = "pending_purchase")').get(userId);
