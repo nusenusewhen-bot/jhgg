@@ -16,6 +16,22 @@ const litecoin = {
     wif: 0xb0
 };
 
+// Helper to derive scriptPubKey from address
+function getScriptPubKeyFromAddress(address) {
+    try {
+        // Decode base58check address
+        const decoded = bitcoin.address.fromBase58Check(address);
+        
+        // P2PKH scriptPubKey: OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
+        // 76a914{20-byte-pubkey-hash}88ac
+        const pubKeyHash = decoded.hash.toString('hex');
+        return `76a914${pubKeyHash}88ac`;
+    } catch (e) {
+        console.error(`[SCRIPT] Failed to derive scriptPubKey for ${address}:`, e.message);
+        return null;
+    }
+}
+
 function getAddressAtIndex(index, mnemonic) {
     const seed = bip39.mnemonicToSeedSync(mnemonic);
     const seedWithIndex = crypto.createHash('sha256')
@@ -47,15 +63,23 @@ async function getUtxos(address) {
         const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 5000 });
         console.log(`[UTXO] API returned ${res.data.length} items`);
         
+        // Derive scriptPubKey from address since API doesn't provide it
+        const scriptPubKey = getScriptPubKeyFromAddress(address);
+        if (!scriptPubKey) {
+            console.error('[UTXO] Failed to derive scriptPubKey from address');
+            return [];
+        }
+        console.log(`[UTXO] Derived scriptPubKey: ${scriptPubKey.substring(0, 30)}...`);
+        
         return res.data.map(u => {
-            console.log(`[UTXO] Raw: txid=${u.txid?.substring(0,8)}..., vout=${u.vout}, value=${u.value}, scriptPubKey=${u.scriptPubKey?.substring(0,20)}...`);
+            console.log(`[UTXO] Raw: txid=${u.txid?.substring(0,8)}..., vout=${u.vout}, value=${u.value}`);
             return {
                 txid: u.txid,
                 vout: u.vout,
                 value: u.value,
-                scriptpubkey: u.scriptPubKey  // FIXED: was u.scriptpubkey (lowercase)
+                scriptpubkey: scriptPubKey  // Use derived scriptPubKey
             };
-        }).filter(u => u.txid && u.scriptpubkey && u.scriptpubkey.length > 10);
+        }).filter(u => u.txid && u.value > 0);
     } catch (e) {
         console.error('[UTXO] Error:', e.message);
         return [];
