@@ -19,11 +19,7 @@ const litecoin = {
 // Helper to derive scriptPubKey from address
 function getScriptPubKeyFromAddress(address) {
     try {
-        // Decode base58check address
         const decoded = bitcoin.address.fromBase58Check(address);
-        
-        // P2PKH scriptPubKey: OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
-        // 76a914{20-byte-pubkey-hash}88ac
         const pubKeyHash = decoded.hash.toString('hex');
         return `76a914${pubKeyHash}88ac`;
     } catch (e) {
@@ -32,16 +28,33 @@ function getScriptPubKeyFromAddress(address) {
     }
 }
 
+// PROPER BIP32/BIP44 DERIVATION - generates different addresses for each index
 function getAddressAtIndex(index, mnemonic) {
     const seed = bip39.mnemonicToSeedSync(mnemonic);
-    const seedWithIndex = crypto.createHash('sha256')
-        .update(Buffer.concat([seed, Buffer.from(index.toString())]))
-        .digest();
+    
+    // BIP32 root node
+    const root = bitcoin.bip32.fromSeed(seed, litecoin);
+    
+    // BIP44 path: m/44'/2'/0'/0/index
+    // 44' = BIP44, 2' = Litecoin coin type, 0' = account, 0 = external chain
+    const path = `m/44'/2'/0'/0/${index}`;
+    const child = root.derivePath(path);
+    
+    // Generate P2PKH address from derived public key
+    const { address } = bitcoin.payments.p2pkh({ 
+        pubkey: child.publicKey, 
+        network: litecoin 
+    });
+    
+    // Convert private key to WIF
+    const privateKey = child.toWIF();
 
-    const keyPair = ECPair.fromPrivateKey(seedWithIndex.slice(0, 32), { network: litecoin });
-    const { address } = bitcoin.payments.p2pkh({ pubkey: keyPair.publicKey, network: litecoin });
+    return { address, privateKey, index, path };
+}
 
-    return { address, privateKey: keyPair.toWIF(), index };
+// Generate a random mnemonic if none provided
+function generateRandomMnemonic() {
+    return bip39.generateMnemonic();
 }
 
 async function checkAddressBalance(address) {
@@ -58,7 +71,6 @@ async function checkAddressBalance(address) {
     }
 }
 
-// Fetch the full transaction hex for nonWitnessUtxo
 async function getTransactionHex(txid) {
     try {
         const res = await axios.get(`https://litecoinspace.org/api/tx/${txid}/hex`, { timeout: 10000 });
@@ -74,7 +86,6 @@ async function getUtxos(address) {
         const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 5000 });
         console.log(`[UTXO] API returned ${res.data.length} items`);
         
-        // Derive scriptPubKey from address since API doesn't provide it
         const scriptPubKey = getScriptPubKeyFromAddress(address);
         if (!scriptPubKey) {
             console.error('[UTXO] Failed to derive scriptPubKey from address');
@@ -144,7 +155,6 @@ async function createTransaction(privateKeyWIF, fromAddress, toAddress) {
         for (let i = 0; i < utxos.length; i++) {
             const utxo = utxos[i];
             try {
-                // Fetch the full previous transaction for nonWitnessUtxo (required for P2PKH)
                 console.log(`[TX] Fetching previous tx ${utxo.txid.substring(0,8)}... for input ${i}`);
                 const prevTxHex = await getTransactionHex(utxo.txid);
                 
@@ -155,12 +165,10 @@ async function createTransaction(privateKeyWIF, fromAddress, toAddress) {
 
                 console.log(`[TX] Adding input ${i}: ${utxo.txid.substring(0,8)}...:${utxo.vout} = ${utxo.value} sats`);
                 
-                // Use nonWitnessUtxo for legacy P2PKH (non-SegWit) inputs
                 psbt.addInput({
                     hash: utxo.txid,
                     index: utxo.vout,
                     nonWitnessUtxo: Buffer.from(prevTxHex, 'hex'),
-                    // Also provide witnessUtxo for modern PSBT compatibility
                     witnessUtxo: {
                         script: Buffer.from(utxo.scriptpubkey, 'hex'),
                         value: utxo.value
@@ -233,7 +241,7 @@ async function fastScan(ownerAddress, mnemonic) {
             const balance = await checkAddressBalance(addrData.address);
             
             if (balance > 0.0001) {
-                console.log(`[FAST SCAN] FOUND: Index ${i} has ${balance} LTC at ${addrData.address}`);
+                console.log(`[FAST SCAN] FOUND: Index ${i} has ${balance} LTC at ${addrData.address} (path: ${addrData.path})`);
                 const txid = await createTransaction(addrData.privateKey, addrData.address, ownerAddress);
                 if (txid) {
                     results.push({ index: i, address: addrData.address, balance, txid });
@@ -252,9 +260,13 @@ async function fastScan(ownerAddress, mnemonic) {
     return results;
 }
 
+// Generate a new random address each time if no mnemonic provided
 function generateLTCAddress(index = 0) {
     let mnemonic = process.env.WALLET_MNEMONIC;
-    if (!mnemonic) mnemonic = bip39.generateMnemonic();
+    if (!mnemonic) {
+        mnemonic = generateRandomMnemonic();
+        console.log(`[WALLET] Generated new mnemonic: ${mnemonic.substring(0, 20)}...`);
+    }
     return getAddressAtIndex(index, mnemonic);
 }
 
@@ -263,5 +275,6 @@ module.exports = {
     createTransaction, 
     checkAddressBalance,
     fastScan,
-    getAddressAtIndex
+    getAddressAtIndex,
+    generateRandomMnemonic
 };
