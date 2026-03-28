@@ -13,6 +13,7 @@
         .btn-green:hover { background: #34d399; }
         .btn-green:disabled { background: #065f46; cursor: not-allowed; }
         .btn-purple { background: #8b5cf6; color: #fff; font-weight: 700; }
+        .btn-purple:hover { background: #7c3aed; }
         .card { background: #1f2937; border: 1px solid #374151; }
         .nav-link.active { color: #10b981; border-bottom: 3px solid #10b981; }
         .section { display: none; }
@@ -26,6 +27,11 @@
         .redeem-section { border: 2px dashed #8b5cf6; border-radius: 16px; padding: 20px; margin-bottom: 20px; }
         .toggle-checkbox:checked { right: 0; border-color: #10b981; }
         .toggle-checkbox:checked + .toggle-label { background-color: #10b981; }
+        .account-card { background: #111827; border: 1px solid #374151; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+        .account-active { border-color: #10b981; }
+        .status-badge { display: inline-block; padding: 4px 12px; border-radius: 9999px; font-size: 12px; font-weight: 600; }
+        .status-running { background: #064e3b; color: #34d399; }
+        .status-stopped { background: #7f1d1d; color: #fca5a5; }
     </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -102,8 +108,26 @@
         </div>
 
         <div id="section-2" class="section">
-            <div class="card rounded-3xl p-7 max-w-lg mx-auto">
-                <h2 class="text-2xl font-bold mb-8 text-center">Configure Bot</h2>
+            <!-- Active Accounts List -->
+            <div id="active-accounts" class="mb-6 hidden">
+                <h3 class="text-lg font-bold mb-4 text-emerald-400"><i class="fa-solid fa-server mr-2"></i>Running Accounts</h3>
+                <div id="accounts-list"></div>
+            </div>
+
+            <!-- Add New Account Button -->
+            <div class="text-center mb-6">
+                <button onclick="showNewAccountForm()" class="btn-purple px-6 py-3 rounded-2xl font-bold">
+                    <i class="fa-solid fa-plus mr-2"></i>Add Another Account
+                </button>
+            </div>
+
+            <!-- Configuration Form -->
+            <div id="config-form" class="card rounded-3xl p-7 max-w-lg mx-auto">
+                <div class="flex justify-between items-center mb-8">
+                    <h2 class="text-2xl font-bold" id="form-title">Configure Bot</h2>
+                    <span id="account-badge" class="text-xs bg-zinc-700 px-3 py-1 rounded-full hidden">Account #<span id="account-num">1</span></span>
+                </div>
+                
                 <div class="space-y-6">
                     <div>
                         <label class="text-xs text-zinc-400 block mb-2">Discord Token</label>
@@ -141,7 +165,7 @@
                     </div>
                     
                     <div class="flex gap-4">
-                        <button onclick="startBot()" class="flex-1 btn-green py-4 rounded-2xl">Start & Save</button>
+                        <button onclick="startBot()" id="start-btn" class="flex-1 btn-green py-4 rounded-2xl">Start & Save</button>
                         <button onclick="stopBot()" class="flex-1 bg-red-600 hover:bg-red-700 text-white py-4 rounded-2xl">Stop</button>
                     </div>
                     <div id="bot-status" class="text-center text-sm"></div>
@@ -152,6 +176,8 @@
 
     <script>
         let isPurchased = false;
+        let currentConfigId = 'default';
+        let savedConfigs = [];
 
         // Toggle auto-reply visibility
         document.getElementById('auto-reply-toggle').addEventListener('change', function() {
@@ -169,6 +195,10 @@
             document.getElementById('section-' + n).classList.add('active');
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
             document.getElementById('nav-' + n).classList.add('active');
+            
+            if (n === 2) {
+                loadSavedConfigs();
+            }
             return false;
         }
 
@@ -189,8 +219,119 @@
                     document.getElementById('status-text').className = 'text-xl font-medium text-emerald-400';
                     document.getElementById('nav-2').classList.remove('hidden');
                     document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium text-emerald-400">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm">Configure</button>';
+                    
+                    // Pre-load configs
+                    loadSavedConfigs();
                 }
             } catch (err) { console.error(err); }
+        }
+
+        async function loadSavedConfigs() {
+            try {
+                const res = await fetch('/api/bot/configs', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                if (data.success && data.configs) {
+                    savedConfigs = data.configs;
+                    renderAccountsList();
+                }
+            } catch (err) {
+                console.error('Failed to load configs:', err);
+            }
+        }
+
+        function renderAccountsList() {
+            const container = document.getElementById('active-accounts');
+            const list = document.getElementById('accounts-list');
+            
+            if (savedConfigs.length === 0) {
+                container.classList.add('hidden');
+                return;
+            }
+            
+            container.classList.remove('hidden');
+            list.innerHTML = '';
+            
+            savedConfigs.forEach((config, index) => {
+                const isActive = config.active === 1;
+                const card = document.createElement('div');
+                card.className = `account-card ${isActive ? 'account-active' : ''}`;
+                card.innerHTML = `
+                    <div class="flex justify-between items-start mb-2">
+                        <div>
+                            <h4 class="font-bold text-emerald-400">${config.username || 'Unknown'}</h4>
+                            <p class="text-xs text-zinc-500 mt-1">Channels: ${config.channels}</p>
+                        </div>
+                        <span class="status-badge ${isActive ? 'status-running' : 'status-stopped'}">
+                            ${isActive ? 'Running' : 'Stopped'}
+                        </span>
+                    </div>
+                    <div class="flex gap-2 mt-3">
+                        <button onclick="editConfig('${config.id}')" class="flex-1 bg-zinc-700 hover:bg-zinc-600 py-2 rounded-lg text-xs">Edit</button>
+                        <button onclick="deleteConfig('${config.id}')" class="flex-1 bg-red-900 hover:bg-red-800 py-2 rounded-lg text-xs text-red-200">Delete</button>
+                    </div>
+                `;
+                list.appendChild(card);
+            });
+        }
+
+        function showNewAccountForm() {
+            currentConfigId = 'acc_' + Date.now();
+            document.getElementById('form-title').textContent = 'Add New Account';
+            document.getElementById('account-badge').classList.remove('hidden');
+            document.getElementById('account-num').textContent = savedConfigs.length + 1;
+            
+            // Clear form
+            document.getElementById('token').value = '';
+            document.getElementById('channels').value = '';
+            document.getElementById('message').value = '';
+            document.getElementById('delay').value = '30';
+            document.getElementById('auto-reply-toggle').checked = false;
+            document.getElementById('auto-reply-container').classList.add('hidden');
+            document.getElementById('auto-reply-text').value = '';
+            document.getElementById('bot-status').innerHTML = '';
+            
+            // Scroll to form
+            document.getElementById('config-form').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function editConfig(configId) {
+            const config = savedConfigs.find(c => c.id === configId);
+            if (!config) return;
+            
+            currentConfigId = configId;
+            document.getElementById('form-title').textContent = 'Edit Account';
+            document.getElementById('account-badge').classList.add('hidden');
+            
+            // Fill form
+            document.getElementById('token').value = config.token || '';
+            document.getElementById('channels').value = config.channels || '';
+            document.getElementById('message').value = config.message || '';
+            document.getElementById('delay').value = config.delay_seconds || '30';
+            document.getElementById('auto-reply-toggle').checked = config.auto_reply_enabled === 1;
+            if (config.auto_reply_enabled === 1) {
+                document.getElementById('auto-reply-container').classList.remove('hidden');
+            }
+            document.getElementById('auto-reply-text').value = config.auto_reply_text || '';
+            
+            document.getElementById('config-form').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function deleteConfig(configId) {
+            if (!confirm('Delete this account configuration?')) return;
+            
+            try {
+                await fetch('/api/bot/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ configId })
+                });
+                
+                await loadSavedConfigs();
+            } catch (err) {
+                alert('Failed to delete');
+            }
         }
 
         async function redeemKey() {
@@ -241,10 +382,10 @@
                 if (data.success) {
                     result.innerHTML = `
                         <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
-                            <p class="text-emerald-400 text-sm mb-2">Send to:</p>
+                            <p class="text-emerald-400 text-sm mb-2">Send to (Address #${data.index}):</p>
                             <p class="address-box text-emerald-300 text-sm mb-3">${data.address}</p>
                             <button onclick="copy('${data.address}')" class="w-full bg-zinc-800 py-2 rounded-lg text-xs">Copy</button>
-                            <p class="text-zinc-500 text-xs mt-3">24/7 auto-sweep enabled</p>
+                            <p class="text-zinc-500 text-xs mt-3">24/7 auto-sweep enabled • Unique address for you</p>
                         </div>`;
                     
                     setInterval(async () => {
@@ -277,17 +418,17 @@
             const autoReplyEnabled = document.getElementById('auto-reply-toggle').checked;
             const autoReplyText = document.getElementById('auto-reply-text').value.trim();
             const status = document.getElementById('bot-status');
+            const btn = document.getElementById('start-btn');
             
             if (!token || !channels || !message) {
                 status.innerHTML = '<span class="text-red-400">Fill all fields</span>';
                 return;
             }
             
-            // Validate channels are numeric
             const channelArray = channels.split(',').map(c => c.trim());
             const invalidChannels = channelArray.filter(c => !/^\d+$/.test(c));
             if (invalidChannels.length > 0) {
-                status.innerHTML = '<span class="text-red-400">Channel IDs must be numbers only (e.g., 123456789012345678)</span>';
+                status.innerHTML = '<span class="text-red-400">Channel IDs must be numbers only</span>';
                 return;
             }
             
@@ -296,6 +437,7 @@
                 return;
             }
             
+            btn.disabled = true;
             status.innerHTML = '<span class="text-yellow-400">Validating...</span>';
             
             try {
@@ -303,21 +445,47 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
-                    body: JSON.stringify({ token, channels, message, delay, autoReplyEnabled, autoReplyText })
+                    body: JSON.stringify({ 
+                        token, channels, message, delay, 
+                        autoReplyEnabled, autoReplyText, 
+                        configId: currentConfigId 
+                    })
                 });
                 const data = await res.json();
-                status.innerHTML = data.success ? `<span class="text-emerald-400">Running as ${data.username}!</span>` : `<span class="text-red-400">${data.error}</span>`;
+                
+                if (data.success) {
+                    status.innerHTML = `<span class="text-emerald-400">Running as ${data.username}! Saved permanently.</span>`;
+                    await loadSavedConfigs();
+                    
+                    // Reset to default form after short delay
+                    setTimeout(() => {
+                        document.getElementById('form-title').textContent = 'Configure Bot';
+                        document.getElementById('account-badge').classList.add('hidden');
+                        currentConfigId = 'default';
+                    }, 2000);
+                } else {
+                    status.innerHTML = `<span class="text-red-400">${data.error}</span>`;
+                }
             } catch (err) {
                 status.innerHTML = '<span class="text-red-400">Error</span>';
+            } finally {
+                btn.disabled = false;
             }
         }
 
         async function stopBot() {
             const status = document.getElementById('bot-status');
             try {
-                const res = await fetch('/api/bot/stop', { method: 'POST', credentials: 'same-origin' });
+                const res = await fetch('/api/bot/stop', { 
+                    method: 'POST', 
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ configId: currentConfigId })
+                });
                 const data = await res.json();
-                status.innerHTML = data.success ? '<span class="text-zinc-400">Stopped</span>' : '<span class="text-red-400">Failed</span>';
+                status.innerHTML = data.success ? '<span class="text-zinc-400">Stopped & Saved</span>' : '<span class="text-red-400">Failed</span>';
+                
+                if (data.success) await loadSavedConfigs();
             } catch (err) {
                 status.innerHTML = '<span class="text-red-400">Error</span>';
             }
@@ -350,7 +518,15 @@
             } catch (err) {}
         }
 
-        window.onload = () => { loadUserData(); };
+        // Load on start
+        window.onload = () => { 
+            loadUserData();
+            
+            // Keep session alive with periodic pings
+            setInterval(() => {
+                fetch('/api/user', { credentials: 'same-origin' }).catch(() => {});
+            }, 60000); // Every minute
+        };
     </script>
 </body>
 </html>
