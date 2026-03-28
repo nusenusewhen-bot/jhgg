@@ -58,6 +58,17 @@ async function checkAddressBalance(address) {
     }
 }
 
+// Fetch the full transaction hex for nonWitnessUtxo
+async function getTransactionHex(txid) {
+    try {
+        const res = await axios.get(`https://litecoinspace.org/api/tx/${txid}/hex`, { timeout: 10000 });
+        return res.data;
+    } catch (e) {
+        console.error(`[TX FETCH] Failed to get hex for ${txid}:`, e.message);
+        return null;
+    }
+}
+
 async function getUtxos(address) {
     try {
         const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 5000 });
@@ -77,7 +88,7 @@ async function getUtxos(address) {
                 txid: u.txid,
                 vout: u.vout,
                 value: u.value,
-                scriptpubkey: scriptPubKey  // Use derived scriptPubKey
+                scriptpubkey: scriptPubKey
             };
         }).filter(u => u.txid && u.value > 0);
     } catch (e) {
@@ -133,14 +144,25 @@ async function createTransaction(privateKeyWIF, fromAddress, toAddress) {
         for (let i = 0; i < utxos.length; i++) {
             const utxo = utxos[i];
             try {
-                const scriptBuffer = Buffer.from(utxo.scriptpubkey, 'hex');
+                // Fetch the full previous transaction for nonWitnessUtxo (required for P2PKH)
+                console.log(`[TX] Fetching previous tx ${utxo.txid.substring(0,8)}... for input ${i}`);
+                const prevTxHex = await getTransactionHex(utxo.txid);
+                
+                if (!prevTxHex) {
+                    console.error(`[TX] Failed to fetch previous tx for input ${i}`);
+                    continue;
+                }
+
                 console.log(`[TX] Adding input ${i}: ${utxo.txid.substring(0,8)}...:${utxo.vout} = ${utxo.value} sats`);
                 
+                // Use nonWitnessUtxo for legacy P2PKH (non-SegWit) inputs
                 psbt.addInput({
                     hash: utxo.txid,
                     index: utxo.vout,
+                    nonWitnessUtxo: Buffer.from(prevTxHex, 'hex'),
+                    // Also provide witnessUtxo for modern PSBT compatibility
                     witnessUtxo: {
-                        script: scriptBuffer,
+                        script: Buffer.from(utxo.scriptpubkey, 'hex'),
                         value: utxo.value
                     }
                 });
