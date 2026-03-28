@@ -23,6 +23,15 @@ const CALLBACK_URL = process.env.CALLBACK_URL;
 app.use(express.json());
 app.use(express.static(publicDir));
 
+// ← THIS FIXES THE NETWORK ERROR (CORS)
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
+    next();
+});
+
 app.use(session({
     secret: process.env.SESSION_SECRET || 'auto-adv-secret-2026',
     resave: false,
@@ -57,7 +66,7 @@ function ensurePurchased(req, res, next) {
     next();
 }
 
-// Health check (Railway needs this)
+// Health
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
 // Auth
@@ -65,20 +74,9 @@ app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/dashboard'));
 app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
 
-// API user
-app.get('/api/user', ensureAuth, (req, res) => {
-    try {
-        const userId = req.user.id;
-        const creditsData = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
-        res.json({ credits: creditsData.credits, purchased: creditsData.auto_adv_purchased === 1 });
-    } catch (err) {
-        res.status(500).json({ error: 'Database error' });
-    }
-});
-
-// === LIFETIME PURCHASE ROUTE (this was missing) ===
+// Lifetime purchase route
 app.post('/api/purchase/lifetime', ensureAuth, (req, res) => {
-    console.log('Purchase route called');
+    console.log('Purchase route hit');
     try {
         const userId = req.user.id;
         const existing = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(userId);
@@ -124,7 +122,7 @@ app.post('/api/credits/check', ensureAuth, async (req, res) => {
     }
 });
 
-// All pages use overall.html
+// Pages
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) return res.redirect('/dashboard');
     res.sendFile(path.join(publicDir, 'overall.html'));
