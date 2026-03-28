@@ -1,11 +1,13 @@
 const bip39 = require('bip39');
 const bitcoin = require('bitcoinjs-lib');
+const { BIP32Factory } = require('bip32');  // Changed for v4
 const crypto = require('crypto');
 const ECPairFactory = require('ecpair').default;
 const tinysecp = require('tiny-secp256k1');
 const axios = require('axios');
 
 const ECPair = ECPairFactory(tinysecp);
+const bip32 = BIP32Factory(tinysecp);  // Initialize bip32 with tiny-secp256k1
 
 const litecoin = {
     messagePrefix: '\x19Litecoin Signed Message:\n',
@@ -32,11 +34,10 @@ function getScriptPubKeyFromAddress(address) {
 function getAddressAtIndex(index, mnemonic) {
     const seed = bip39.mnemonicToSeedSync(mnemonic);
     
-    // BIP32 root node
-    const root = bitcoin.bip32.fromSeed(seed, litecoin);
+    // Use bip32 factory initialized with tiny-secp256k1
+    const root = bip32.fromSeed(seed, litecoin);
     
     // BIP44 path: m/44'/2'/0'/0/index
-    // 44' = BIP44, 2' = Litecoin coin type, 0' = account, 0 = external chain
     const path = `m/44'/2'/0'/0/${index}`;
     const child = root.derivePath(path);
     
