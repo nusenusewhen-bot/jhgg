@@ -45,67 +45,138 @@ async function checkAddressBalance(address) {
 async function getUtxos(address) {
     try {
         const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 5000 });
-        return res.data.map(u => ({
-            txid: u.txid,
-            vout: u.vout,
-            value: u.value,
-            scriptpubkey: u.scriptpubkey
-        })).filter(u => u.txid && u.scriptpubkey);
+        console.log(`[UTXO] API returned ${res.data.length} items`);
+        
+        return res.data.map(u => {
+            console.log(`[UTXO] Raw: txid=${u.txid?.substring(0,8)}..., vout=${u.vout}, value=${u.value}, scriptpubkey=${u.scriptpubkey?.substring(0,20)}...`);
+            return {
+                txid: u.txid,
+                vout: u.vout,
+                value: u.value,
+                scriptpubkey: u.scriptpubkey
+            };
+        }).filter(u => u.txid && u.scriptpubkey && u.scriptpubkey.length > 10);
     } catch (e) {
+        console.error('[UTXO] Error:', e.message);
         return [];
     }
 }
 
 async function broadcastTx(txHex) {
     try {
+        console.log('[BROADCAST] Sending tx...');
         const res = await axios.post('https://litecoinspace.org/api/tx', txHex, {
             headers: { 'Content-Type': 'text/plain' },
             timeout: 10000
         });
+        console.log('[BROADCAST] Success:', res.data);
         return res.data;
     } catch (e) {
-        throw new Error('Broadcast failed: ' + e.message);
+        console.error('[BROADCAST] Failed:', e.message);
+        if (e.response) {
+            console.error('[BROADCAST] Response:', e.response.data);
+        }
+        throw e;
     }
 }
 
 async function createTransaction(privateKeyWIF, fromAddress, toAddress) {
+    console.log(`[TX] Starting: ${fromAddress} -> ${toAddress}`);
+    console.log(`[TX] Private key: ${privateKeyWIF.substring(0, 10)}...`);
+    
     try {
-        const keyPair = ECPair.fromWIF(privateKeyWIF, litecoin);
+        let keyPair;
+        try {
+            keyPair = ECPair.fromWIF(privateKeyWIF, litecoin);
+            console.log('[TX] Key pair loaded, public key:', keyPair.publicKey.toString('hex').substring(0, 20) + '...');
+        } catch (e) {
+            console.error('[TX] Invalid private key:', e.message);
+            return null;
+        }
+        
         const utxos = await getUtxos(fromAddress);
-        if (!utxos.length) return null;
+        console.log(`[TX] Got ${utxos.length} valid UTXOs`);
+        
+        if (!utxos.length) {
+            console.log('[TX] No UTXOs to spend');
+            return null;
+        }
 
         const psbt = new bitcoin.Psbt({ network: litecoin });
         let inputSum = 0;
+        let addedInputs = 0;
 
-        for (const utxo of utxos) {
-            psbt.addInput({
-                hash: utxo.txid,
-                index: utxo.vout,
-                witnessUtxo: {
-                    script: Buffer.from(utxo.scriptpubkey, 'hex'),
-                    value: utxo.value
-                }
-            });
-            inputSum += utxo.value;
+        for (let i = 0; i < utxos.length; i++) {
+            const utxo = utxos[i];
+            try {
+                const scriptBuffer = Buffer.from(utxo.scriptpubkey, 'hex');
+                console.log(`[TX] Adding input ${i}: ${utxo.txid.substring(0,8)}...:${utxo.vout} = ${utxo.value} sats`);
+                
+                psbt.addInput({
+                    hash: utxo.txid,
+                    index: utxo.vout,
+                    witnessUtxo: {
+                        script: scriptBuffer,
+                        value: utxo.value
+                    }
+                });
+                inputSum += utxo.value;
+                addedInputs++;
+            } catch (e) {
+                console.error(`[TX] Failed to add input ${i}:`, e.message);
+            }
+        }
+
+        console.log(`[TX] Added ${addedInputs} inputs, total: ${inputSum} sats`);
+
+        if (addedInputs === 0) {
+            console.error('[TX] No valid inputs added');
+            return null;
         }
 
         const fee = 10000;
         const sendAmount = inputSum - fee;
-        if (sendAmount <= 546) return null;
+
+        if (sendAmount <= 546) {
+            console.log(`[TX] Amount ${sendAmount} too small (dust)`);
+            return null;
+        }
+
+        console.log(`[TX] Fee: ${fee}, Sending: ${sendAmount} sats to ${toAddress}`);
 
         psbt.addOutput({ address: toAddress, value: sendAmount });
-        psbt.signAllInputs(keyPair);
-        psbt.finalizeAllInputs();
+        
+        console.log('[TX] Signing inputs...');
+        for (let i = 0; i < addedInputs; i++) {
+            try {
+                psbt.signInput(i, keyPair);
+                console.log(`[TX] Signed input ${i}`);
+            } catch (e) {
+                console.error(`[TX] Failed to sign input ${i}:`, e.message);
+                return null;
+            }
+        }
+        
+        console.log('[TX] Finalizing...');
+        try {
+            psbt.finalizeAllInputs();
+        } catch (e) {
+            console.error('[TX] Finalize failed:', e.message);
+            return null;
+        }
 
         const txHex = psbt.extractTransaction().toHex();
-        return await broadcastTx(txHex);
+        console.log('[TX] Transaction built, hex length:', txHex.length);
+        
+        const txid = await broadcastTx(txHex);
+        console.log('[TX] SUCCESS:', txid);
+        return txid;
     } catch (e) {
-        console.error('[TX] Error:', e.message);
+        console.error('[TX] Fatal error:', e.message);
         return null;
     }
 }
 
-// FAST SCAN: Only check index 0-50 where your money is
 async function fastScan(ownerAddress, mnemonic) {
     console.log('[FAST SCAN] Checking indices 0-50...');
     const results = [];
@@ -115,20 +186,21 @@ async function fastScan(ownerAddress, mnemonic) {
             const addrData = getAddressAtIndex(i, mnemonic);
             const balance = await checkAddressBalance(addrData.address);
             
-            if (balance > 0) {
-                console.log(`[FAST SCAN] FOUND: Index ${i} has ${balance} LTC`);
+            if (balance > 0.0001) {
+                console.log(`[FAST SCAN] FOUND: Index ${i} has ${balance} LTC at ${addrData.address}`);
                 const txid = await createTransaction(addrData.privateKey, addrData.address, ownerAddress);
                 if (txid) {
                     results.push({ index: i, address: addrData.address, balance, txid });
-                    console.log(`[FAST SCAN] SENT: ${txid}`);
+                    console.log(`[FAST SCAN] SWEPT: ${txid}`);
+                } else {
+                    console.log(`[FAST SCAN] FAILED to sweep index ${i}`);
                 }
             }
         } catch (e) {
-            console.error(`[FAST SCAN] Index ${i}:`, e.message);
+            console.error(`[FAST SCAN] Index ${i} error:`, e.message);
         }
         
-        // No delay - check fast
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 100));
     }
     
     return results;
