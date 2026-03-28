@@ -11,14 +11,17 @@
         .green { color: #10b981; }
         .btn-green { background: #10b981; color: #000; font-weight: 700; }
         .btn-green:hover { background: #34d399; }
+        .btn-green:disabled { background: #065f46; cursor: not-allowed; }
         .card { background: #1f2937; border: 1px solid #374151; }
         .nav-link.active { color: #10b981; border-bottom: 3px solid #10b981; }
         .section { display: none; }
         .section.active { display: block; }
-        .address-box { font-family: monospace; word-break: break-all; font-size: 14px; }
+        .address-box { font-family: monospace; word-break: break-all; font-size: 14px; background: #0a0a0a; padding: 12px; border-radius: 8px; border: 1px solid #10b981; }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; align-items: center; justify-content: center; }
         .modal.active { display: flex; }
         .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; }
+        .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
+        .success-text { color: #10b981; font-size: 14px; margin-top: 8px; }
     </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -42,9 +45,9 @@
                 <h1 class="text-xl font-bold">Auto Adv</h1>
             </div>
             <div class="flex gap-4 text-sm font-medium overflow-x-auto whitespace-nowrap pb-1">
-                <a href="#" onclick="switchTab(0)" class="nav-link active px-4 py-2" id="nav-0">Dashboard</a>
-                <a href="#" onclick="switchTab(1)" class="nav-link px-4 py-2" id="nav-1">Purchase</a>
-                <a href="#" onclick="switchTab(2)" class="nav-link px-4 py-2 hidden" id="nav-2">Configure</a>
+                <a href="#" onclick="switchTab(0); return false;" class="nav-link active px-4 py-2" id="nav-0">Dashboard</a>
+                <a href="#" onclick="switchTab(1); return false;" class="nav-link px-4 py-2" id="nav-1">Purchase</a>
+                <a href="#" onclick="switchTab(2); return false;" class="nav-link px-4 py-2 hidden" id="nav-2">Configure</a>
             </div>
             <div class="flex items-center gap-3">
                 <div id="user-display" class="flex items-center gap-2">
@@ -104,8 +107,9 @@
                     </div>
                     <div class="flex gap-4">
                         <button onclick="startBot()" class="flex-1 btn-green py-4 rounded-2xl">Start Bot</button>
-                        <button onclick="stopBot()" class="flex-1 bg-red-600 py-4 rounded-2xl">Stop Bot</button>
+                        <button onclick="stopBot()" class="flex-1 bg-red-600 hover:bg-red-700 text-white py-4 rounded-2xl">Stop Bot</button>
                     </div>
+                    <div id="bot-status" class="text-center text-sm text-zinc-400"></div>
                 </div>
             </div>
         </div>
@@ -114,136 +118,283 @@
     <script>
         let isPurchased = false;
         let currentUser = null;
+        let checkInterval = null;
 
         function switchTab(n) {
-            if (n === 2 && !isPurchased) { alert("Purchase first!"); return; }
+            if (n === 2 && !isPurchased) { 
+                alert("Purchase first!"); 
+                return false; 
+            }
             document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
             document.getElementById('section-' + n).classList.add('active');
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
             document.getElementById('nav-' + n).classList.add('active');
+            return false;
         }
 
         async function loadUserData() {
             try {
                 const res = await fetch('/api/user');
-                if (!res.ok) throw new Error('Not authenticated');
+                if (!res.ok) {
+                    if (res.status === 401) {
+                        window.location.href = '/login';
+                        return;
+                    }
+                    throw new Error('Failed to load user data');
+                }
                 const data = await res.json();
                 currentUser = data;
                 
                 const userDisplay = document.getElementById('user-display');
-                const displayName = data.global_name || data.username;
+                const displayName = data.global_name || data.username || 'User';
                 const avatarUrl = data.avatar 
                     ? 'https://cdn.discordapp.com/avatars/' + data.id + '/' + data.avatar + '.png?size=64'
                     : 'https://cdn.discordapp.com/embed/avatars/0.png';
                 
-                userDisplay.innerHTML = '<img src="' + avatarUrl + '" alt="avatar" class="user-avatar"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full">' + displayName + '</span>';
+                userDisplay.innerHTML = '<img src="' + avatarUrl + '" alt="avatar" class="user-avatar" onerror="this.src=\'https://cdn.discordapp.com/embed/avatars/0.png\'"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full">' + displayName + '</span>';
                 
-                document.getElementById('credits-display').textContent = '$' + (data.credits || 0).toFixed(2);
+                document.getElementById('credits-display').textContent = '$' + (parseFloat(data.credits) || 0).toFixed(2);
                 
                 if (data.purchased) {
                     isPurchased = true;
                     document.getElementById('status-text').textContent = 'Active';
                     document.getElementById('status-text').className = 'text-xl font-medium text-emerald-400';
                     document.getElementById('nav-2').classList.remove('hidden');
+                    
+                    const statusBox = document.getElementById('status-box');
+                    statusBox.innerHTML = '<p class="text-xl font-medium text-emerald-400">Active</p><p class="text-zinc-400 text-sm mt-2">Lifetime access enabled</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm">Configure Bot</button>';
                 }
             } catch (err) {
                 console.error('Failed to load user:', err);
-                if (err.message === 'Not authenticated') window.location.href = '/login';
+                document.getElementById('user-display').innerHTML = '<span class="text-xs bg-red-900 text-red-200 px-3 py-1 rounded-full">Error</span>';
             }
         }
 
         async function initiateLogout() {
             if (!confirm("Logout?")) return;
             try {
-                const res = await fetch('/api/logout/request', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                const res = await fetch('/api/logout/request', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin'
+                });
                 const data = await res.json();
-                if (data.success) document.getElementById('logout-modal').classList.add('active');
-                else alert(data.error || 'Failed');
-            } catch (err) { alert('Network error'); }
+                if (data.success) {
+                    document.getElementById('logout-modal').classList.add('active');
+                } else {
+                    alert(data.error || 'Failed to initiate logout');
+                }
+            } catch (err) { 
+                console.error('Logout error:', err);
+                alert('Network error during logout'); 
+            }
         }
 
         function closeLogoutModal() {
             document.getElementById('logout-modal').classList.remove('active');
             document.getElementById('logout-code').value = '';
-            document.getElementById('logout-error').classList.add('hidden');
+            const errorEl = document.getElementById('logout-error');
+            if (errorEl) errorEl.classList.add('hidden');
         }
 
         async function verifyLogout() {
             const code = document.getElementById('logout-code').value.trim();
             const errorEl = document.getElementById('logout-error');
-            if (!code) { errorEl.textContent = 'Enter code'; errorEl.classList.remove('hidden'); return; }
+            
+            if (!code) { 
+                errorEl.textContent = 'Enter code'; 
+                errorEl.classList.remove('hidden'); 
+                return; 
+            }
+            
             try {
-                const res = await fetch('/api/logout/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code }) });
+                const res = await fetch('/api/logout/verify', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ code: code }) 
+                });
                 const data = await res.json();
-                if (data.success) window.location.href = '/';
-                else { errorEl.textContent = data.error || 'Invalid'; errorEl.classList.remove('hidden'); }
-            } catch (err) { errorEl.textContent = 'Error'; errorEl.classList.remove('hidden'); }
+                if (data.success) {
+                    window.location.href = '/';
+                } else { 
+                    errorEl.textContent = data.error || 'Invalid code'; 
+                    errorEl.classList.remove('hidden'); 
+                }
+            } catch (err) { 
+                errorEl.textContent = 'Network error'; 
+                errorEl.classList.remove('hidden'); 
+            }
         }
 
-        document.getElementById('logout-modal').addEventListener('click', (e) => { if (e.target.id === 'logout-modal') closeLogoutModal(); });
-        document.getElementById('logout-code').addEventListener('keypress', (e) => { if (e.key === 'Enter') verifyLogout(); });
+        document.getElementById('logout-modal').addEventListener('click', (e) => { 
+            if (e.target.id === 'logout-modal') closeLogoutModal(); 
+        });
+        
+        document.getElementById('logout-code').addEventListener('keypress', (e) => { 
+            if (e.key === 'Enter') verifyLogout(); 
+        });
 
         async function purchaseLifetime() {
             const btn = document.getElementById('buy-btn');
             const result = document.getElementById('payment-result');
-            btn.disabled = true; btn.textContent = "Generating..."; result.innerHTML = "";
+            
+            btn.disabled = true; 
+            btn.textContent = "Generating..."; 
+            result.innerHTML = "";
+            
             try {
-                const res = await fetch('/api/purchase/lifetime', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                const res = await fetch('/api/purchase/lifetime', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin'
+                });
+                
+                if (!res.ok) {
+                    throw new Error('Server returned ' + res.status);
+                }
+                
                 const data = await res.json();
-                if (data.success) {
-                    result.innerHTML = '<div class="bg-zinc-900 p-5 rounded-2xl"><p class="text-emerald-400 text-sm mb-2">Send exactly <strong>0.000015 LTC</strong> to:</p><p class="address-box text-emerald-300 text-sm">' + data.address + '</p></div>';
-                    setTimeout(() => checkPaymentStatus(), 10000);
-                } else result.innerHTML = '<p class="text-red-400">' + (data.error || "Failed") + '</p>';
-            } catch (err) { result.innerHTML = '<p class="text-red-400">Network error</p>'; }
-            finally { btn.disabled = false; btn.textContent = "Generate LTC Address"; }
+                
+                if (data.success && data.address) {
+                    result.innerHTML = 
+                        '<div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">' +
+                        '<p class="text-emerald-400 text-sm mb-2">Send exactly <strong>0.000015 LTC</strong> to:</p>' +
+                        '<p class="address-box text-emerald-300 text-sm mb-3">' + data.address + '</p>' +
+                        '<button onclick="copyAddress(\'' + data.address + '\')" class="w-full bg-zinc-800 hover:bg-zinc-700 py-2 rounded-lg text-xs">Copy Address</button>' +
+                        '<p class="text-zinc-500 text-xs mt-3">Waiting for payment... Checking every 10 seconds</p>' +
+                        '</div>';
+                    
+                    if (checkInterval) clearInterval(checkInterval);
+                    checkInterval = setTimeout(() => checkPaymentStatus(), 10000);
+                } else {
+                    result.innerHTML = '<p class="error-text">' + (data.error || "Failed to generate address") + '</p>';
+                }
+            } catch (err) { 
+                console.error('Purchase error:', err);
+                result.innerHTML = '<p class="error-text">Error: ' + (err.message || "Network error") + '</p>'; 
+            } finally { 
+                btn.disabled = false; 
+                btn.textContent = "Generate LTC Address"; 
+            }
+        }
+
+        function copyAddress(addr) {
+            navigator.clipboard.writeText(addr).then(() => {
+                alert('Address copied!');
+            }).catch(() => {
+                const ta = document.createElement('textarea');
+                ta.value = addr;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                alert('Address copied!');
+            });
         }
 
         async function checkPaymentStatus() {
             try {
-                const res = await fetch('/api/credits/check', { method: 'POST' });
+                const res = await fetch('/api/credits/check', { 
+                    method: 'POST',
+                    credentials: 'same-origin'
+                });
+                
+                if (!res.ok) throw new Error('Check failed');
+                
                 const data = await res.json();
+                
                 if (data.success) {
-                    isPurchased = true; document.getElementById('nav-2').classList.remove('hidden'); switchTab(0);
-                    alert("Payment confirmed!"); loadUserData();
-                } else setTimeout(() => checkPaymentStatus(), 10000);
-            } catch (e) { setTimeout(() => checkPaymentStatus(), 15000); }
+                    if (checkInterval) clearInterval(checkInterval);
+                    isPurchased = true; 
+                    document.getElementById('nav-2').classList.remove('hidden'); 
+                    switchTab(0);
+                    alert("Payment confirmed! Access granted."); 
+                    loadUserData();
+                } else {
+                    checkInterval = setTimeout(() => checkPaymentStatus(), 10000);
+                }
+            } catch (e) { 
+                console.error('Check error:', e);
+                checkInterval = setTimeout(() => checkPaymentStatus(), 15000); 
+            }
         }
 
         async function startBot() {
             const token = document.getElementById('token').value.trim();
             const channels = document.getElementById('channels').value.trim();
             const message = document.getElementById('message').value.trim();
+            const statusEl = document.getElementById('bot-status');
             
-            if (!token || !channels || !message) {
-                alert("Fill all fields");
+            if (!token) {
+                statusEl.innerHTML = '<span class="text-red-400">Enter Discord token</span>';
                 return;
             }
+            if (!channels) {
+                statusEl.innerHTML = '<span class="text-red-400">Enter channel IDs</span>';
+                return;
+            }
+            if (!message) {
+                statusEl.innerHTML = '<span class="text-red-400">Enter message</span>';
+                return;
+            }
+            
+            statusEl.innerHTML = '<span class="text-yellow-400">Starting...</span>';
             
             try {
                 const res = await fetch('/api/bot/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
                     body: JSON.stringify({ token, channels, message })
                 });
+                
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({}));
+                    throw new Error(errorData.error || 'Server error ' + res.status);
+                }
+                
                 const data = await res.json();
-                if (data.success) alert("Bot started! Check console for logs.");
-                else alert(data.error || "Failed to start");
+                
+                if (data.success) {
+                    statusEl.innerHTML = '<span class="text-emerald-400">Bot running! Sending every 30s</span>';
+                } else {
+                    statusEl.innerHTML = '<span class="text-red-400">' + (data.error || "Failed to start") + '</span>';
+                }
             } catch (err) {
-                alert("Network error");
+                console.error('Start error:', err);
+                statusEl.innerHTML = '<span class="text-red-400">Error: ' + err.message + '</span>';
             }
         }
 
         async function stopBot() {
+            const statusEl = document.getElementById('bot-status');
+            statusEl.innerHTML = '<span class="text-yellow-400">Stopping...</span>';
+            
             try {
-                const res = await fetch('/api/bot/stop', { method: 'POST' });
+                const res = await fetch('/api/bot/stop', { 
+                    method: 'POST',
+                    credentials: 'same-origin'
+                });
+                
+                if (!res.ok) throw new Error('Stop failed');
+                
                 const data = await res.json();
-                if (data.success) alert("Bot stopped!");
+                
+                if (data.success) {
+                    statusEl.innerHTML = '<span class="text-zinc-400">Bot stopped</span>';
+                } else {
+                    statusEl.innerHTML = '<span class="text-red-400">' + (data.error || "Failed") + '</span>';
+                }
             } catch (err) {
-                alert("Error stopping");
+                statusEl.innerHTML = '<span class="text-red-400">Error stopping</span>';
             }
         }
 
-        window.onload = () => { loadUserData(); switchTab(0); };
+        window.onload = () => { 
+            loadUserData(); 
+            switchTab(0); 
+        };
     </script>
 </body>
 </html>
