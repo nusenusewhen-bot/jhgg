@@ -6,15 +6,14 @@ const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
 
-// Database setup - use simple JSON file if sqlite fails
+// Database setup
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// Simple file-based DB to avoid native module issues
 class SimpleDB {
     constructor() {
         this.file = path.join(dataDir, 'db.json');
-        this.data = { users: {}, pending: {}, configs: {}, usedKeys: {} };
+        this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0 };
         this.load();
     }
     
@@ -41,14 +40,22 @@ class SimpleDB {
         this.save();
     }
     
-    addPending(userId, address, privateKey, expectedUSD) {
+    // Global index for unique addresses across all users
+    getNextGlobalIndex() {
+        this.data.globalIndex = (this.data.globalIndex || 0) + 1;
+        this.save();
+        return this.data.globalIndex;
+    }
+    
+    addPending(userId, address, privateKey, expectedUSD, index) {
         this.data.pending[address] = {
             user_id: userId,
             address,
             private_key: privateKey,
             expected_usd: expectedUSD,
             status: 'monitoring',
-            created_at: Date.now()
+            created_at: Date.now(),
+            index: index
         };
         this.save();
         return this.data.pending[address];
@@ -78,13 +85,42 @@ class SimpleDB {
         return !!this.data.usedKeys[key];
     }
     
-    getConfig(userId) {
-        return this.data.configs[userId];
+    // Support multiple configs per user (array)
+    getConfigs(userId) {
+        return this.data.configs[userId] || [];
     }
     
-    setConfig(userId, config) {
-        this.data.configs[userId] = config;
+    getConfig(userId, configId = 'default') {
+        const configs = this.getConfigs(userId);
+        return configs.find(c => c.id === configId) || configs[0] || null;
+    }
+    
+    setConfig(userId, config, configId = 'default') {
+        if (!this.data.configs[userId]) {
+            this.data.configs[userId] = [];
+        }
+        const existingIndex = this.data.configs[userId].findIndex(c => c.id === configId);
+        const configData = { ...config, id: configId, updated_at: Date.now() };
+        
+        if (existingIndex >= 0) {
+            this.data.configs[userId][existingIndex] = configData;
+        } else {
+            this.data.configs[userId].push(configData);
+        }
         this.save();
+    }
+    
+    deleteConfig(userId, configId) {
+        if (this.data.configs[userId]) {
+            this.data.configs[userId] = this.data.configs[userId].filter(c => c.id !== configId);
+            this.save();
+        }
+    }
+    
+    // Get all active bot instances for a user
+    getActiveConfigs(userId) {
+        const configs = this.getConfigs(userId);
+        return configs.filter(c => c.active === 1);
     }
 }
 
@@ -111,12 +147,13 @@ app.use((req, res, next) => {
     next();
 });
 
-// Session
+// Session - extended for longer persistence
 app.use(session({
     secret: process.env.SESSION_SECRET || 'secret-key-2026',
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: false, maxAge: 7 * 24 * 60 * 60 * 1000 }
+    cookie: { secure: false, maxAge: 30 * 24 * 60 * 60 * 1000 }, // 30 days
+    rolling: true // Refresh cookie on each request
 }));
 
 // Passport
@@ -193,7 +230,6 @@ async function checkAndSweep() {
                 if (txid) {
                     console.log(`[SWEEP] SUCCESS: ${txid}`);
                     
-                    // Grant access if enough
                     const ltcPrice = await getLTCToUSD();
                     const usdValue = balance * ltcPrice;
                     
@@ -209,7 +245,6 @@ async function checkAndSweep() {
     }
 }
 
-// Get LTC price
 let cachedPrice = 85;
 async function getLTCToUSD() {
     try {
@@ -219,11 +254,9 @@ async function getLTCToUSD() {
     return cachedPrice;
 }
 
-// Start auto-sweep every 10 seconds
 if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
     console.log('[AUTO-SWEEP] Starting 10-second interval');
     setInterval(checkAndSweep, 10000);
-    // Run immediately on start
     setTimeout(checkAndSweep, 5000);
 }
 
@@ -243,6 +276,7 @@ app.get('/api/user', ensureAuthAPI, (req, res) => {
     });
 });
 
+// Generate unique address using global index
 app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     try {
         const userId = req.user.id;
@@ -256,10 +290,12 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
             return res.status(500).json({ success: false, error: 'Wallet module not loaded' });
         }
 
-        const { address, privateKey } = walletModule.generateLTCAddress();
-        db.addPending(userId, address, privateKey, TARGET_USD);
+        // Use global index so each user gets unique address
+        const globalIndex = db.getNextGlobalIndex();
+        const { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
+        db.addPending(userId, address, privateKey, TARGET_USD, globalIndex);
 
-        res.json({ success: true, address, amountUSD: TARGET_USD });
+        res.json({ success: true, address, amountUSD: TARGET_USD, index: globalIndex });
     } catch (err) {
         console.error('[PURCHASE ERROR]', err);
         res.status(500).json({ success: false, error: err.message });
@@ -289,9 +325,16 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
     }
 });
 
+// Get all saved configs
+app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
+    const configs = db.getConfigs(req.user.id);
+    res.json({ success: true, configs });
+});
+
+// Start bot with config saving
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
-        const { token, channels, message, delay, autoReplyEnabled, autoReplyText } = req.body;
+        const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default' } = req.body;
         
         if (!token || !channels || !message) {
             return res.status(400).json({ success: false, error: 'Missing fields' });
@@ -315,24 +358,28 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         const delaySeconds = parseInt(delay) || 30;
         const autoReply = autoReplyEnabled ? 1 : 0;
         
+        // Save config persistently
         db.setConfig(req.user.id, {
             token, channels, message, 
             delay_seconds: delaySeconds, 
             auto_reply_enabled: autoReply, 
             auto_reply_text: autoReplyText || '',
-            active: 1
-        });
+            active: 1,
+            username: validation.username
+        }, configId);
         
-        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText);
+        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId);
         
-        res.json({ success: true, username: validation.username });
+        res.json({ success: true, username: validation.username, configId });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
+// Stop specific config
 app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
     try {
+        const { configId = 'default' } = req.body;
         let selfbotModule;
         try {
             selfbotModule = require('./selfbot');
@@ -340,12 +387,23 @@ app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
             return res.status(500).json({ success: false, error: 'Selfbot module not loaded' });
         }
         
-        selfbotModule.stopSelfBot(req.user.id);
-        const config = db.getConfig(req.user.id);
+        selfbotModule.stopSelfBot(req.user.id, configId);
+        const config = db.getConfig(req.user.id, configId);
         if (config) {
             config.active = 0;
-            db.setConfig(req.user.id, config);
+            db.setConfig(req.user.id, config, configId);
         }
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Delete config
+app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
+    try {
+        const { configId } = req.body;
+        db.deleteConfig(req.user.id, configId);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
