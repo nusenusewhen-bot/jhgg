@@ -24,6 +24,8 @@
         .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
         .success-text { color: #10b981; font-size: 14px; margin-top: 8px; }
         .redeem-section { border: 2px dashed #8b5cf6; border-radius: 16px; padding: 20px; margin-bottom: 20px; }
+        .toggle-checkbox:checked { right: 0; border-color: #10b981; }
+        .toggle-checkbox:checked + .toggle-label { background-color: #10b981; }
     </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -91,12 +93,10 @@
                 <div class="text-center">
                     <div class="inline-block bg-emerald-600 text-black text-xs font-bold px-5 py-1 rounded-full mb-4">LIFETIME</div>
                     <h2 class="text-4xl font-bold mb-1">$1.50</h2>
-                    <p class="text-zinc-400 mb-2">One-time payment - Forever access</p>
+                    <p class="text-zinc-400 mb-2">One-time payment</p>
                     <p class="text-xs text-zinc-500 mb-6">Send any amount, auto-swept 24/7</p>
-                    
                     <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-green py-5 rounded-2xl text-lg font-bold">Generate Address</button>
                     <div id="payment-result" class="mt-8 text-left"></div>
-                    <div id="payment-status" class="mt-4"></div>
                 </div>
             </div>
         </div>
@@ -106,21 +106,40 @@
                 <h2 class="text-2xl font-bold mb-8 text-center">Configure Bot</h2>
                 <div class="space-y-6">
                     <div>
-                        <label class="text-xs text-zinc-400 block mb-2">Discord Token <span id="token-status" class="text-zinc-600"></span></label>
-                        <input id="token" type="password" placeholder="Paste token" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" onblur="validateTokenInput()">
+                        <label class="text-xs text-zinc-400 block mb-2">Discord Token</label>
+                        <input id="token" type="password" placeholder="Paste token" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
                     </div>
                     <div>
-                        <label class="text-xs text-zinc-400 block mb-2">Channel IDs</label>
-                        <input id="channels" type="text" placeholder="123,456,789" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
+                        <label class="text-xs text-zinc-400 block mb-2">Channel IDs (comma separated, numeric only)</label>
+                        <input id="channels" type="text" placeholder="123456789012345678, 987654321098765432" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
+                        <p class="text-xs text-zinc-500 mt-1">Right-click channel → Copy Channel ID</p>
                     </div>
                     <div>
                         <label class="text-xs text-zinc-400 block mb-2">Advertisement Message</label>
-                        <textarea id="message" rows="3" placeholder="Your ad..." class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm"></textarea>
+                        <textarea id="message" rows="3" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm"></textarea>
                     </div>
                     <div>
-                        <label class="text-xs text-zinc-400 block mb-2">Auto-Reply (when someone asks price/cost/buy)</label>
-                        <input id="auto-reply" type="text" placeholder="Auto-reply message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
+                        <label class="text-xs text-zinc-400 block mb-2">Delay Between Messages (seconds)</label>
+                        <input id="delay" type="number" value="30" min="10" max="3600" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
                     </div>
+                    
+                    <!-- Auto-Reply Toggle -->
+                    <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl">
+                        <div>
+                            <label class="text-sm font-medium block">Auto-Reply</label>
+                            <p class="text-xs text-zinc-500">Reply when someone asks about price/cost</p>
+                        </div>
+                        <div class="relative inline-block w-12 h-6 align-middle select-none">
+                            <input type="checkbox" id="auto-reply-toggle" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer transition-all duration-200 ease-in-out left-0 border-zinc-600"/>
+                            <label for="auto-reply-toggle" class="toggle-label block overflow-hidden h-6 rounded-full bg-zinc-700 cursor-pointer transition-colors duration-200"></label>
+                        </div>
+                    </div>
+                    
+                    <div id="auto-reply-container" class="hidden">
+                        <label class="text-xs text-zinc-400 block mb-2">Auto-Reply Message</label>
+                        <input id="auto-reply-text" type="text" placeholder="DM me for prices!" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
+                    </div>
+                    
                     <div class="flex gap-4">
                         <button onclick="startBot()" class="flex-1 btn-green py-4 rounded-2xl">Start & Save</button>
                         <button onclick="stopBot()" class="flex-1 bg-red-600 hover:bg-red-700 text-white py-4 rounded-2xl">Stop</button>
@@ -133,7 +152,16 @@
 
     <script>
         let isPurchased = false;
-        let tokenValid = false;
+
+        // Toggle auto-reply visibility
+        document.getElementById('auto-reply-toggle').addEventListener('change', function() {
+            const container = document.getElementById('auto-reply-container');
+            if (this.checked) {
+                container.classList.remove('hidden');
+            } else {
+                container.classList.add('hidden');
+            }
+        });
 
         function switchTab(n) {
             if (n === 2 && !isPurchased) { alert("Purchase or redeem first!"); return false; }
@@ -216,15 +244,13 @@
                             <p class="text-emerald-400 text-sm mb-2">Send to:</p>
                             <p class="address-box text-emerald-300 text-sm mb-3">${data.address}</p>
                             <button onclick="copy('${data.address}')" class="w-full bg-zinc-800 py-2 rounded-lg text-xs">Copy</button>
-                            <p class="text-zinc-500 text-xs mt-3">24/7 auto-sweep enabled. Funds detected instantly.</p>
+                            <p class="text-zinc-500 text-xs mt-3">24/7 auto-sweep enabled</p>
                         </div>`;
-                    document.getElementById('payment-status').innerHTML = '<p class="text-yellow-400 text-sm"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Monitoring...</p>';
                     
                     setInterval(async () => {
                         const check = await fetch('/api/user', { credentials: 'same-origin' });
                         const checkData = await check.json();
                         if (checkData.purchased) {
-                            document.getElementById('payment-status').innerHTML = '<p class="success-text">Payment detected! Access granted.</p>';
                             setTimeout(() => { switchTab(0); loadUserData(); }, 2000);
                         }
                     }, 5000);
@@ -243,37 +269,30 @@
             navigator.clipboard.writeText(text).then(() => alert('Copied!'));
         }
 
-        async function validateTokenInput() {
-            const token = document.getElementById('token').value.trim();
-            const status = document.getElementById('token-status');
-            if (!token) return;
-            
-            status.textContent = ' (checking...)';
-            try {
-                const res = await fetch('/api/bot/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
-                    body: JSON.stringify({ token, channels: 'test', message: 'test', validateOnly: true })
-                });
-                const data = await res.json();
-                tokenValid = data.valid;
-                status.textContent = data.valid ? ' (valid)' : ' (invalid)';
-                status.className = data.valid ? 'text-emerald-400' : 'text-red-400';
-            } catch (e) {
-                status.textContent = ' (error)';
-            }
-        }
-
         async function startBot() {
             const token = document.getElementById('token').value.trim();
             const channels = document.getElementById('channels').value.trim();
             const message = document.getElementById('message').value.trim();
-            const autoReply = document.getElementById('auto-reply').value.trim();
+            const delay = document.getElementById('delay').value;
+            const autoReplyEnabled = document.getElementById('auto-reply-toggle').checked;
+            const autoReplyText = document.getElementById('auto-reply-text').value.trim();
             const status = document.getElementById('bot-status');
             
             if (!token || !channels || !message) {
                 status.innerHTML = '<span class="text-red-400">Fill all fields</span>';
+                return;
+            }
+            
+            // Validate channels are numeric
+            const channelArray = channels.split(',').map(c => c.trim());
+            const invalidChannels = channelArray.filter(c => !/^\d+$/.test(c));
+            if (invalidChannels.length > 0) {
+                status.innerHTML = '<span class="text-red-400">Channel IDs must be numbers only (e.g., 123456789012345678)</span>';
+                return;
+            }
+            
+            if (autoReplyEnabled && !autoReplyText) {
+                status.innerHTML = '<span class="text-red-400">Enter auto-reply text or disable it</span>';
                 return;
             }
             
@@ -284,10 +303,10 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
-                    body: JSON.stringify({ token, channels, message, autoReply })
+                    body: JSON.stringify({ token, channels, message, delay, autoReplyEnabled, autoReplyText })
                 });
                 const data = await res.json();
-                status.innerHTML = data.success ? '<span class="text-emerald-400">Running! Auto-login saved.</span>' : `<span class="text-red-400">${data.error}</span>`;
+                status.innerHTML = data.success ? `<span class="text-emerald-400">Running as ${data.username}!</span>` : `<span class="text-red-400">${data.error}</span>`;
             } catch (err) {
                 status.innerHTML = '<span class="text-red-400">Error</span>';
             }
