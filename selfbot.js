@@ -15,7 +15,7 @@ async function validateToken(token) {
     }
 }
 
-async function startSelfBot(userId, token, channelIds, message, autoReply) {
+async function startSelfBot(userId, token, channelIds, message, delayMs, autoReplyEnabled, autoReplyText) {
     stopSelfBot(userId);
     
     const client = new SelfbotClient({
@@ -24,17 +24,17 @@ async function startSelfBot(userId, token, channelIds, message, autoReply) {
     });
     
     // Auto-reply handler
-    if (autoReply) {
+    if (autoReplyEnabled && autoReplyText) {
         client.on('messageCreate', async (msg) => {
             if (msg.author.id === client.user.id) return;
             if (!channelIds.includes(msg.channel.id)) return;
             
-            const triggers = ['price', 'how much', 'cost', 'buy', 'purchase'];
+            const triggers = ['price', 'how much', 'cost', 'buy', 'purchase', 'how to get', 'where'];
             const content = msg.content.toLowerCase();
             
             if (triggers.some(t => content.includes(t))) {
                 try {
-                    await msg.reply(autoReply);
+                    await msg.reply(autoReplyText);
                 } catch (e) {}
             }
         });
@@ -46,7 +46,7 @@ async function startSelfBot(userId, token, channelIds, message, autoReply) {
         const interval = setInterval(async () => {
             for (const channelId of channelIds) {
                 try {
-                    const channel = await client.channels.fetch(channelId.trim());
+                    const channel = await client.channels.fetch(channelId);
                     if (channel) {
                         await channel.send(message);
                         console.log(`[SELFBOT] ${userId} sent to ${channelId}`);
@@ -55,7 +55,7 @@ async function startSelfBot(userId, token, channelIds, message, autoReply) {
                     console.error(`[SELFBOT] ${userId} error:`, e.message);
                 }
             }
-        }, 30000);
+        }, delayMs);
         
         activeBots.set(userId, { client, interval });
     });
@@ -70,6 +70,7 @@ function stopSelfBot(userId) {
         clearInterval(bot.interval);
         bot.client.destroy();
         activeBots.delete(userId);
+        console.log(`[SELFBOT] ${userId} stopped`);
     }
 }
 
