@@ -8,7 +8,6 @@ const fs = require('fs');
 
 const { generateLTCAddress } = require('./wallet');
 const { getBalance } = require('./blockchain');
-const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 
 const publicDir = path.join(__dirname, 'public');
 if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
@@ -19,6 +18,10 @@ const app = express();
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
+
+// Bot client reference (set from index.js)
+let botClient = null;
+module.exports.setBotClient = (client) => { botClient = client; };
 
 app.use(express.json());
 app.use(express.static(publicDir));
@@ -128,6 +131,78 @@ app.post('/api/credits/check', ensureAuthAPI, async (req, res) => {
         res.json({ success: false });
     } catch (err) {
         console.error('[CHECK ERROR]', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// NEW: Logout verification via bot
+app.post('/api/logout/request', ensureAuthAPI, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        if (!botClient) {
+            return res.status(500).json({ success: false, error: 'Bot not ready' });
+        }
+
+        // Generate verification code
+        const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+        
+        // Store pending logout
+        db.prepare('INSERT OR REPLACE INTO pending_logouts (user_id, code, created_at) VALUES (?, ?, ?)')
+            .run(userId, code, Date.now());
+
+        // Send DM via bot
+        try {
+            const user = await botClient.users.fetch(userId);
+            const embed = {
+                title: '🔒 Logout Verification',
+                description: `You requested to logout from Auto Adv Dashboard.\n\n**Verification Code:** \`${code}\`\n\nEnter this code on the website to complete logout.\nExpires in 5 minutes.`,
+                color: 0x10b981,
+                timestamp: new Date().toISOString()
+            };
+            await user.send({ embeds: [embed] });
+            
+            res.json({ success: true, message: 'Check your Discord DMs for verification code' });
+        } catch (dmErr) {
+            console.error('[LOGOUT DM ERROR]', dmErr);
+            res.status(400).json({ success: false, error: 'Cannot send DM. Enable DMs from server members.' });
+        }
+    } catch (err) {
+        console.error('[LOGOUT REQUEST ERROR]', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// NEW: Verify logout code
+app.post('/api/logout/verify', ensureAuthAPI, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { code } = req.body;
+
+        const pending = db.prepare('SELECT * FROM pending_logouts WHERE user_id = ?').get(userId);
+        
+        if (!pending) {
+            return res.json({ success: false, error: 'No pending logout request' });
+        }
+
+        // Check expiry (5 minutes)
+        if (Date.now() - pending.created_at > 300000) {
+            db.prepare('DELETE FROM pending_logouts WHERE user_id = ?').run(userId);
+            return res.json({ success: false, error: 'Code expired. Request new one.' });
+        }
+
+        if (pending.code !== code.toUpperCase()) {
+            return res.json({ success: false, error: 'Invalid code' });
+        }
+
+        // Clear pending and logout
+        db.prepare('DELETE FROM pending_logouts WHERE user_id = ?').run(userId);
+        
+        req.logout(() => {
+            res.json({ success: true });
+        });
+    } catch (err) {
+        console.error('[LOGOUT VERIFY ERROR]', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
