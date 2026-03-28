@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
@@ -12,6 +13,8 @@
         .btn-green { background: #10b981; color: #000; font-weight: 700; }
         .btn-green:hover { background: #34d399; }
         .btn-green:disabled { background: #065f46; cursor: not-allowed; }
+        .btn-purple { background: #8b5cf6; color: #fff; font-weight: 700; }
+        .btn-purple:hover { background: #a78bfa; }
         .card { background: #1f2937; border: 1px solid #374151; }
         .nav-link.active { color: #10b981; border-bottom: 3px solid #10b981; }
         .section { display: none; }
@@ -22,13 +25,14 @@
         .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; }
         .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
         .success-text { color: #10b981; font-size: 14px; margin-top: 8px; }
+        .redeem-section { border: 2px dashed #8b5cf6; border-radius: 16px; padding: 20px; margin-bottom: 20px; }
     </style>
 </head>
 <body class="min-h-screen pb-20">
     <div id="logout-modal" class="modal">
         <div class="card rounded-3xl p-8 max-w-sm mx-4 w-full">
             <h3 class="text-xl font-bold mb-4">Verify Logout</h3>
-            <p class="text-zinc-400 text-sm mb-6">A verification code was sent to your Discord DMs. Enter it below.</p>
+            <p class="text-zinc-400 text-sm mb-6">Enter the code sent to your Discord DMs.</p>
             <input id="logout-code" type="text" placeholder="Enter code" maxlength="6" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm text-center tracking-widest uppercase mb-4">
             <div class="flex gap-3">
                 <button onclick="closeLogoutModal()" class="flex-1 bg-zinc-700 py-3 rounded-2xl text-sm">Cancel</button>
@@ -64,27 +68,42 @@
         <div id="section-0" class="section active">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <div class="card rounded-3xl p-6">
-                    <h3 class="text-zinc-400 text-sm">Credits</h3>
-                    <div id="credits-display" class="text-4xl font-bold green mt-3">$0.00</div>
+                    <h3 class="text-zinc-400 text-sm">Status</h3>
+                    <div id="credits-display" class="text-4xl font-bold green mt-3">Free User</div>
                 </div>
                 <div class="card rounded-3xl p-6">
-                    <h3 class="text-lg font-semibold mb-4">Status</h3>
+                    <h3 class="text-lg font-semibold mb-4">Access</h3>
                     <div id="status-box" class="p-5 bg-zinc-900 rounded-2xl text-center">
                         <p id="status-text" class="text-xl font-medium text-amber-400">Not Purchased</p>
-                        <button onclick="switchTab(1)" class="mt-5 w-full btn-green py-3.5 rounded-2xl text-base">Buy Lifetime - $1.50</button>
+                        <button onclick="switchTab(1)" class="mt-5 w-full btn-green py-3.5 rounded-2xl text-base">Get Access - $1.50</button>
                     </div>
                 </div>
             </div>
         </div>
 
         <div id="section-1" class="section">
+            <!-- Redeem Key Section -->
+            <div class="redeem-section card max-w-md mx-auto mb-6">
+                <h3 class="text-lg font-bold mb-3 text-purple-400"><i class="fa-solid fa-key mr-2"></i>Have a Redeem Key?</h3>
+                <p class="text-zinc-400 text-sm mb-4">Enter your key (KPUR1-KPUR99) for free instant access</p>
+                <div class="flex gap-2">
+                    <input id="redeem-key" type="text" placeholder="Enter KPUR1-KPUR99" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm uppercase">
+                    <button onclick="redeemKey()" id="redeem-btn" class="btn-purple px-6 py-3 rounded-2xl text-sm font-bold">Redeem</button>
+                </div>
+                <div id="redeem-result" class="mt-3"></div>
+            </div>
+
+            <!-- Payment Section -->
             <div class="card rounded-3xl p-8 max-w-md mx-auto">
                 <div class="text-center">
                     <div class="inline-block bg-emerald-600 text-black text-xs font-bold px-5 py-1 rounded-full mb-4">LIFETIME</div>
                     <h2 class="text-4xl font-bold mb-1">$1.50</h2>
-                    <p class="text-zinc-400 mb-8">One-time payment - Forever access</p>
-                    <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-green py-5 rounded-2xl text-lg font-bold">Generate LTC Address</button>
+                    <p class="text-zinc-400 mb-2">One-time payment - Forever access</p>
+                    <p class="text-xs text-zinc-500 mb-6">Acceptable range: $1.40 - $1.60 (excess auto-refunded to owner)</p>
+                    
+                    <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-green py-5 rounded-2xl text-lg font-bold">Generate Payment Address</button>
                     <div id="payment-result" class="mt-8 text-left"></div>
+                    <div id="payment-status" class="mt-4"></div>
                 </div>
             </div>
         </div>
@@ -122,7 +141,7 @@
 
         function switchTab(n) {
             if (n === 2 && !isPurchased) { 
-                alert("Purchase first!"); 
+                alert("Purchase or redeem a key first!"); 
                 return false; 
             }
             document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -134,7 +153,7 @@
 
         async function loadUserData() {
             try {
-                const res = await fetch('/api/user');
+                const res = await fetch('/api/user', { credentials: 'same-origin' });
                 if (!res.ok) {
                     if (res.status === 401) {
                         window.location.href = '/login';
@@ -153,10 +172,9 @@
                 
                 userDisplay.innerHTML = '<img src="' + avatarUrl + '" alt="avatar" class="user-avatar" onerror="this.src=\'https://cdn.discordapp.com/embed/avatars/0.png\'"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full">' + displayName + '</span>';
                 
-                document.getElementById('credits-display').textContent = '$' + (parseFloat(data.credits) || 0).toFixed(2);
-                
                 if (data.purchased) {
                     isPurchased = true;
+                    document.getElementById('credits-display').textContent = 'Active';
                     document.getElementById('status-text').textContent = 'Active';
                     document.getElementById('status-text').className = 'text-xl font-medium text-emerald-400';
                     document.getElementById('nav-2').classList.remove('hidden');
@@ -166,82 +184,61 @@
                 }
             } catch (err) {
                 console.error('Failed to load user:', err);
-                document.getElementById('user-display').innerHTML = '<span class="text-xs bg-red-900 text-red-200 px-3 py-1 rounded-full">Error</span>';
             }
         }
 
-        async function initiateLogout() {
-            if (!confirm("Logout?")) return;
-            try {
-                const res = await fetch('/api/logout/request', { 
-                    method: 'POST', 
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin'
-                });
-                const data = await res.json();
-                if (data.success) {
-                    document.getElementById('logout-modal').classList.add('active');
-                } else {
-                    alert(data.error || 'Failed to initiate logout');
-                }
-            } catch (err) { 
-                console.error('Logout error:', err);
-                alert('Network error during logout'); 
-            }
-        }
-
-        function closeLogoutModal() {
-            document.getElementById('logout-modal').classList.remove('active');
-            document.getElementById('logout-code').value = '';
-            const errorEl = document.getElementById('logout-error');
-            if (errorEl) errorEl.classList.add('hidden');
-        }
-
-        async function verifyLogout() {
-            const code = document.getElementById('logout-code').value.trim();
-            const errorEl = document.getElementById('logout-error');
+        async function redeemKey() {
+            const keyInput = document.getElementById('redeem-key');
+            const btn = document.getElementById('redeem-btn');
+            const result = document.getElementById('redeem-result');
             
-            if (!code) { 
-                errorEl.textContent = 'Enter code'; 
-                errorEl.classList.remove('hidden'); 
-                return; 
+            const key = keyInput.value.trim();
+            if (!key) {
+                result.innerHTML = '<p class="error-text">Enter a key</p>';
+                return;
             }
             
+            btn.disabled = true;
+            btn.textContent = 'Checking...';
+            
             try {
-                const res = await fetch('/api/logout/verify', { 
-                    method: 'POST', 
+                const res = await fetch('/api/redeem', {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
-                    body: JSON.stringify({ code: code }) 
+                    body: JSON.stringify({ key: key })
                 });
+                
                 const data = await res.json();
+                
                 if (data.success) {
-                    window.location.href = '/';
-                } else { 
-                    errorEl.textContent = data.error || 'Invalid code'; 
-                    errorEl.classList.remove('hidden'); 
+                    result.innerHTML = '<p class="success-text"><i class="fa-solid fa-check mr-2"></i>' + data.message + '</p>';
+                    isPurchased = true;
+                    document.getElementById('nav-2').classList.remove('hidden');
+                    setTimeout(() => {
+                        switchTab(0);
+                        loadUserData();
+                    }, 1500);
+                } else {
+                    result.innerHTML = '<p class="error-text">' + data.error + '</p>';
                 }
-            } catch (err) { 
-                errorEl.textContent = 'Network error'; 
-                errorEl.classList.remove('hidden'); 
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Network error</p>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Redeem';
             }
         }
-
-        document.getElementById('logout-modal').addEventListener('click', (e) => { 
-            if (e.target.id === 'logout-modal') closeLogoutModal(); 
-        });
-        
-        document.getElementById('logout-code').addEventListener('keypress', (e) => { 
-            if (e.key === 'Enter') verifyLogout(); 
-        });
 
         async function purchaseLifetime() {
             const btn = document.getElementById('buy-btn');
             const result = document.getElementById('payment-result');
+            const status = document.getElementById('payment-status');
             
             btn.disabled = true; 
             btn.textContent = "Generating..."; 
             result.innerHTML = "";
+            status.innerHTML = "";
             
             try {
                 const res = await fetch('/api/purchase/lifetime', { 
@@ -250,38 +247,58 @@
                     credentials: 'same-origin'
                 });
                 
-                if (!res.ok) {
-                    throw new Error('Server returned ' + res.status);
-                }
+                if (!res.ok) throw new Error('Server error ' + res.status);
                 
                 const data = await res.json();
                 
                 if (data.success && data.address) {
                     result.innerHTML = 
                         '<div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">' +
-                        '<p class="text-emerald-400 text-sm mb-2">Send exactly <strong>0.000015 LTC</strong> to:</p>' +
+                        '<p class="text-emerald-400 text-sm mb-2">Send <strong>$' + data.amountUSD.toFixed(2) + '</strong> worth of LTC</p>' +
+                        '<p class="text-zinc-400 text-xs mb-3">Approx ' + data.amountLTC.toFixed(6) + ' LTC (Acceptable: $' + (data.amountUSD - data.tolerance).toFixed(2) + ' - $' + (data.amountUSD + data.tolerance).toFixed(2) + ')</p>' +
                         '<p class="address-box text-emerald-300 text-sm mb-3">' + data.address + '</p>' +
-                        '<button onclick="copyAddress(\'' + data.address + '\')" class="w-full bg-zinc-800 hover:bg-zinc-700 py-2 rounded-lg text-xs">Copy Address</button>' +
-                        '<p class="text-zinc-500 text-xs mt-3">Waiting for payment... Checking every 10 seconds</p>' +
+                        '<button onclick="copyAddress(\'' + data.address + '\')" class="w-full bg-zinc-800 hover:bg-zinc-700 py-2 rounded-lg text-xs mb-2">Copy Address</button>' +
+                        '<p class="text-zinc-500 text-xs">Auto-monitoring enabled. Page will update when payment detected.</p>' +
                         '</div>';
                     
+                    status.innerHTML = '<p class="text-yellow-400 text-sm"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Waiting for payment...</p>';
+                    
+                    // Start checking
                     if (checkInterval) clearInterval(checkInterval);
-                    checkInterval = setTimeout(() => checkPaymentStatus(), 10000);
+                    checkInterval = setInterval(async () => {
+                        const checkRes = await fetch('/api/credits/check', { 
+                            method: 'POST',
+                            credentials: 'same-origin'
+                        });
+                        const checkData = await checkRes.json();
+                        
+                        if (checkData.success && checkData.status === 'detected') {
+                            clearInterval(checkInterval);
+                            status.innerHTML = '<p class="success-text"><i class="fa-solid fa-check mr-2"></i>Payment detected! $' + checkData.receivedUSD.toFixed(2) + ' received</p>';
+                            isPurchased = true;
+                            document.getElementById('nav-2').classList.remove('hidden');
+                            setTimeout(() => {
+                                switchTab(0);
+                                loadUserData();
+                            }, 2000);
+                        }
+                    }, 5000);
+                    
                 } else {
                     result.innerHTML = '<p class="error-text">' + (data.error || "Failed to generate address") + '</p>';
                 }
             } catch (err) { 
                 console.error('Purchase error:', err);
-                result.innerHTML = '<p class="error-text">Error: ' + (err.message || "Network error") + '</p>'; 
+                result.innerHTML = '<p class="error-text">Error: ' + err.message + '</p>'; 
             } finally { 
                 btn.disabled = false; 
-                btn.textContent = "Generate LTC Address"; 
+                btn.textContent = "Generate Payment Address"; 
             }
         }
 
         function copyAddress(addr) {
             navigator.clipboard.writeText(addr).then(() => {
-                alert('Address copied!');
+                alert('Address copied to clipboard!');
             }).catch(() => {
                 const ta = document.createElement('textarea');
                 ta.value = addr;
@@ -293,31 +310,38 @@
             });
         }
 
-        async function checkPaymentStatus() {
+        async function initiateLogout() {
+            if (!confirm("Logout?")) return;
             try {
-                const res = await fetch('/api/credits/check', { 
-                    method: 'POST',
+                const res = await fetch('/api/logout/request', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin'
                 });
-                
-                if (!res.ok) throw new Error('Check failed');
-                
                 const data = await res.json();
-                
-                if (data.success) {
-                    if (checkInterval) clearInterval(checkInterval);
-                    isPurchased = true; 
-                    document.getElementById('nav-2').classList.remove('hidden'); 
-                    switchTab(0);
-                    alert("Payment confirmed! Access granted."); 
-                    loadUserData();
-                } else {
-                    checkInterval = setTimeout(() => checkPaymentStatus(), 10000);
-                }
-            } catch (e) { 
-                console.error('Check error:', e);
-                checkInterval = setTimeout(() => checkPaymentStatus(), 15000); 
-            }
+                if (data.success) document.getElementById('logout-modal').classList.add('active');
+            } catch (err) { alert('Network error'); }
+        }
+
+        function closeLogoutModal() {
+            document.getElementById('logout-modal').classList.remove('active');
+            document.getElementById('logout-code').value = '';
+        }
+
+        async function verifyLogout() {
+            const code = document.getElementById('logout-code').value.trim();
+            if (!code) return;
+            
+            try {
+                const res = await fetch('/api/logout/verify', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ code: code }) 
+                });
+                const data = await res.json();
+                if (data.success) window.location.href = '/';
+            } catch (err) { alert('Error'); }
         }
 
         async function startBot() {
@@ -326,16 +350,8 @@
             const message = document.getElementById('message').value.trim();
             const statusEl = document.getElementById('bot-status');
             
-            if (!token) {
-                statusEl.innerHTML = '<span class="text-red-400">Enter Discord token</span>';
-                return;
-            }
-            if (!channels) {
-                statusEl.innerHTML = '<span class="text-red-400">Enter channel IDs</span>';
-                return;
-            }
-            if (!message) {
-                statusEl.innerHTML = '<span class="text-red-400">Enter message</span>';
+            if (!token || !channels || !message) {
+                statusEl.innerHTML = '<span class="text-red-400">Fill all fields</span>';
                 return;
             }
             
@@ -349,52 +365,29 @@
                     body: JSON.stringify({ token, channels, message })
                 });
                 
-                if (!res.ok) {
-                    const errorData = await res.json().catch(() => ({}));
-                    throw new Error(errorData.error || 'Server error ' + res.status);
-                }
-                
                 const data = await res.json();
-                
-                if (data.success) {
-                    statusEl.innerHTML = '<span class="text-emerald-400">Bot running! Sending every 30s</span>';
-                } else {
-                    statusEl.innerHTML = '<span class="text-red-400">' + (data.error || "Failed to start") + '</span>';
-                }
+                statusEl.innerHTML = data.success 
+                    ? '<span class="text-emerald-400">Bot running! Sending every 30s</span>'
+                    : '<span class="text-red-400">' + (data.error || "Failed") + '</span>';
             } catch (err) {
-                console.error('Start error:', err);
                 statusEl.innerHTML = '<span class="text-red-400">Error: ' + err.message + '</span>';
             }
         }
 
         async function stopBot() {
             const statusEl = document.getElementById('bot-status');
-            statusEl.innerHTML = '<span class="text-yellow-400">Stopping...</span>';
-            
             try {
-                const res = await fetch('/api/bot/stop', { 
-                    method: 'POST',
-                    credentials: 'same-origin'
-                });
-                
-                if (!res.ok) throw new Error('Stop failed');
-                
+                const res = await fetch('/api/bot/stop', { method: 'POST', credentials: 'same-origin' });
                 const data = await res.json();
-                
-                if (data.success) {
-                    statusEl.innerHTML = '<span class="text-zinc-400">Bot stopped</span>';
-                } else {
-                    statusEl.innerHTML = '<span class="text-red-400">' + (data.error || "Failed") + '</span>';
-                }
+                statusEl.innerHTML = data.success 
+                    ? '<span class="text-zinc-400">Bot stopped</span>'
+                    : '<span class="text-red-400">Failed</span>';
             } catch (err) {
-                statusEl.innerHTML = '<span class="text-red-400">Error stopping</span>';
+                statusEl.innerHTML = '<span class="text-red-400">Error</span>';
             }
         }
 
-        window.onload = () => { 
-            loadUserData(); 
-            switchTab(0); 
-        };
+        window.onload = () => { loadUserData(); };
     </script>
 </body>
 </html>
