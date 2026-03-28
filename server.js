@@ -31,7 +31,6 @@ for (let i = 1; i <= 99; i++) VALID_REDEEM_KEYS.add(`KPUR${i}`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS user_credits (
     user_id TEXT PRIMARY KEY,
-    credits REAL DEFAULT 0,
     auto_adv_purchased INTEGER DEFAULT 0,
     purchased_at INTEGER,
     redeem_key_used TEXT
@@ -55,7 +54,9 @@ db.exec(`
     token TEXT,
     channels TEXT,
     message TEXT,
-    auto_reply TEXT,
+    delay_seconds INTEGER DEFAULT 30,
+    auto_reply_enabled INTEGER DEFAULT 0,
+    auto_reply_text TEXT,
     active INTEGER DEFAULT 0,
     last_login INTEGER
   );
@@ -115,7 +116,6 @@ function ensurePurchasedAPI(req, res, next) {
     next();
 }
 
-// Check balance using litecoinspace.org
 async function checkAddressBalance(address) {
     try {
         const res = await axios.get(`https://litecoinspace.org/api/address/${address}`, {
@@ -131,20 +131,18 @@ async function checkAddressBalance(address) {
     }
 }
 
-// Sweep all funds to owner
 async function sweepAllFunds(address, privateKey, userId) {
     try {
         const balance = await checkAddressBalance(address);
         if (balance <= 0) return null;
         
-        console.log(`[SWEEP] Found ${balance} LTC in ${address}, sweeping...`);
+        console.log(`[SWEEP] Found ${balance} LTC in ${address}`);
         
         const txid = await createTransaction(privateKey, address, OWNER_LTC_ADDRESS, balance);
         
         db.prepare('UPDATE pending_credits SET amount_received_ltc = ?, sweep_txid = ? WHERE address = ?')
             .run(balance, txid, address);
         
-        // Grant access if meets minimum ($1.40)
         const ltcPrice = await getLTCToUSD();
         const usdValue = balance * ltcPrice;
         
@@ -165,7 +163,6 @@ async function sweepAllFunds(address, privateKey, userId) {
     }
 }
 
-// 24/7 Monitoring loop - runs forever
 function startMonitoring() {
     console.log('[MONITOR] 24/7 monitoring started');
     
@@ -177,9 +174,8 @@ function startMonitoring() {
                 for (const row of pending) {
                     try {
                         const balance = await checkAddressBalance(row.address);
-                        
                         if (balance > 0) {
-                            console.log(`[MONITOR] Balance detected: ${balance} LTC in ${row.address}`);
+                            console.log(`[MONITOR] Balance detected: ${balance} LTC`);
                             await sweepAllFunds(row.address, row.private_key, row.user_id);
                         }
                     } catch (e) {
@@ -187,7 +183,7 @@ function startMonitoring() {
                     }
                 }
                 
-                await new Promise(r => setTimeout(r, 10000)); // Check every 10 seconds
+                await new Promise(r => setTimeout(r, 10000));
             } catch (e) {
                 console.error('[MONITOR] Loop error:', e);
                 await new Promise(r => setTimeout(r, 5000));
@@ -198,7 +194,6 @@ function startMonitoring() {
     monitorLoop();
 }
 
-// Start monitoring immediately
 startMonitoring();
 
 let cachedPrice = 85;
@@ -218,13 +213,12 @@ app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
 
 app.get('/api/user', ensureAuthAPI, (req, res) => {
     try {
-        const data = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(req.user.id) || { credits: 0, auto_adv_purchased: 0 };
+        const data = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(req.user.id) || { auto_adv_purchased: 0 };
         res.json({ 
             id: req.user.id,
             username: req.user.username,
             global_name: req.user.global_name,
             avatar: req.user.avatar,
-            credits: data.credits, 
             purchased: data.auto_adv_purchased === 1 
         });
     } catch(e) {
@@ -240,18 +234,11 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, async (req, res) => {
 
         const { address, privateKey } = generateLTCAddress();
 
-        db.prepare(`
-            INSERT INTO pending_credits (user_id, address, private_key, expected_usd, created_at) 
-            VALUES (?, ?, ?, ?, ?)
-        `).run(userId, address, privateKey, TARGET_USD, Date.now());
+        db.prepare(`INSERT INTO pending_credits (user_id, address, private_key, expected_usd, created_at) VALUES (?, ?, ?, ?, ?)`)
+            .run(userId, address, privateKey, TARGET_USD, Date.now());
 
-        res.json({ 
-            success: true, 
-            address, 
-            amountUSD: TARGET_USD
-        });
+        res.json({ success: true, address, amountUSD: TARGET_USD });
     } catch (err) {
-        console.error('[PURCHASE ERROR]', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -262,7 +249,6 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
         const userId = req.user.id;
         
         if (!key) return res.json({ success: false, error: 'Enter a key' });
-        
         const upperKey = key.toUpperCase().trim();
         
         if (!VALID_REDEEM_KEYS.has(upperKey)) return res.json({ success: false, error: 'Invalid key' });
@@ -285,19 +271,30 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
 
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
-        const { token, channels, message, autoReply } = req.body;
+        const { token, channels, message, delay, autoReplyEnabled, autoReplyText } = req.body;
         
-        if (!token || !channels || !message) return res.status(400).json({ success: false, error: 'Missing fields' });
+        if (!token || !channels || !message) {
+            return res.status(400).json({ success: false, error: 'Missing fields' });
+        }
+        
+        // Validate channel IDs are numeric (snowflakes)
+        const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
+        if (channelList.length === 0) {
+            return res.json({ success: false, error: 'Invalid channel IDs. Must be numeric (e.g., 123456789012345678)' });
+        }
         
         const validation = await validateToken(token);
         if (!validation.valid) return res.json({ success: false, error: 'Invalid Discord token' });
         
-        db.prepare('INSERT OR REPLACE INTO bot_configs (user_id, token, channels, message, auto_reply, active, last_login) VALUES (?, ?, ?, ?, ?, 1, ?)')
-            .run(req.user.id, token, channels, message, autoReply || '', Date.now());
+        const delaySeconds = parseInt(delay) || 30;
+        const autoReply = autoReplyEnabled ? 1 : 0;
         
-        await startSelfBot(req.user.id, token, channels.split(','), message, autoReply);
+        db.prepare(`INSERT OR REPLACE INTO bot_configs (user_id, token, channels, message, delay_seconds, auto_reply_enabled, auto_reply_text, active, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`)
+            .run(req.user.id, token, channels, message, delaySeconds, autoReply, autoReplyText || '', Date.now());
         
-        res.json({ success: true });
+        await startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText);
+        
+        res.json({ success: true, username: validation.username });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
