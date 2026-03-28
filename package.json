@@ -1,21 +1,26 @@
 {
-  "name": "combined-bot",
+  "name": "auto-adv-bot",
   "version": "1.0.0",
+  "description": "Discord selfbot with auto-sweep",
   "main": "index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
-    "discord.js": "^14.14.1",
-    "discord.js-selfbot-v13": "3.3.0",
+    "axios": "^1.6.8",
     "better-sqlite3": "^9.4.3",
+    "bip32": "^4.0.0",
     "bip39": "^3.1.0",
     "bitcoinjs-lib": "^6.1.5",
-    "axios": "^1.6.8",
+    "discord.js": "^14.14.1",
+    "discord.js-selfbot-v13": "3.3.0",
+    "dotenv": "^16.4.5",
+    "ecpair": "^2.1.0",
     "express": "^4.18.2",
     "express-session": "^1.17.3",
     "passport": "^0.6.0",
     "passport-discord": "^0.1.4",
-    "ecpair": "^2.1.0",
-    "tiny-secp256k1": "^2.2.1",
-    "dotenv": "^16.4.5"
+    "tiny-secp256k1": "^2.2.1"
   },
   "scripts": {
     "start": "node index.js",
