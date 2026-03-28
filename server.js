@@ -5,6 +5,7 @@ const DiscordStrategy = require('passport-discord').Strategy;
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const cors = require('cors');
 
 const { generateLTCAddress } = require('./wallet');
 const { getBalance } = require('./blockchain');
@@ -20,6 +21,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
 
+app.use(cors());                    // ← This fixes network error
 app.use(express.json());
 app.use(express.static(publicDir));
 
@@ -59,36 +61,22 @@ function ensurePurchased(req, res, next) {
     next();
 }
 
-// Health & Auth
-app.get('/health', (req, res) => res.status(200).send('OK'));
+// ====================== ROUTES ======================
+
+app.get('/health', (req, res) => res.send('OK'));
 
 app.get('/login', passport.authenticate('discord'));
 
-app.get('/auth/discord/callback', 
-    passport.authenticate('discord', { failureRedirect: '/' }),
-    (req, res) => res.redirect('/dashboard')
-);
+app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/dashboard'));
 
-app.get('/logout', (req, res) => {
-    req.logout(() => res.redirect('/'));
-});
+app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
 
-// API - User info
-app.get('/api/user', ensureAuth, (req, res) => {
-    try {
-        const userId = req.user.id;
-        const creditsData = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
-        res.json({
-            credits: creditsData.credits,
-            purchased: creditsData.auto_adv_purchased === 1
-        });
-    } catch (err) {
-        res.status(500).json({ error: 'Database error' });
-    }
-});
+// Test route to check if API works
+app.get('/api/test', (req, res) => res.json({ message: 'API is working!' }));
 
-// Lifetime Purchase - $1.50
+// Lifetime purchase - $1.50
 app.post('/api/purchase/lifetime', ensureAuth, (req, res) => {
+    console.log('✅ /api/purchase/lifetime called'); // debug log
     try {
         const userId = req.user.id;
         const existing = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(userId);
@@ -102,19 +90,16 @@ app.post('/api/purchase/lifetime', ensureAuth, (req, res) => {
         db.prepare('INSERT INTO pending_credits (user_id, address, private_key, expected_amount, credits_to_add, status, created_at)')
             .run(userId, address, privateKey, 0.000015, 0, 'pending_purchase', Date.now());
 
-        res.json({
-            success: true,
-            address: address,
-            amount: 0.000015
-        });
+        res.json({ success: true, address, amount: 0.000015 });
     } catch (err) {
         console.error('[PURCHASE ERROR]', err);
-        res.status(500).json({ success: false, error: 'Failed to generate address' });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
 // Check payment
 app.post('/api/credits/check', ensureAuth, async (req, res) => {
+    console.log('✅ /api/credits/check called');
     try {
         const userId = req.user.id;
         const pending = db.prepare('SELECT * FROM pending_credits WHERE user_id = ? AND (status = "pending" OR status = "pending_purchase")').get(userId);
@@ -124,24 +109,21 @@ app.post('/api/credits/check', ensureAuth, async (req, res) => {
         const { balance } = await getBalance(pending.address);
 
         if (balance >= pending.expected_amount * 0.9) {
-            db.prepare('UPDATE pending_credits SET status = ?, paid_at = ? WHERE id = ?')
-                .run('completed', Date.now(), pending.id);
+            db.prepare('UPDATE pending_credits SET status = ?, paid_at = ? WHERE id = ?').run('completed', Date.now(), pending.id);
 
             if (pending.status === 'pending_purchase') {
-                db.prepare('INSERT OR REPLACE INTO user_credits (user_id, auto_adv_purchased, purchased_at) VALUES (?, 1, ?)')
-                    .run(userId, Date.now());
+                db.prepare('INSERT OR REPLACE INTO user_credits (user_id, auto_adv_purchased, purchased_at) VALUES (?, 1, ?)').run(userId, Date.now());
             }
             return res.json({ success: true });
         }
-
         res.json({ success: false });
     } catch (err) {
         console.error('[CHECK ERROR]', err);
-        res.status(500).json({ success: false, error: 'Check failed' });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// Page Routes - All point to overall.html
+// All pages use overall.html
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) return res.redirect('/dashboard');
     res.sendFile(path.join(publicDir, 'overall.html'));
@@ -155,7 +137,6 @@ app.get('/purchase', ensureAuth, (req, res) => res.redirect('/dashboard'));
 app.get('/configure', ensureAuth, (req, res) => res.redirect('/dashboard'));
 app.get('/credits', ensureAuth, (req, res) => res.redirect('/dashboard'));
 
-// Error handling
 app.use((err, req, res, next) => {
     console.error('[SERVER ERROR]', err);
     res.status(500).send('Server error');
