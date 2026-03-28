@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Adv • Lifetime</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+    <style>
+        body {
+            background: linear-gradient(135deg, #0a0a0a 0%, #111827 100%);
+            color: #e5e7eb;
+        }
+        .green { color: #10b981; }
+        .btn-green {
+            background: #10b981;
+            color: black;
+            font-weight: 700;
+        }
+        .btn-green:hover { background: #34d399; }
+        .card { background: #1f2937; border: 1px solid #374151; }
+        .nav-link.active {
+            color: #10b981;
+            border-bottom: 3px solid #10b981;
+        }
+        .section { display: none; }
+        .section.active { display: block; }
+        .status-dot {
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+    <!-- Top Header -->
+    <header class="bg-zinc-950 border-b border-zinc-800 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-6 py-5 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <i class="fa-solid fa-robot text-3xl text-emerald-500"></i>
+                <h1 class="text-2xl font-bold">Auto Adv</h1>
+            </div>
+
+            <div class="flex items-center gap-8 text-sm font-medium">
+                <a href="#" onclick="switchTab(0)" class="nav-link active px-5 py-2" id="nav-0">Dashboard</a>
+                <a href="#" onclick="switchTab(1)" class="nav-link px-5 py-2" id="nav-1">Purchase</a>
+                <a href="#" onclick="switchTab(2)" class="nav-link px-5 py-2 hidden" id="nav-2">Configure</a>
+            </div>
+
+            <div class="flex items-center gap-4">
+                <span id="user-info" class="text-xs bg-zinc-900 px-4 py-2 rounded-full">Logged in as 64zk</span>
+                <button onclick="logout()" class="text-zinc-400 hover:text-white transition">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <div class="max-w-6xl mx-auto px-6 py-10">
+
+        <!-- DASHBOARD -->
+        <div id="section-0" class="section active">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- Credits & Status -->
+                <div class="card rounded-3xl p-8">
+                    <h2 class="text-xl text-zinc-400 mb-3">Your Credits</h2>
+                    <div id="credits-display" class="text-6xl font-bold green mb-2">$0.00</div>
+                    <p class="text-zinc-500">Use credits or direct LTC to purchase</p>
+
+                    <div class="mt-10">
+                        <h3 class="font-semibold mb-4 flex items-center gap-2">
+                            <span class="w-3 h-3 bg-emerald-500 rounded-full status-dot"></span>
+                            Auto Adv Status
+                        </h3>
+                        <div id="purchase-status" class="p-6 bg-zinc-900 rounded-2xl text-center">
+                            <p id="status-text" class="text-2xl font-medium text-amber-400">Not Purchased Yet</p>
+                            <button onclick="switchTab(1)" 
+                                    class="mt-6 btn-green w-full py-4 rounded-2xl text-lg">
+                                Purchase Lifetime Access - $1.50
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Info -->
+                <div class="card rounded-3xl p-8">
+                    <h2 class="text-xl mb-6">What you get</h2>
+                    <ul class="space-y-5 text-zinc-300">
+                        <li class="flex gap-4"><i class="fa-solid fa-check text-emerald-500 mt-1"></i> Lifetime access to Auto Advertisement Bot</li>
+                        <li class="flex gap-4"><i class="fa-solid fa-check text-emerald-500 mt-1"></i> Send messages automatically to multiple channels</li>
+                        <li class="flex gap-4"><i class="fa-solid fa-check text-emerald-500 mt-1"></i> Auto-reply to DMs</li>
+                        <li class="flex gap-4"><i class="fa-solid fa-check text-emerald-500 mt-1"></i> Private LTC wallet (all funds auto-sent to owner)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- PURCHASE SECTION (Only Lifetime $1.50) -->
+        <div id="section-1" class="section">
+            <div class="max-w-xl mx-auto">
+                <div class="card rounded-3xl p-12 text-center">
+                    <div class="inline-block bg-emerald-600 text-black font-bold px-6 py-2 rounded-full mb-6">ONE-TIME PAYMENT</div>
+                    
+                    <h2 class="text-5xl font-bold mb-3">Lifetime Access</h2>
+                    <div class="text-7xl font-bold green mb-2">$1.50</div>
+                    <p class="text-zinc-400 text-lg">Pay once • Use forever</p>
+
+                    <div class="my-12 border-t border-zinc-700 pt-10">
+                        <ul class="space-y-6 text-left max-w-sm mx-auto">
+                            <li class="flex items-center gap-4 text-lg"><i class="fa-solid fa-check text-emerald-500"></i> Full selfbot features</li>
+                            <li class="flex items-center gap-4 text-lg"><i class="fa-solid fa-check text-emerald-500"></i> Unlimited channels & messages</li>
+                            <li class="flex items-center gap-4 text-lg"><i class="fa-solid fa-check text-emerald-500"></i> Auto DM reply</li>
+                            <li class="flex items-center gap-4 text-lg"><i class="fa-solid fa-check text-emerald-500"></i> No monthly fees ever</li>
+                        </ul>
+                    </div>
+
+                    <button onclick="purchaseLifetime()" 
+                            class="btn-green w-full py-7 rounded-2xl text-2xl font-bold shadow-lg shadow-emerald-500/30">
+                        Pay $1.50 with Litecoin
+                    </button>
+
+                    <p class="text-xs text-zinc-500 mt-8">
+                        You will receive a Litecoin address. Send exactly the amount shown.<br>
+                        All funds are automatically forwarded to the owner.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- CONFIGURE SECTION (Only visible after purchase) -->
+        <div id="section-2" class="section">
+            <div class="card rounded-3xl p-10 max-w-3xl mx-auto">
+                <div class="flex justify-between items-center mb-10">
+                    <h2 class="text-3xl font-bold">Configure Your Bot</h2>
+                    <div id="bot-control" class="flex gap-3">
+                        <button onclick="startBot()" id="start-btn"
+                                class="px-8 py-3 bg-emerald-600 hover:bg-emerald-500 rounded-2xl font-semibold">Start Bot</button>
+                        <button onclick="stopBot()" id="stop-btn"
+                                class="px-8 py-3 bg-red-600 hover:bg-red-500 rounded-2xl font-semibold">Stop Bot</button>
+                    </div>
+                </div>
+
+                <div class="space-y-8">
+                    <div>
+                        <label class="block text-sm text-zinc-400 mb-3">Discord Selfbot Token</label>
+                        <input type="password" id="token" placeholder="mfa.YOUR_TOKEN_HERE" 
+                               class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-6 py-5 focus:border-emerald-500 outline-none">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm text-zinc-400 mb-3">Channel IDs (comma separated)</label>
+                        <input type="text" id="channels" placeholder="123456789012345678,987654321098765432" 
+                               class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-6 py-5 focus:border-emerald-500 outline-none">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm text-zinc-400 mb-3">Advertisement Message</label>
+                        <textarea id="message" rows="4" placeholder="Enter your advertisement message here..." 
+                                  class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-6 py-5 focus:border-emerald-500 outline-none"></textarea>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-sm text-zinc-400 mb-3">Delay (seconds)</label>
+                            <input type="number" id="delay" value="60" min="10" 
+                                   class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-6 py-5 focus:border-emerald-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-zinc-400 mb-3">Auto Reply to DMs</label>
+                            <div class="flex items-center gap-4 mt-3">
+                                <input type="checkbox" id="autoreply" class="w-5 h-5 accent-emerald-500">
+                                <span class="text-zinc-300">Enable auto reply</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onclick="saveAndStartConfig()" 
+                            class="w-full btn-green py-6 rounded-2xl text-xl font-bold mt-6">
+                        Save Settings & Start Bot
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isPurchased = false;   // Change this to true after successful payment in real backend
+
+        function switchTab(n) {
+            if (n === 2 && !isPurchased) {
+                alert("You must purchase Lifetime Access first!");
+                return;
+            }
+
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            document.getElementById('section-' + n).classList.add('active');
+
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+            document.getElementById('nav-' + n).classList.add('active');
+        }
+
+        function purchaseLifetime() {
+            // In real app this would call your /api/purchase/direct
+            if (confirm("You will be given a Litecoin address to send exactly ~0.000015 LTC ($1.50).\n\nAll funds will be automatically sent to the owner.\n\nContinue?")) {
+                alert("Payment address generated!\n\nSend exactly the shown amount.\n\nOnce confirmed, your Auto Adv will be activated.");
+                isPurchased = true;
+                document.getElementById('nav-2').classList.remove('hidden'); // Show Configure tab
+                switchTab(0); // Go back to dashboard
+                updatePurchaseStatus();
+            }
+        }
+
+        function updatePurchaseStatus() {
+            if (isPurchased) {
+                document.getElementById('status-text').innerHTML = `
+                    <span class="text-emerald-400">✓ Lifetime Access Activated</span>
+                `;
+                document.getElementById('nav-2').classList.remove('hidden');
+            }
+        }
+
+        function startBot() {
+            alert("Bot started successfully!");
+        }
+
+        function stopBot() {
+            alert("Bot stopped.");
+        }
+
+        function saveAndStartConfig() {
+            const token = document.getElementById('token').value.trim();
+            if (!token) return alert("Please enter your Discord token");
+
+            alert("Settings saved!\n\nSelfbot is now running.");
+            switchTab(0);
+        }
+
+        function logout() {
+            if (confirm("Logout?")) location.reload();
+        }
+
+        // Initialize
+        window.onload = () => {
+            switchTab(0);
+            updatePurchaseStatus();
+        };
+    </script>
+</body>
+</html>
