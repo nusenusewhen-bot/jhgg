@@ -1,10 +1,25 @@
 const bip39 = require('bip39');
 const bitcoin = require('bitcoinjs-lib');
 const crypto = require('crypto');
-const ECPairFactory = require('ecpair').default;
-const tinysecp = require('tiny-secp256k1');
 
-const ECPair = ECPairFactory(tinysecp);
+// Try to load ECPair
+let ECPair;
+try {
+    const ECPairFactory = require('ecpair').default;
+    const tinysecp = require('tiny-secp256k1');
+    ECPair = ECPairFactory(tinysecp);
+    console.log('[WALLET] ECPair loaded successfully');
+} catch(e) {
+    console.error('[WALLET] ECPair load failed:', e.message);
+    // Fallback attempt
+    try {
+        ECPair = require('ecpair');
+        console.log('[WALLET] ECPair fallback loaded');
+    } catch(e2) {
+        console.error('[WALLET] All ECPair loads failed');
+        throw e;
+    }
+}
 
 const litecoin = {
     messagePrefix: '\x19Litecoin Signed Message:\n',
@@ -16,13 +31,15 @@ const litecoin = {
 };
 
 function generateLTCAddress(index = 0) {
+    console.log('[WALLET] Generating address with index:', index);
+    
     let mnemonic = process.env.WALLET_MNEMONIC;
 
     if (!mnemonic) {
         mnemonic = bip39.generateMnemonic();
-        console.log('[WALLET] No WALLET_MNEMONIC in env → generated random');
+        console.log('[WALLET] Generated random mnemonic');
     } else {
-        console.log('[WALLET] Using fixed WALLET_MNEMONIC from env');
+        console.log('[WALLET] Using env mnemonic');
     }
 
     const seed = bip39.mnemonicToSeedSync(mnemonic);
@@ -35,6 +52,8 @@ function generateLTCAddress(index = 0) {
         pubkey: keyPair.publicKey, 
         network: litecoin 
     });
+
+    console.log('[WALLET] Generated address:', address);
 
     return { 
         address, 
