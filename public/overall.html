@@ -47,7 +47,6 @@
                 <a href="#" onclick="switchTab(2)" class="nav-link px-4 py-2 hidden" id="nav-2">Configure</a>
             </div>
             <div class="flex items-center gap-3">
-                <!-- Dynamic User Display - REMOVED 64zk -->
                 <div id="user-display" class="flex items-center gap-2">
                     <span class="text-xs bg-zinc-900 px-3 py-1 rounded-full">Loading...</span>
                 </div>
@@ -96,7 +95,7 @@
                         <input id="token" type="password" placeholder="Paste token here" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
                     </div>
                     <div>
-                        <label class="text-xs text-zinc-400 block mb-2">Channel IDs</label>
+                        <label class="text-xs text-zinc-400 block mb-2">Channel IDs (comma separated)</label>
                         <input id="channels" type="text" placeholder="123456789,987654321" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
                     </div>
                     <div>
@@ -124,7 +123,6 @@
             document.getElementById('nav-' + n).classList.add('active');
         }
 
-        // Load user data - shows Discord avatar + username instead of 64zk
         async function loadUserData() {
             try {
                 const res = await fetch('/api/user');
@@ -138,7 +136,6 @@
                     ? 'https://cdn.discordapp.com/avatars/' + data.id + '/' + data.avatar + '.png?size=64'
                     : 'https://cdn.discordapp.com/embed/avatars/0.png';
                 
-                // Shows avatar image + display name (no more 64zk)
                 userDisplay.innerHTML = '<img src="' + avatarUrl + '" alt="avatar" class="user-avatar"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full">' + displayName + '</span>';
                 
                 document.getElementById('credits-display').textContent = '$' + (data.credits || 0).toFixed(2);
@@ -212,8 +209,39 @@
             } catch (e) { setTimeout(() => checkPaymentStatus(), 15000); }
         }
 
-        function startBot() { alert("Bot started!"); }
-        function stopBot() { alert("Bot stopped."); }
+        async function startBot() {
+            const token = document.getElementById('token').value.trim();
+            const channels = document.getElementById('channels').value.trim();
+            const message = document.getElementById('message').value.trim();
+            
+            if (!token || !channels || !message) {
+                alert("Fill all fields");
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/bot/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, channels, message })
+                });
+                const data = await res.json();
+                if (data.success) alert("Bot started! Check console for logs.");
+                else alert(data.error || "Failed to start");
+            } catch (err) {
+                alert("Network error");
+            }
+        }
+
+        async function stopBot() {
+            try {
+                const res = await fetch('/api/bot/stop', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) alert("Bot stopped!");
+            } catch (err) {
+                alert("Error stopping");
+            }
+        }
 
         window.onload = () => { loadUserData(); switchTab(0); };
     </script>
