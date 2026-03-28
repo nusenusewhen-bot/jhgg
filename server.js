@@ -57,16 +57,28 @@ function ensurePurchased(req, res, next) {
     next();
 }
 
-// HEALTH CHECK (Railway needs this)
+// Health check (Railway needs this)
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
-// Auth routes
+// Auth
 app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/dashboard'));
 app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
 
-// Lifetime purchase route
+// API user
+app.get('/api/user', ensureAuth, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const creditsData = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
+        res.json({ credits: creditsData.credits, purchased: creditsData.auto_adv_purchased === 1 });
+    } catch (err) {
+        res.status(500).json({ error: 'Database error' });
+    }
+});
+
+// === LIFETIME PURCHASE ROUTE (this was missing) ===
 app.post('/api/purchase/lifetime', ensureAuth, (req, res) => {
+    console.log('Purchase route called');
     try {
         const userId = req.user.id;
         const existing = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(userId);
