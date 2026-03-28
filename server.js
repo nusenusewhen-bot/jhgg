@@ -6,13 +6,11 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-// Debug env vars
 console.log('[ENV] CLIENT_ID exists:', !!process.env.CLIENT_ID);
 console.log('[ENV] CLIENT_SECRET exists:', !!process.env.CLIENT_SECRET);
 console.log('[ENV] CALLBACK_URL:', process.env.CALLBACK_URL);
 console.log('[ENV] WALLET_MNEMONIC exists:', !!process.env.WALLET_MNEMONIC);
 
-// Ensure data directory exists
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -38,7 +36,6 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
 
-// Init tables
 try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS user_credits (
@@ -175,31 +172,51 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
         const { address, privateKey } = generateLTCAddress();
         console.log('[PURCHASE] Address generated:', address);
 
-        db.prepare('INSERT INTO pending_credits (user_id, address, private_key, expected_amount, credits_to_add, status, created_at)')
-            .run(userId, address, privateKey, 0.000015, 0, 'pending_purchase', Date.now());
+        const insert = db.prepare(`
+            INSERT INTO pending_credits 
+            (user_id, address, private_key, expected_amount, credits_to_add, status, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        
+        insert.run(userId, address, privateKey, 0.000015, 0, 'pending_purchase', Date.now());
 
         console.log('[PURCHASE] Saved to DB');
         res.json({ success: true, address, amount: 0.000015 });
     } catch (err) {
         console.error('[PURCHASE ERROR]', err);
-        res.status(500).json({ success: false, error: err.message, stack: err.stack });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
 app.post('/api/credits/check', ensureAuthAPI, async (req, res) => {
     try {
         const userId = req.user.id;
-        const pending = db.prepare('SELECT * FROM pending_credits WHERE user_id = ? AND (status = "pending" OR status = "pending_purchase")').get(userId);
+        const pendingStmt = db.prepare(`
+            SELECT * FROM pending_credits 
+            WHERE user_id = ? 
+            AND (status = 'pending' OR status = 'pending_purchase')
+        `);
+        const pending = pendingStmt.get(userId);
 
         if (!pending) return res.json({ success: false, error: 'No pending payment' });
 
         const { balance } = await getBalance(pending.address);
 
         if (balance >= pending.expected_amount * 0.9) {
-            db.prepare('UPDATE pending_credits SET status = ?, paid_at = ? WHERE id = ?').run('completed', Date.now(), pending.id);
+            const updateStmt = db.prepare(`
+                UPDATE pending_credits 
+                SET status = ?, paid_at = ? 
+                WHERE id = ?
+            `);
+            updateStmt.run('completed', Date.now(), pending.id);
 
             if (pending.status === 'pending_purchase') {
-                db.prepare('INSERT OR REPLACE INTO user_credits (user_id, auto_adv_purchased, purchased_at) VALUES (?, 1, ?)').run(userId, Date.now());
+                const upsertStmt = db.prepare(`
+                    INSERT OR REPLACE INTO user_credits 
+                    (user_id, auto_adv_purchased, purchased_at) 
+                    VALUES (?, 1, ?)
+                `);
+                upsertStmt.run(userId, Date.now());
             }
             return res.json({ success: true });
         }
