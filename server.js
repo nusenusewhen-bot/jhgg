@@ -11,7 +11,7 @@ const app = express();
 
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
-const CALLBACK_URL = process.env.CALLBACK_URL || 'http://localhost:3000/auth/discord/callback';
+const CALLBACK_URL = process.env.CALLBACK_URL || 'http://localhost:8080/auth/discord/callback';
 const SECRET_PROMO_CODE = 'INFINITE2024';
 
 app.use(express.json());
