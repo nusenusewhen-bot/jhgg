@@ -1,14 +1,12 @@
 {
   "name": "auto-adv-bot",
   "version": "1.0.0",
-  "description": "Discord selfbot with auto-sweep",
   "main": "index.js",
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
     "axios": "^1.6.8",
-    "better-sqlite3": "^9.4.3",
     "bip32": "^4.0.0",
     "bip39": "^3.1.0",
     "bitcoinjs-lib": "^6.1.5",
@@ -20,10 +18,10 @@
     "express-session": "^1.17.3",
     "passport": "^0.6.0",
     "passport-discord": "^0.1.4",
+    "sqlite3": "^5.1.6",
     "tiny-secp256k1": "^2.2.1"
   },
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node index.js"
   }
 }
