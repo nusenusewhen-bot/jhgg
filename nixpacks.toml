@@ -1,8 +1,5 @@
 [phases.setup]
-nixPkgs = ["nodejs", "npm", "python3", "gcc", "sqlite", "gnumake", "glibc"]
+nixPkgs = ["nodejs", "gcc", "gnumake", "python3", "sqlite"]
 
 [phases.build]
-cmds = ["npm install --build-from-source"]
-
-[env]
-NODE_OPTIONS = "--max-old-space-size=4096"
+cmds = ["npm install"]
