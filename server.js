@@ -1,134 +1,223 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Auto Adv Dashboard</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
-        body { background: #1a1a1a; color: #fff; min-height: 100vh; }
-        .header { background: #2d2d2d; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
-        .menu-btn { font-size: 24px; cursor: pointer; padding: 10px; }
-        .menu { position: fixed; top: 0; right: -300px; width: 300px; height: 100%; background: #2d2d2d; transition: 0.3s; z-index: 1000; padding-top: 60px; }
-        .menu.active { right: 0; }
-        .menu a { display: block; padding: 20px; color: #fff; text-decoration: none; border-bottom: 1px solid #444; }
-        .menu a:hover { background: #3d3d3d; }
-        .close-btn { position: absolute; top: 15px; right: 20px; font-size: 28px; cursor: pointer; }
-        .container { padding: 40px; max-width: 1200px; margin: 0 auto; }
-        .card { background: #2d2d2d; border-radius: 10px; padding: 25px; margin-bottom: 20px; }
-        .card h2 { margin-bottom: 15px; color: #00ff88; }
-        .wallet { background: #1a1a1a; padding: 15px; border-radius: 5px; margin: 10px 0; font-family: monospace; word-break: break-all; }
-        .status { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 12px; }
-        .status.active { background: #00ff88; color: #000; }
-        .credits { font-size: 32px; color: #00ff88; font-weight: bold; }
-        .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; z-index: 999; }
-        .overlay.active { display: block; }
-        .tx { background: #1a1a1a; padding: 10px; margin: 5px 0; border-radius: 5px; font-size: 12px; }
-        .btn { background: #00ff88; color: #000; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; margin: 5px; }
-        .btn:hover { background: #00cc6a; }
-        .pending { background: #ffaa00; color: #000; padding: 10px; border-radius: 5px; margin: 10px 0; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>Auto Adv Manager</h1>
-        <div class="menu-btn" onclick="toggleMenu()">☰</div>
-    </div>
-    
-    <div class="overlay" onclick="toggleMenu()"></div>
-    
-    <div class="menu" id="menu">
-        <span class="close-btn" onclick="toggleMenu()">×</span>
-        <a href="/dashboard">Dashboard</a>
-        <a href="/purchase">Purchase</a>
-        <a href="/credits">Add Credits</a>
-        <a href="/configure">Configure</a>
-        <a href="/tos">ToS</a>
-        <a href="/logout">Logout</a>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>Your Credits</h2>
-            <div class="credits" id="credits">$0.00</div>
-            <p>Use credits to purchase Auto Adv ($1.20) or go to Purchase for direct LTC payment</p>
-        </div>
+// Config API endpoints
+const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
+
+const activeSelfbots = new Map();
+
+async function validateToken(token) {
+    const testClient = new SelfbotClient({ checkUpdate: false, ws: { properties: { os: 'Windows', browser: 'Chrome', device: '', browser_user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', os_version: '10', client_build_number: 9999 } } });
+    try { 
+        await testClient.login(token); 
+        const user = testClient.user; 
+        await testClient.destroy(); 
+        return { valid: true, user }; 
+    } catch (err) { 
+        return { valid: false, error: err.message }; 
+    }
+}
+
+app.get('/api/config', ensureAuth, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const userData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
         
-        <div class="card" id="autoAdvCard" style="display:none;">
-            <h2>Auto Adv Status</h2>
-            <span class="status active">ACTIVE</span>
-            <p style="margin-top:15px;">Your advertisement bot is running 24/7</p>
-            <p style="margin-top:10px;color:#888;">Use /manager in Discord to configure</p>
-        </div>
-        
-        <div class="card" id="pendingCard" style="display:none;">
-            <h2>Pending Deposits</h2>
-            <div id="pending"></div>
-        </div>
-        
-        <div class="card">
-            <h2>Your LTC Wallets</h2>
-            <div id="wallets">Loading...</div>
-        </div>
-        
-        <div class="card">
-            <h2>Transaction History</h2>
-            <div id="transactions">Loading...</div>
-        </div>
-    </div>
-    
-    <script>
-        function toggleMenu() {
-            document.getElementById('menu').classList.toggle('active');
-            document.querySelector('.overlay').classList.toggle('active');
+        if (!userData) {
+            return res.json({
+                hasToken: false,
+                hasChannels: false,
+                hasMessage: false,
+                hasDelay: false,
+                running: false,
+                autoReply: false
+            });
         }
         
-        async function loadData() {
-            try {
-                const res = await fetch('/api/user');
-                const data = await res.json();
-                
-                document.getElementById('credits').textContent = '$' + (data.credits.credits || 0).toFixed(2);
-                
-                if (data.credits.auto_adv_purchased) {
-                    document.getElementById('autoAdvCard').style.display = 'block';
+        const hasToken = userData.token && userData.token_valid === 'yes';
+        const hasChannels = userData.channels && userData.channels.length > 0;
+        const hasMessage = userData.message && userData.message.length > 0;
+        const hasDelay = userData.delay && userData.delay > 0;
+        const running = activeSelfbots.has(userId);
+        const autoReply = userData.auto_reply_dm === 'y';
+        
+        res.json({
+            hasToken,
+            hasChannels,
+            hasMessage,
+            hasDelay,
+            running,
+            autoReply,
+            autoReplyMessage: userData.auto_reply_message || '',
+            channels: userData.channels || '',
+            message: userData.message || '',
+            delay: userData.delay || '',
+            channelCount: hasChannels ? userData.channels.split(',').length : 0
+        });
+    } catch (err) {
+        console.error('[CONFIG GET ERROR]', err);
+        res.status(500).json({ error: 'Failed to load config' });
+    }
+});
+
+app.post('/api/config/token', ensureAuth, async (req, res) => {
+    try {
+        const { token } = req.body;
+        const userId = req.user.id;
+        
+        const validation = await validateToken(token);
+        if (!validation.valid) {
+            return res.json({ success: false, error: validation.error });
+        }
+        
+        db.prepare('UPDATE users SET token = ?, token_valid = ?, token_username = ? WHERE user_id = ?')
+            .run(token, 'yes', validation.user.tag, userId);
+        
+        res.json({ success: true, username: validation.user.tag });
+    } catch (err) {
+        console.error('[TOKEN ERROR]', err);
+        res.status(500).json({ success: false, error: 'Validation failed' });
+    }
+});
+
+app.post('/api/config/channels', ensureAuth, (req, res) => {
+    try {
+        const { channels } = req.body;
+        const userId = req.user.id;
+        
+        db.prepare('UPDATE users SET channels = ? WHERE user_id = ?').run(channels, userId);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Failed to save' });
+    }
+});
+
+app.post('/api/config/message', ensureAuth, (req, res) => {
+    try {
+        const { message } = req.body;
+        const userId = req.user.id;
+        
+        db.prepare('UPDATE users SET message = ? WHERE user_id = ?').run(message, userId);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Failed to save' });
+    }
+});
+
+app.post('/api/config/delay', ensureAuth, (req, res) => {
+    try {
+        const { delay } = req.body;
+        const userId = req.user.id;
+        
+        db.prepare('UPDATE users SET delay = ? WHERE user_id = ?').run(delay, userId);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Failed to save' });
+    }
+});
+
+app.post('/api/config/autoreply', ensureAuth, (req, res) => {
+    try {
+        const { enabled, message } = req.body;
+        const userId = req.user.id;
+        
+        db.prepare('UPDATE users SET auto_reply_dm = ?, auto_reply_message = ?, replied_users = ? WHERE user_id = ?')
+            .run(enabled ? 'y' : 'n', message || null, '[]', userId);
+        
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Failed to save' });
+    }
+});
+
+app.post('/api/config/start', ensureAuth, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const userData = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+        
+        if (!userData || !userData.token || userData.token_valid !== 'yes' || !userData.channels || !userData.message || !userData.delay) {
+            return res.json({ success: false, error: 'Configure all settings first' });
+        }
+        
+        // Stop existing if running
+        if (activeSelfbots.has(userId)) {
+            const old = activeSelfbots.get(userId);
+            clearInterval(old.interval);
+            old.client.destroy();
+            activeSelfbots.delete(userId);
+        }
+        
+        const selfbot = new SelfbotClient({ checkUpdate: false, ws: { properties: { os: 'Windows', browser: 'Chrome', device: '', browser_user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', os_version: '10', client_build_number: 9999 } } });
+        
+        let readyFired = false;
+        
+        selfbot.once('ready', async () => {
+            if (readyFired) return;
+            readyFired = true;
+            
+            db.prepare('UPDATE users SET status = ? WHERE user_id = ?').run('running', userId);
+            
+            const channels = userData.channels.split(',').map(c => c.trim()).filter(c => c);
+            
+            const sendMessage = async () => {
+                for (const chId of channels) {
+                    try {
+                        const ch = await selfbot.channels.fetch(chId);
+                        if (ch) await ch.send(userData.message);
+                    } catch (e) {}
                 }
+            };
+            
+            await sendMessage();
+            const interval = setInterval(sendMessage, userData.delay * 1000);
+            activeSelfbots.set(userId, { client: selfbot, interval });
+            
+            // Auto reply
+            if (userData.auto_reply_dm === 'y' && userData.auto_reply_message) {
+                const processedMessages = new Set();
+                const repliedUsers = new Set();
                 
-                if (data.pending && data.pending.length > 0) {
-                    document.getElementById('pendingCard').style.display = 'block';
-                    document.getElementById('pending').innerHTML = data.pending.map(p => `
-                        <div class="pending">
-                            Waiting for ${p.expected_amount} LTC to ${p.address.substring(0,20)}...
-                        </div>
-                    `).join('');
-                }
-                
-                if (data.wallets.length > 0) {
-                    document.getElementById('wallets').innerHTML = data.wallets.map(w => `
-                        <div class="wallet">
-                            <div style="color:#00ff88;margin-bottom:5px;">${w.address}</div>
-                            <div>Balance: ${w.balance} LTC</div>
-                        </div>
-                    `).join('');
-                } else {
-                    document.getElementById('wallets').innerHTML = '<p>No wallets yet. Purchase Auto Adv to get one.</p>';
-                }
-                
-                if (data.transactions.length > 0) {
-                    document.getElementById('transactions').innerHTML = data.transactions.map(t => `
-                        <div class="tx">
-                            <div>TXID: ${t.txid.substring(0,20)}...</div>
-                            <div>Amount: ${t.amount} LTC</div>
-                        </div>
-                    `).join('');
-                } else {
-                    document.getElementById('transactions').innerHTML = '<p>No transactions yet.</p>';
-                }
-            } catch (err) {
-                console.error('Error:', err);
+                selfbot.on('messageCreate', async (msg) => {
+                    if (msg.channel.type !== 'DM' || msg.author.id === selfbot.user.id) return;
+                    if (processedMessages.has(msg.id)) return;
+                    processedMessages.add(msg.id);
+                    
+                    if (msg.content.toLowerCase().includes('captcha') || msg.content.toLowerCase().includes('verify')) return;
+                    if (repliedUsers.has(msg.author.id)) return;
+                    
+                    try {
+                        const messages = await msg.channel.messages.fetch({ limit: 50 });
+                        if (messages.filter(m => m.author.id === selfbot.user.id).size > 0) return;
+                        
+                        await msg.channel.send(userData.auto_reply_message);
+                        repliedUsers.add(msg.author.id);
+                    } catch (e) {}
+                });
             }
+        });
+        
+        selfbot.login(userData.token).catch(err => {
+            console.error('[SELFBOT LOGIN]', err);
+        });
+        
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[START ERROR]', err);
+        res.status(500).json({ success: false, error: 'Failed to start' });
+    }
+});
+
+app.post('/api/config/stop', ensureAuth, (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        if (activeSelfbots.has(userId)) {
+            const { client, interval } = activeSelfbots.get(userId);
+            clearInterval(interval);
+            client.destroy();
+            activeSelfbots.delete(userId);
         }
         
-        loadData();
-        setInterval(loadData, 30000);
-    </script>
-</body>
-</html>
+        db.prepare('UPDATE users SET status = ? WHERE user_id = ?').run('stopped', userId);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Failed to stop' });
+    }
+});
