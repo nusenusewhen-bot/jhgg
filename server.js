@@ -6,6 +6,25 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
+// Debug env vars
+console.log('[ENV] CLIENT_ID exists:', !!process.env.CLIENT_ID);
+console.log('[ENV] CLIENT_SECRET exists:', !!process.env.CLIENT_SECRET);
+console.log('[ENV] CALLBACK_URL:', process.env.CALLBACK_URL);
+console.log('[ENV] WALLET_MNEMONIC exists:', !!process.env.WALLET_MNEMONIC);
+
+// Ensure data directory exists
+const dataDir = path.join(__dirname, 'data');
+if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+    console.log('[DB] Created data directory');
+}
+
+const dbPath = path.join(dataDir, 'database.db');
+console.log('[DB] Using path:', dbPath);
+
+const db = new Database(dbPath);
+console.log('[DB] Connected');
+
 const { generateLTCAddress } = require('./wallet');
 const { getBalance } = require('./blockchain');
 const { startSelfBot, stopSelfBot } = require('./selfbot');
@@ -13,41 +32,46 @@ const { startSelfBot, stopSelfBot } = require('./selfbot');
 const publicDir = path.join(__dirname, 'public');
 if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
 
-const db = new Database('./data.db');
 const app = express();
 
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS user_credits (
-    user_id TEXT PRIMARY KEY,
-    credits REAL DEFAULT 0,
-    auto_adv_purchased INTEGER DEFAULT 0,
-    purchased_at INTEGER
-  );
-  
-  CREATE TABLE IF NOT EXISTS pending_credits (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT,
-    address TEXT,
-    private_key TEXT,
-    expected_amount REAL,
-    credits_to_add REAL,
-    status TEXT,
-    created_at INTEGER,
-    paid_at INTEGER
-  );
-  
-  CREATE TABLE IF NOT EXISTS bot_configs (
-    user_id TEXT PRIMARY KEY,
-    token TEXT,
-    channels TEXT,
-    message TEXT,
-    active INTEGER DEFAULT 0
-  );
-`);
+// Init tables
+try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS user_credits (
+        user_id TEXT PRIMARY KEY,
+        credits REAL DEFAULT 0,
+        auto_adv_purchased INTEGER DEFAULT 0,
+        purchased_at INTEGER
+      );
+      
+      CREATE TABLE IF NOT EXISTS pending_credits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT,
+        address TEXT,
+        private_key TEXT,
+        expected_amount REAL,
+        credits_to_add REAL,
+        status TEXT,
+        created_at INTEGER,
+        paid_at INTEGER
+      );
+      
+      CREATE TABLE IF NOT EXISTS bot_configs (
+        user_id TEXT PRIMARY KEY,
+        token TEXT,
+        channels TEXT,
+        message TEXT,
+        active INTEGER DEFAULT 0
+      );
+    `);
+    console.log('[DB] Tables initialized');
+} catch(e) {
+    console.error('[DB] Init error:', e);
+}
 
 app.use(express.json());
 app.use(express.static(publicDir));
@@ -118,36 +142,47 @@ app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedi
 app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
 
 app.get('/api/user', ensureAuthAPI, (req, res) => {
-    const userId = req.user.id;
-    const data = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
-    res.json({ 
-        id: req.user.id,
-        username: req.user.username,
-        global_name: req.user.global_name,
-        avatar: req.user.avatar,
-        credits: data.credits, 
-        purchased: data.auto_adv_purchased === 1 
-    });
+    try {
+        const userId = req.user.id;
+        const data = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
+        res.json({ 
+            id: req.user.id,
+            username: req.user.username,
+            global_name: req.user.global_name,
+            avatar: req.user.avatar,
+            credits: data.credits, 
+            purchased: data.auto_adv_purchased === 1 
+        });
+    } catch(e) {
+        console.error('[API USER ERROR]', e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
+    console.log('[PURCHASE] Starting for user:', req.user.id);
+    
     try {
         const userId = req.user.id;
         const existing = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(userId);
 
         if (existing && existing.auto_adv_purchased === 1) {
+            console.log('[PURCHASE] Already purchased');
             return res.json({ success: false, error: 'Already purchased' });
         }
 
+        console.log('[PURCHASE] Generating address...');
         const { address, privateKey } = generateLTCAddress();
+        console.log('[PURCHASE] Address generated:', address);
 
         db.prepare('INSERT INTO pending_credits (user_id, address, private_key, expected_amount, credits_to_add, status, created_at)')
             .run(userId, address, privateKey, 0.000015, 0, 'pending_purchase', Date.now());
 
+        console.log('[PURCHASE] Saved to DB');
         res.json({ success: true, address, amount: 0.000015 });
     } catch (err) {
         console.error('[PURCHASE ERROR]', err);
-        res.status(500).json({ success: false, error: err.message });
+        res.status(500).json({ success: false, error: err.message, stack: err.stack });
     }
 });
 
@@ -236,7 +271,7 @@ app.get('/credits', ensureAuth, (req, res) => res.redirect('/dashboard'));
 
 app.use((err, req, res, next) => {
     console.error('[SERVER ERROR]', err);
-    res.status(500).send('Server error');
+    res.status(500).send('Server error: ' + err.message);
 });
 
 module.exports = app;
