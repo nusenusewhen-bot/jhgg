@@ -2,89 +2,101 @@ const express = require('express');
 const session = require('express-session');
 const passport = require('passport');
 const DiscordStrategy = require('passport-discord').Strategy;
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
+
+// Database setup - use simple JSON file if sqlite fails
+const dataDir = path.join(__dirname, 'data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+// Simple file-based DB to avoid native module issues
+class SimpleDB {
+    constructor() {
+        this.file = path.join(dataDir, 'db.json');
+        this.data = { users: {}, pending: {}, configs: {}, usedKeys: {} };
+        this.load();
+    }
+    
+    load() {
+        try {
+            if (fs.existsSync(this.file)) {
+                this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+            }
+        } catch(e) { console.error('[DB] Load error:', e.message); }
+    }
+    
+    save() {
+        try {
+            fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
+        } catch(e) { console.error('[DB] Save error:', e.message); }
+    }
+    
+    getUser(id) {
+        return this.data.users[id] || { auto_adv_purchased: 0 };
+    }
+    
+    setUser(id, data) {
+        this.data.users[id] = { ...this.getUser(id), ...data };
+        this.save();
+    }
+    
+    addPending(userId, address, privateKey, expectedUSD) {
+        this.data.pending[address] = {
+            user_id: userId,
+            address,
+            private_key: privateKey,
+            expected_usd: expectedUSD,
+            status: 'monitoring',
+            created_at: Date.now()
+        };
+        this.save();
+        return this.data.pending[address];
+    }
+    
+    getPending(address) {
+        return this.data.pending[address];
+    }
+    
+    getAllPending() {
+        return Object.values(this.data.pending).filter(p => p.status === 'monitoring');
+    }
+    
+    updatePending(address, updates) {
+        if (this.data.pending[address]) {
+            this.data.pending[address] = { ...this.data.pending[address], ...updates };
+            this.save();
+        }
+    }
+    
+    useKey(key, userId) {
+        this.data.usedKeys[key] = { user_id: userId, used_at: Date.now() };
+        this.save();
+    }
+    
+    isKeyUsed(key) {
+        return !!this.data.usedKeys[key];
+    }
+    
+    getConfig(userId) {
+        return this.data.configs[userId];
+    }
+    
+    setConfig(userId, config) {
+        this.data.configs[userId] = config;
+        this.save();
+    }
+}
+
+const db = new SimpleDB();
+
+const app = express();
 
 // Crash protection
 process.on('uncaughtException', (err) => console.error('[FATAL]', err.message));
 process.on('unhandledRejection', (reason) => console.error('[FATAL]', reason));
 
-// Setup data directory
-const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) {
-    try { fs.mkdirSync(dataDir, { recursive: true }); } catch(e) {}
-}
-
-// SQLite database (pure JS, no native build issues)
-const dbPath = path.join(dataDir, 'database.db');
-const db = new sqlite3.Database(dbPath);
-
-// Promisify methods
-db.runAsync = (sql, params = []) => new Promise((resolve, reject) => {
-    db.run(sql, params, function(err) {
-        if (err) reject(err);
-        else resolve({ lastID: this.lastID, changes: this.changes });
-    });
-});
-
-db.getAsync = (sql, params = []) => new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-    });
-});
-
-db.allAsync = (sql, params = []) => new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-    });
-});
-
-// Initialize tables
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS user_credits (
-        user_id TEXT PRIMARY KEY,
-        auto_adv_purchased INTEGER DEFAULT 0,
-        purchased_at INTEGER,
-        redeem_key_used TEXT
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS pending_credits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT,
-        address TEXT UNIQUE,
-        private_key TEXT,
-        expected_usd REAL DEFAULT 1.50,
-        status TEXT DEFAULT 'monitoring',
-        created_at INTEGER,
-        paid_at INTEGER,
-        amount_received_ltc REAL
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS bot_configs (
-        user_id TEXT PRIMARY KEY,
-        token TEXT,
-        channels TEXT,
-        message TEXT,
-        delay_seconds INTEGER DEFAULT 30,
-        auto_reply_enabled INTEGER DEFAULT 0,
-        auto_reply_text TEXT,
-        active INTEGER DEFAULT 0
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS used_redeem_keys (
-        key TEXT PRIMARY KEY,
-        user_id TEXT,
-        used_at INTEGER
-    )`);
-});
-
-const app = express();
-
-// HEALTH CHECK FIRST
+// Health check
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
 // Middleware
@@ -118,6 +130,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
 const OWNER_LTC_ADDRESS = process.env.OWNER_LTC_ADDRESS;
+const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
 const TARGET_USD = 1.50;
 const TOLERANCE_USD = 0.10;
 
@@ -142,16 +155,76 @@ function ensureAuthAPI(req, res, next) {
     return res.status(401).json({ success: false, error: 'Not logged in' });
 }
 
-async function ensurePurchasedAPI(req, res, next) {
-    try {
-        const row = await db.getAsync('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?', [req.user.id]);
-        if (!row || row.auto_adv_purchased !== 1) {
-            return res.status(403).json({ success: false, error: 'Purchase required' });
-        }
-        next();
-    } catch(e) {
-        return res.status(500).json({ error: 'DB error' });
+function ensurePurchasedAPI(req, res, next) {
+    const user = db.getUser(req.user.id);
+    if (user.auto_adv_purchased !== 1) {
+        return res.status(403).json({ success: false, error: 'Purchase required' });
     }
+    next();
+}
+
+// Auto-sweep functionality
+let walletModule = null;
+try {
+    walletModule = require('./wallet');
+    console.log('[WALLET] Loaded successfully');
+} catch(e) {
+    console.error('[WALLET] Failed to load:', e.message);
+}
+
+async function checkAndSweep() {
+    if (!walletModule || !OWNER_LTC_ADDRESS || !WALLET_MNEMONIC) {
+        console.log('[SWEEP] Skipped - missing deps');
+        return;
+    }
+    
+    const pending = db.getAllPending();
+    console.log(`[SWEEP] Checking ${pending.length} addresses`);
+    
+    for (const p of pending) {
+        try {
+            const balance = await walletModule.checkAddressBalance(p.address);
+            console.log(`[SWEEP] ${p.address}: ${balance} LTC`);
+            
+            if (balance > 0) {
+                console.log(`[SWEEP] Found balance! Sweeping...`);
+                const txid = await walletModule.createTransaction(p.private_key, p.address, OWNER_LTC_ADDRESS);
+                
+                if (txid) {
+                    console.log(`[SWEEP] SUCCESS: ${txid}`);
+                    
+                    // Grant access if enough
+                    const ltcPrice = await getLTCToUSD();
+                    const usdValue = balance * ltcPrice;
+                    
+                    if (usdValue >= (TARGET_USD - TOLERANCE_USD)) {
+                        db.setUser(p.user_id, { auto_adv_purchased: 1, purchased_at: Date.now() });
+                        db.updatePending(p.address, { status: 'completed', paid_at: Date.now(), amount_received_ltc: balance });
+                    }
+                }
+            }
+        } catch (e) {
+            console.error(`[SWEEP] Error for ${p.address}:`, e.message);
+        }
+    }
+}
+
+// Get LTC price
+let cachedPrice = 85;
+async function getLTCToUSD() {
+    try {
+        const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd', { timeout: 5000 });
+        cachedPrice = res.data.litecoin.usd;
+    } catch (e) {}
+    return cachedPrice;
+}
+
+// Start auto-sweep every 10 seconds
+if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
+    console.log('[AUTO-SWEEP] Starting 10-second interval');
+    setInterval(checkAndSweep, 10000);
+    // Run immediately on start
+    setTimeout(checkAndSweep, 5000);
 }
 
 // Routes
@@ -159,36 +232,32 @@ app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
 app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
 
-app.get('/api/user', ensureAuthAPI, async (req, res) => {
-    try {
-        const row = await db.getAsync('SELECT * FROM user_credits WHERE user_id = ?', [req.user.id]);
-        res.json({ 
-            id: req.user.id,
-            username: req.user.username,
-            global_name: req.user.global_name,
-            avatar: req.user.avatar,
-            purchased: row ? row.auto_adv_purchased === 1 : false
-        });
-    } catch(e) {
-        res.status(500).json({ error: e.message });
-    }
+app.get('/api/user', ensureAuthAPI, (req, res) => {
+    const user = db.getUser(req.user.id);
+    res.json({ 
+        id: req.user.id,
+        username: req.user.username,
+        global_name: req.user.global_name,
+        avatar: req.user.avatar,
+        purchased: user.auto_adv_purchased === 1 
+    });
 });
 
-app.post('/api/purchase/lifetime', ensureAuthAPI, async (req, res) => {
+app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     try {
         const userId = req.user.id;
-        const existing = await db.getAsync('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?', [userId]);
-        if (existing && existing.auto_adv_purchased === 1) {
+        const user = db.getUser(userId);
+        
+        if (user.auto_adv_purchased === 1) {
             return res.json({ success: false, error: 'Already purchased' });
         }
 
-        const { generateLTCAddress } = require('./wallet');
-        const { address, privateKey } = generateLTCAddress();
+        if (!walletModule) {
+            return res.status(500).json({ success: false, error: 'Wallet module not loaded' });
+        }
 
-        await db.runAsync(
-            'INSERT INTO pending_credits (user_id, address, private_key, expected_usd, created_at) VALUES (?, ?, ?, ?, ?)',
-            [userId, address, privateKey, TARGET_USD, Date.now()]
-        );
+        const { address, privateKey } = walletModule.generateLTCAddress();
+        db.addPending(userId, address, privateKey, TARGET_USD);
 
         res.json({ success: true, address, amountUSD: TARGET_USD });
     } catch (err) {
@@ -197,7 +266,7 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, async (req, res) => {
     }
 });
 
-app.post('/api/redeem', ensureAuthAPI, async (req, res) => {
+app.post('/api/redeem', ensureAuthAPI, (req, res) => {
     try {
         const { key } = req.body;
         const userId = req.user.id;
@@ -206,19 +275,13 @@ app.post('/api/redeem', ensureAuthAPI, async (req, res) => {
         const upperKey = key.toUpperCase().trim();
         
         if (!VALID_REDEEM_KEYS.has(upperKey)) return res.json({ success: false, error: 'Invalid key' });
+        if (db.isKeyUsed(upperKey)) return res.json({ success: false, error: 'Key used' });
         
-        const used = await db.getAsync('SELECT * FROM used_redeem_keys WHERE key = ?', [upperKey]);
-        if (used) return res.json({ success: false, error: 'Key used' });
+        const user = db.getUser(userId);
+        if (user.auto_adv_purchased === 1) return res.json({ success: false, error: 'Already have access' });
         
-        const existing = await db.getAsync('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?', [userId]);
-        if (existing && existing.auto_adv_purchased === 1) return res.json({ success: false, error: 'Already have access' });
-        
-        await db.runAsync(
-            'INSERT OR REPLACE INTO user_credits (user_id, auto_adv_purchased, purchased_at, redeem_key_used) VALUES (?, 1, ?, ?)',
-            [userId, Date.now(), upperKey]
-        );
-        
-        await db.runAsync('INSERT INTO used_redeem_keys (key, user_id, used_at) VALUES (?, ?, ?)', [upperKey, userId, Date.now()]);
+        db.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), redeem_key_used: upperKey });
+        db.useKey(upperKey, userId);
         
         res.json({ success: true, message: 'Access granted!' });
     } catch (err) {
@@ -239,20 +302,28 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             return res.json({ success: false, error: 'Invalid channel IDs' });
         }
         
-        const { validateToken, startSelfBot } = require('./selfbot');
-        const validation = await validateToken(token);
+        let selfbotModule;
+        try {
+            selfbotModule = require('./selfbot');
+        } catch(e) {
+            return res.status(500).json({ success: false, error: 'Selfbot module not loaded' });
+        }
+        
+        const validation = await selfbotModule.validateToken(token);
         if (!validation.valid) return res.json({ success: false, error: 'Invalid token' });
         
         const delaySeconds = parseInt(delay) || 30;
         const autoReply = autoReplyEnabled ? 1 : 0;
         
-        await db.runAsync(
-            `INSERT OR REPLACE INTO bot_configs (user_id, token, channels, message, delay_seconds, auto_reply_enabled, auto_reply_text, active) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-            [req.user.id, token, channels, message, delaySeconds, autoReply, autoReplyText || '']
-        );
+        db.setConfig(req.user.id, {
+            token, channels, message, 
+            delay_seconds: delaySeconds, 
+            auto_reply_enabled: autoReply, 
+            auto_reply_text: autoReplyText || '',
+            active: 1
+        });
         
-        await startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText);
+        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText);
         
         res.json({ success: true, username: validation.username });
     } catch (err) {
@@ -260,11 +331,21 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     }
 });
 
-app.post('/api/bot/stop', ensureAuthAPI, async (req, res) => {
+app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
     try {
-        const { stopSelfBot } = require('./selfbot');
-        stopSelfBot(req.user.id);
-        await db.runAsync('UPDATE bot_configs SET active = 0 WHERE user_id = ?', [req.user.id]);
+        let selfbotModule;
+        try {
+            selfbotModule = require('./selfbot');
+        } catch(e) {
+            return res.status(500).json({ success: false, error: 'Selfbot module not loaded' });
+        }
+        
+        selfbotModule.stopSelfBot(req.user.id);
+        const config = db.getConfig(req.user.id);
+        if (config) {
+            config.active = 0;
+            db.setConfig(req.user.id, config);
+        }
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
