@@ -1,6 +1,89 @@
-// Config API endpoints
+const express = require('express');
+const session = require('express-session');
+const passport = require('passport');
+const DiscordStrategy = require('passport-discord').Strategy;
+const Database = require('better-sqlite3');
+const path = require('path');
+const fs = require('fs');
+const { generateLTCAddress } = require('./wallet');
+const { getBalance, sweepWallet } = require('./blockchain');
 const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 
+const publicDir = path.join(__dirname, 'public');
+if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
+
+const db = new Database('./data.db');
+const app = express();
+
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const CALLBACK_URL = process.env.CALLBACK_URL;
+const SECRET_PROMO_CODE = 'INFINITE2024';
+const OWNER_LTC_ADDRESS = 'LeDdjh2BDbPkrhG2pkWBko3HRdKQzprJMX';
+
+app.use(express.json());
+app.use(express.static(publicDir));
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'fallback-secret',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false }
+}));
+app.use(passport.initialize());
+app.use(passport.session());
+
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((obj, done) => done(null, obj));
+
+passport.use(new DiscordStrategy({
+    clientID: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
+    callbackURL: CALLBACK_URL,
+    scope: ['identify', 'guilds', 'bot']
+}, (accessToken, refreshToken, profile, done) => {
+    process.nextTick(() => done(null, profile));
+}));
+
+function ensureAuth(req, res, next) {
+    if (req.isAuthenticated()) return next();
+    res.redirect('/login');
+}
+
+// Health check - MUST respond immediately
+app.get('/health', (req, res) => {
+    res.status(200).send('OK');
+});
+
+app.get('/login', passport.authenticate('discord'));
+
+app.get('/auth/discord/callback', 
+    passport.authenticate('discord', { failureRedirect: '/' }),
+    (req, res) => {
+        const guildId = process.env.GUILD_ID;
+        const hasBot = req.user.guilds && req.user.guilds.some(g => g.id === guildId);
+        if (!hasBot && guildId) {
+            return res.redirect(`https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&scope=bot&permissions=8&guild_id=${guildId}`);
+        }
+        res.redirect('/dashboard');
+    }
+);
+
+app.get('/api/user', ensureAuth, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const credits = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
+        const wallets = db.prepare('SELECT * FROM wallets WHERE user_id = ?').all(userId);
+        const transactions = db.prepare('SELECT * FROM transactions WHERE wallet_address IN (SELECT address FROM wallets WHERE user_id = ?)').all(userId);
+        const pending = db.prepare('SELECT * FROM pending_credits WHERE user_id = ? AND status = ?').all(userId, 'pending');
+        
+        res.json({ user: req.user, credits, wallets, transactions, pending });
+    } catch (err) {
+        console.error('[API ERROR]', err);
+        res.status(500).json({ error: 'Database error' });
+    }
+});
+
+// Config endpoints
 const activeSelfbots = new Map();
 
 async function validateToken(token) {
@@ -52,7 +135,7 @@ app.get('/api/config', ensureAuth, (req, res) => {
             channelCount: hasChannels ? userData.channels.split(',').length : 0
         });
     } catch (err) {
-        console.error('[CONFIG GET ERROR]', err);
+        console.error('[CONFIG ERROR]', err);
         res.status(500).json({ error: 'Failed to load config' });
     }
 });
@@ -136,7 +219,6 @@ app.post('/api/config/start', ensureAuth, async (req, res) => {
             return res.json({ success: false, error: 'Configure all settings first' });
         }
         
-        // Stop existing if running
         if (activeSelfbots.has(userId)) {
             const old = activeSelfbots.get(userId);
             clearInterval(old.interval);
@@ -169,7 +251,6 @@ app.post('/api/config/start', ensureAuth, async (req, res) => {
             const interval = setInterval(sendMessage, userData.delay * 1000);
             activeSelfbots.set(userId, { client: selfbot, interval });
             
-            // Auto reply
             if (userData.auto_reply_dm === 'y' && userData.auto_reply_message) {
                 const processedMessages = new Set();
                 const repliedUsers = new Set();
@@ -221,3 +302,183 @@ app.post('/api/config/stop', ensureAuth, (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to stop' });
     }
 });
+
+// Credits and purchase endpoints
+app.post('/api/credits/deposit', ensureAuth, (req, res) => {
+    try {
+        const { amount } = req.body;
+        const userId = req.user.id;
+        const creditsToAdd = parseFloat(amount);
+        
+        if (!creditsToAdd || creditsToAdd <= 0) {
+            return res.json({ success: false, error: 'Invalid amount' });
+        }
+        
+        const existing = db.prepare('SELECT * FROM pending_credits WHERE user_id = ? AND status = ?').get(userId, 'pending');
+        if (existing) {
+            return res.json({ success: false, error: 'Already have pending deposit', address: existing.address });
+        }
+        
+        const { address, privateKey, mnemonic } = generateLTCAddress();
+        
+        db.prepare('INSERT INTO pending_credits (user_id, address, private_key, expected_amount, credits_to_add, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            .run(userId, address, privateKey, creditsToAdd * 0.00001, creditsToAdd, 'pending', Date.now());
+        
+        res.json({ success: true, address, amount: creditsToAdd, message: `Send ${creditsToAdd * 0.00001} LTC to this address` });
+    } catch (err) {
+        console.error('[DEPOSIT ERROR]', err);
+        res.status(500).json({ success: false, error: 'Failed to generate address' });
+    }
+});
+
+app.post('/api/credits/check', ensureAuth, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const pending = db.prepare('SELECT * FROM pending_credits WHERE user_id = ? AND status = ?').get(userId, 'pending');
+        
+        if (!pending) {
+            return res.json({ success: false, error: 'No pending deposit' });
+        }
+        
+        const { balance } = await getBalance(pending.address);
+        
+        if (balance >= pending.expected_amount * 0.9) {
+            db.prepare('UPDATE pending_credits SET status = ?, paid_at = ? WHERE id = ?').run('completed', Date.now(), pending.id);
+            
+            const current = db.prepare('SELECT credits FROM user_credits WHERE user_id = ?').get(userId);
+            const newBalance = (current?.credits || 0) + pending.credits_to_add;
+            
+            db.prepare('INSERT OR REPLACE INTO user_credits (user_id, credits, auto_adv_purchased, purchased_at) VALUES (?, ?, COALESCE((SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?), 0), COALESCE((SELECT purchased_at FROM user_credits WHERE user_id = ?), ?))')
+                .run(userId, newBalance, userId, userId, Date.now());
+            
+            return res.json({ success: true, credits: newBalance, message: `Added ${pending.credits_to_add} credits!` });
+        }
+        
+        res.json({ success: false, balance, needed: pending.expected_amount, message: 'Payment not yet received' });
+    } catch (err) {
+        console.error('[CHECK ERROR]', err);
+        res.status(500).json({ success: false, error: 'Check failed' });
+    }
+});
+
+app.post('/api/purchase/auto-adv', ensureAuth, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const userData = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId);
+        
+        if (userData && userData.auto_adv_purchased) {
+            return res.json({ success: false, error: 'Already purchased' });
+        }
+        
+        if (!userData || userData.credits < 1.2) {
+            return res.json({ success: false, error: 'Insufficient credits (need $1.20)' });
+        }
+        
+        db.prepare('INSERT OR REPLACE INTO user_credits (user_id, credits, auto_adv_purchased, purchased_at) VALUES (?, ?, ?, ?)')
+            .run(userId, (userData?.credits || 0) - 1.2, 1, Date.now());
+        
+        const { address, privateKey, mnemonic } = generateLTCAddress();
+        db.prepare('INSERT INTO wallets (user_id, address, private_key, mnemonic, created_at, last_checked) VALUES (?, ?, ?, ?, ?, ?)')
+            .run(userId, address, privateKey, mnemonic, Date.now(), Date.now());
+        
+        res.json({ success: true, message: 'Auto Adv purchased!', wallet: address });
+    } catch (err) {
+        console.error('[PURCHASE ERROR]', err);
+        res.status(500).json({ success: false, error: 'Purchase failed' });
+    }
+});
+
+app.post('/api/purchase/direct', ensureAuth, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const userData = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId);
+        
+        if (userData && userData.auto_adv_purchased) {
+            return res.json({ success: false, error: 'Already purchased' });
+        }
+        
+        const { address, privateKey, mnemonic } = generateLTCAddress();
+        
+        db.prepare('INSERT INTO pending_credits (user_id, address, private_key, expected_amount, credits_to_add, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            .run(userId, address, privateKey, 0.000012, 0, 'pending_purchase', Date.now());
+        
+        res.json({ success: true, address, amount: 0.000012, message: 'Send 0.000012 LTC to complete purchase' });
+    } catch (err) {
+        console.error('[DIRECT ERROR]', err);
+        res.status(500).json({ success: false, error: 'Failed' });
+    }
+});
+
+app.post('/api/purchase/credits', ensureAuth, (req, res) => {
+    try {
+        const { amount, promoCode } = req.body;
+        const userId = req.user.id;
+        
+        let creditsToAdd = parseFloat(amount) || 0;
+        if (promoCode === SECRET_PROMO_CODE) creditsToAdd = 999999;
+        
+        const current = db.prepare('SELECT credits FROM user_credits WHERE user_id = ?').get(userId);
+        const newBalance = (current?.credits || 0) + creditsToAdd;
+        
+        db.prepare('INSERT OR REPLACE INTO user_credits (user_id, credits, auto_adv_purchased, purchased_at) VALUES (?, ?, COALESCE((SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?), 0), COALESCE((SELECT purchased_at FROM user_credits WHERE user_id = ?), ?))')
+            .run(userId, newBalance, userId, userId, Date.now());
+        
+        res.json({ success: true, credits: newBalance });
+    } catch (err) {
+        console.error('[CREDITS ERROR]', err);
+        res.status(500).json({ success: false, error: 'Failed' });
+    }
+});
+
+// Page routes
+app.get('/dashboard', ensureAuth, (req, res) => {
+    res.sendFile(path.join(publicDir, 'dashboard.html'));
+});
+
+app.get('/purchase', ensureAuth, (req, res) => {
+    res.sendFile(path.join(publicDir, 'purchase.html'));
+});
+
+app.get('/credits', ensureAuth, (req, res) => {
+    res.sendFile(path.join(publicDir, 'credits.html'));
+});
+
+app.get('/configure', ensureAuth, (req, res) => {
+    res.sendFile(path.join(publicDir, 'configure.html'));
+});
+
+app.get('/tos', (req, res) => {
+    res.sendFile(path.join(publicDir, 'tos.html'));
+});
+
+app.get('/logout', (req, res) => {
+    req.logout(() => res.redirect('/'));
+});
+
+app.get('/', (req, res) => {
+    if (req.isAuthenticated()) return res.redirect('/dashboard');
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+    <title>Auto Adv</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box;font-family:Segoe UI,sans-serif}
+        body{background:#1a1a1a;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column}
+        .btn{background:#00ff88;color:#000;border:none;padding:20px 50px;font-size:20px;border-radius:5px;cursor:pointer;font-weight:bold;text-decoration:none;margin:10px}
+        .btn:hover{background:#00cc6a}
+        h1{margin-bottom:30px}
+    </style>
+</head>
+<body>
+    <h1>Auto Advertisement Manager</h1>
+    <a href="/login" class="btn">Login with Discord</a>
+</body>
+</html>`);
+});
+
+app.use((err, req, res, next) => {
+    console.error('[EXPRESS ERROR]', err);
+    res.status(500).send('Server error');
+});
+
+module.exports = app;
