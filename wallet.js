@@ -48,12 +48,12 @@ async function getUtxos(address) {
         console.log(`[UTXO] API returned ${res.data.length} items`);
         
         return res.data.map(u => {
-            console.log(`[UTXO] Raw: txid=${u.txid?.substring(0,8)}..., vout=${u.vout}, value=${u.value}, scriptpubkey=${u.scriptpubkey?.substring(0,20)}...`);
+            console.log(`[UTXO] Raw: txid=${u.txid?.substring(0,8)}..., vout=${u.vout}, value=${u.value}, scriptPubKey=${u.scriptPubKey?.substring(0,20)}...`);
             return {
                 txid: u.txid,
                 vout: u.vout,
                 value: u.value,
-                scriptpubkey: u.scriptpubkey
+                scriptpubkey: u.scriptPubKey  // FIXED: was u.scriptpubkey (lowercase)
             };
         }).filter(u => u.txid && u.scriptpubkey && u.scriptpubkey.length > 10);
     } catch (e) {
