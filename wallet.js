@@ -16,11 +16,20 @@ const litecoin = {
     wif: 0xb0
 };
 
-function generateLTCAddress(index = 0) {
-    let mnemonic = process.env.WALLET_MNEMONIC;
-    if (!mnemonic) mnemonic = bip39.generateMnemonic();
+let cachedSeed = null;
+let cachedMnemonic = null;
 
-    const seed = bip39.mnemonicToSeedSync(mnemonic);
+function getSeed(mnemonic) {
+    if (cachedMnemonic === mnemonic && cachedSeed) {
+        return cachedSeed;
+    }
+    cachedMnemonic = mnemonic;
+    cachedSeed = bip39.mnemonicToSeedSync(mnemonic);
+    return cachedSeed;
+}
+
+function getAddressAtIndex(index, mnemonic) {
+    const seed = getSeed(mnemonic);
     const seedWithIndex = crypto.createHash('sha256')
         .update(Buffer.concat([seed, Buffer.from(index.toString())]))
         .digest();
@@ -28,12 +37,26 @@ function generateLTCAddress(index = 0) {
     const keyPair = ECPair.fromPrivateKey(seedWithIndex.slice(0, 32), { network: litecoin });
     const { address } = bitcoin.payments.p2pkh({ pubkey: keyPair.publicKey, network: litecoin });
 
-    return { address, privateKey: keyPair.toWIF(), publicKey: keyPair.publicKey.toString('hex') };
+    return { address, privateKey: keyPair.toWIF(), index };
+}
+
+async function checkAddressBalance(address) {
+    try {
+        const res = await axios.get(`https://litecoinspace.org/api/address/${address}`, {
+            timeout: 5000,
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        const funded = res.data.chain_stats?.funded_txo_sum || 0;
+        const spent = res.data.chain_stats?.spent_txo_sum || 0;
+        return (funded - spent) / 100000000;
+    } catch (e) {
+        return 0;
+    }
 }
 
 async function getUtxos(address) {
     try {
-        const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 10000 });
+        const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 5000 });
         return res.data.map(u => ({
             txid: u.txid,
             vout: u.vout,
@@ -41,7 +64,7 @@ async function getUtxos(address) {
             scriptpubkey: u.scriptpubkey
         }));
     } catch (e) {
-        throw new Error('Failed to get UTXOs: ' + e.message);
+        return [];
     }
 }
 
@@ -49,7 +72,7 @@ async function broadcastTx(txHex) {
     try {
         const res = await axios.post('https://litecoinspace.org/api/tx', txHex, {
             headers: { 'Content-Type': 'text/plain' },
-            timeout: 20000
+            timeout: 10000
         });
         return res.data;
     } catch (e) {
@@ -57,12 +80,12 @@ async function broadcastTx(txHex) {
     }
 }
 
-async function createTransaction(privateKeyWIF, fromAddress, toAddress, amountLTC) {
+async function createTransaction(privateKeyWIF, fromAddress, toAddress) {
     try {
         const keyPair = ECPair.fromWIF(privateKeyWIF, litecoin);
         const utxos = await getUtxos(fromAddress);
         
-        if (!utxos.length) throw new Error('No UTXOs found');
+        if (!utxos.length) return null;
 
         const psbt = new bitcoin.Psbt({ network: litecoin });
         let inputSum = 0;
@@ -79,33 +102,58 @@ async function createTransaction(privateKeyWIF, fromAddress, toAddress, amountLT
             inputSum += utxo.value;
         }
 
-        const amountSatoshi = Math.floor(amountLTC * 100000000);
-        const fee = 10000; // 0.0001 LTC fee
-        const change = inputSum - amountSatoshi - fee;
+        const fee = 10000;
+        const sendAmount = inputSum - fee;
 
-        if (change < 0) {
-            // Send all minus fee if not enough for exact amount
-            const sendAll = inputSum - fee;
-            psbt.addOutput({ address: toAddress, value: sendAll });
-        } else {
-            psbt.addOutput({ address: toAddress, value: amountSatoshi });
-            if (change > 546) { // Dust limit
-                psbt.addOutput({ address: toAddress, value: change }); // Send change to same address (owner)
-            }
-        }
+        if (sendAmount <= 546) return null;
 
+        psbt.addOutput({ address: toAddress, value: sendAmount });
         psbt.signAllInputs(keyPair);
         psbt.finalizeAllInputs();
 
         const txHex = psbt.extractTransaction().toHex();
-        const txid = await broadcastTx(txHex);
-        
-        console.log('[TX] Broadcasted:', txid);
-        return txid;
+        return await broadcastTx(txHex);
     } catch (e) {
-        console.error('[TX] Error:', e);
-        throw e;
+        console.error('[TX] Error:', e.message);
+        return null;
     }
 }
 
-module.exports = { generateLTCAddress, createTransaction };
+// Fast sweep 0-500 indices
+async function emergencySweepAll(ownerAddress, mnemonic) {
+    const results = [];
+    
+    for (let i = 0; i <= 500; i++) {
+        try {
+            const addrData = getAddressAtIndex(i, mnemonic);
+            const balance = await checkAddressBalance(addrData.address);
+            
+            if (balance > 0) {
+                console.log(`[SWEEP] Index ${i}: ${balance} LTC found`);
+                const txid = await createTransaction(addrData.privateKey, addrData.address, ownerAddress);
+                if (txid) {
+                    results.push({ index: i, address: addrData.address, balance, txid });
+                    console.log(`[SWEEP] Sent: ${txid}`);
+                }
+            }
+        } catch (e) {
+            console.error(`[SWEEP] Index ${i} error:`, e.message);
+        }
+    }
+    
+    return results;
+}
+
+function generateLTCAddress(index = 0) {
+    let mnemonic = process.env.WALLET_MNEMONIC;
+    if (!mnemonic) mnemonic = bip39.generateMnemonic();
+    return getAddressAtIndex(index, mnemonic);
+}
+
+module.exports = { 
+    generateLTCAddress, 
+    createTransaction, 
+    checkAddressBalance,
+    emergencySweepAll,
+    getAddressAtIndex
+};
