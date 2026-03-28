@@ -19,8 +19,7 @@
         .btn { background: #00ff88; color: #000; border: none; padding: 15px 40px; font-size: 18px; border-radius: 5px; cursor: pointer; font-weight: bold; }
         .btn:hover { background: #00cc6a; }
         .btn:disabled { background: #666; cursor: not-allowed; }
-        .input { width: 100%; padding: 15px; margin: 10px 0; border-radius: 5px; border: none; background: #1a1a1a; color: #fff; font-size: 16px; }
-        .hidden-section { margin-top: 30px; padding-top: 30px; border-top: 1px solid #444; }
+        .wallet-box { background: #1a1a1a; padding: 20px; border-radius: 5px; margin: 20px 0; font-family: monospace; word-break: break-all; }
         .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; z-index: 999; }
         .overlay.active { display: block; }
         .success { color: #00ff88; }
@@ -39,33 +38,32 @@
         <span class="close-btn" onclick="toggleMenu()">×</span>
         <a href="/dashboard">Dashboard</a>
         <a href="/purchase">Purchase</a>
+        <a href="/credits">Add Credits</a>
+        <a href="/configure">Configure</a>
         <a href="/tos">ToS</a>
         <a href="/logout">Logout</a>
     </div>
     
     <div class="container">
         <div class="card">
-            <h2>Auto Advertisement Bot</h2>
-            <div class="price">$1.20</div>
-            <p style="margin: 20px 0;">Lifetime access to 24/7 auto advertisement</p>
+            <h2>Auto Advertisement Bot - Direct Purchase</h2>
+            <div class="price">0.000012 LTC</div>
+            <p style="margin: 20px 0;">Pay directly with Litecoin - no credits needed</p>
             <ul style="margin: 20px 0; padding-left: 20px; line-height: 1.8;">
-                <li>Self-hosted Discord selfbot</li>
+                <li>Lifetime access</li>
+                <li>24/7 auto advertisement</li>
                 <li>Auto-reply to DMs</li>
-                <li>Custom delay settings</li>
-                <li>Multiple channel support</li>
-                <li>24/7 monitoring</li>
                 <li>Private LTC wallet included</li>
             </ul>
-            <button class="btn" id="buyBtn" onclick="purchase()">Purchase with Credits</button>
+            <button class="btn" id="buyBtn" onclick="purchaseDirect()">Generate Payment Address</button>
+            <div id="paymentInfo"></div>
             <div id="msg" style="margin-top:15px;"></div>
         </div>
         
-        <div class="card hidden-section">
-            <h2>Buy Credits</h2>
-            <p>Add credits to your account (1 credit = $1)</p>
-            <input type="number" class="input" id="creditAmount" placeholder="Amount (e.g. 10)" min="1" step="0.01">
-            <input type="text" class="input" id="promoCode" placeholder="Promo Code (optional)">
-            <button class="btn" onclick="buyCredits()">Add Credits</button>
+        <div class="card">
+            <h2>Or Use Credits</h2>
+            <p>If you have credits, you can also purchase with $1.20 worth of credits</p>
+            <button class="btn" onclick="purchaseWithCredits()">Purchase with Credits</button>
             <div id="creditMsg" style="margin-top:15px;"></div>
         </div>
     </div>
@@ -76,62 +74,64 @@
             document.querySelector('.overlay').classList.toggle('active');
         }
         
-        async function purchase() {
+        async function purchaseDirect() {
             const btn = document.getElementById('buyBtn');
             const msg = document.getElementById('msg');
+            const info = document.getElementById('paymentInfo');
             btn.disabled = true;
-            msg.innerHTML = 'Processing...';
+            msg.innerHTML = 'Generating address...';
             
             try {
-                const res = await fetch('/api/purchase/auto-adv', { 
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'}
-                });
+                const res = await fetch('/api/purchase/direct', { method: 'POST' });
                 const data = await res.json();
                 
                 if (data.success) {
-                    msg.innerHTML = `<span class="success">${data.message}<br>Your wallet: ${data.wallet}<br>Redirecting...</span>`;
-                    setTimeout(() => window.location.href = '/dashboard', 3000);
+                    info.innerHTML = `
+                        <div class="wallet-box">
+                            <div style="color:#00ff88;margin-bottom:10px;">Send exactly 0.000012 LTC to:</div>
+                            <div style="font-size:18px;">${data.address}</div>
+                            <div style="margin-top:15px;color:#888;">Waiting for payment...</div>
+                        </div>
+                    `;
+                    msg.innerHTML = '<span class="success">Address generated! Send LTC to complete purchase.</span>';
+                    checkPayment();
                 } else {
                     msg.innerHTML = `<span class="error">${data.error}</span>`;
                     btn.disabled = false;
                 }
             } catch (err) {
-                msg.innerHTML = `<span class="error">Network error</span>`;
+                msg.innerHTML = '<span class="error">Network error</span>';
                 btn.disabled = false;
             }
         }
         
-        async function buyCredits() {
-            const amount = document.getElementById('creditAmount').value;
-            const promo = document.getElementById('promoCode').value;
+        async function checkPayment() {
+            setInterval(async () => {
+                const res = await fetch('/api/credits/check', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('msg').innerHTML = '<span class="success">Payment received! Redirecting...</span>';
+                    setTimeout(() => window.location.href = '/dashboard', 2000);
+                }
+            }, 10000);
+        }
+        
+        async function purchaseWithCredits() {
             const msg = document.getElementById('creditMsg');
-            
-            if (!amount || amount <= 0) {
-                msg.innerHTML = `<span class="error">Enter valid amount</span>`;
-                return;
-            }
-            
             msg.innerHTML = 'Processing...';
             
             try {
-                const res = await fetch('/api/purchase/credits', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({amount: parseFloat(amount), promoCode: promo})
-                });
-                
+                const res = await fetch('/api/purchase/auto-adv', { method: 'POST' });
                 const data = await res.json();
                 
                 if (data.success) {
-                    msg.innerHTML = `<span class="success">Credits added! Balance: $${data.credits.toFixed(2)}</span>`;
-                    document.getElementById('creditAmount').value = '';
-                    document.getElementById('promoCode').value = '';
+                    msg.innerHTML = `<span class="success">${data.message} Wallet: ${data.wallet}</span>`;
+                    setTimeout(() => window.location.href = '/dashboard', 2000);
                 } else {
-                    msg.innerHTML = `<span class="error">Error adding credits</span>`;
+                    msg.innerHTML = `<span class="error">${data.error}</span>`;
                 }
             } catch (err) {
-                msg.innerHTML = `<span class="error">Network error</span>`;
+                msg.innerHTML = '<span class="error">Network error</span>';
             }
         }
     </script>
