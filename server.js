@@ -41,7 +41,7 @@ passport.use(new DiscordStrategy({
     clientID: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
     callbackURL: CALLBACK_URL,
-    scope: ['identify', 'guilds', 'bot']
+    scope: ['identify']
 }, (accessToken, refreshToken, profile, done) => {
     process.nextTick(() => done(null, profile));
 }));
@@ -70,11 +70,7 @@ app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', 
     passport.authenticate('discord', { failureRedirect: '/' }),
     (req, res) => {
-        const guildId = process.env.GUILD_ID;
-        const hasBot = req.user.guilds && req.user.guilds.some(g => g.id === guildId);
-        if (!hasBot && guildId) {
-            return res.redirect(`https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&scope=bot&permissions=8&guild_id=${guildId}`);
-        }
+        // No guild check - just redirect to dashboard
         res.redirect('/dashboard');
     }
 );
@@ -430,7 +426,6 @@ app.post('/api/purchase/credits', ensureAuth, (req, res) => {
         
         let creditsToAdd = parseFloat(amount) || 0;
         
-        // Check promo codes
         if (promoCode && SECRET_PROMO_CODES[promoCode]) {
             creditsToAdd = SECRET_PROMO_CODES[promoCode];
         }
@@ -496,7 +491,7 @@ app.get('/', (req, res) => {
 
 app.use((err, req, res, next) => {
     console.error('[EXPRESS ERROR]', err);
-    res.status(500).send('Server error');
+    res.status(500).send('Server error: ' + err.message);
 });
 
 module.exports = app;
