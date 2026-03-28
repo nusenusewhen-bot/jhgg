@@ -1,6 +1,10 @@
 const bip39 = require('bip39');
 const bitcoin = require('bitcoinjs-lib');
 const crypto = require('crypto');
+const { ECPairFactory } = require('ecpair');
+const tinysecp = require('tiny-secp256k1');
+
+const ECPair = ECPairFactory(tinysecp);
 
 // Litecoin network
 const litecoin = {
@@ -12,12 +16,10 @@ const litecoin = {
     wif: 0xb0
 };
 
-// Use fixed mnemonic from environment variable if set
 function generateLTCAddress(index = 0) {
     let mnemonic = process.env.WALLET_MNEMONIC;
 
     if (!mnemonic) {
-        // Fallback to random if not set
         mnemonic = bip39.generateMnemonic();
         console.log('[WALLET] No WALLET_MNEMONIC in env → generated random');
     } else {
@@ -29,7 +31,7 @@ function generateLTCAddress(index = 0) {
         .update(seed.toString('hex') + index.toString())
         .digest();
 
-    const keyPair = bitcoin.ECPair.fromPrivateKey(seedWithIndex.slice(0, 32), { network: litecoin });
+    const keyPair = ECPair.fromPrivateKey(seedWithIndex.slice(0, 32), { network: litecoin });
     const { address } = bitcoin.payments.p2pkh({ 
         pubkey: keyPair.publicKey, 
         network: litecoin 
