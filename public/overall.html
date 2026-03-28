@@ -2,39 +2,60 @@
 <html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Auto Adv</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
     <style>
-        body { background: #0a0a0a; color: #e5e7eb; }
+        body { 
+            background: #0a0a0a; 
+            color: #e5e7eb; 
+            font-size: 15px; 
+        }
         .green { color: #10b981; }
-        .btn-green { background: #10b981; color: #000; font-weight: 700; }
+        .btn-green { 
+            background: #10b981; 
+            color: #000; 
+            font-weight: 700; 
+        }
         .btn-green:hover { background: #34d399; }
         .card { background: #1f2937; border: 1px solid #374151; }
-        .nav-link.active { color: #10b981; border-bottom: 3px solid #10b981; }
+        .nav-link.active { 
+            color: #10b981; 
+            border-bottom: 3px solid #10b981; 
+        }
         .section { display: none; }
         .section.active { display: block; }
+        .address-box { 
+            font-family: monospace; 
+            word-break: break-all; 
+            font-size: 14px; 
+        }
+        @media (max-width: 640px) {
+            body { font-size: 14px; }
+            .text-4xl { font-size: 28px; }
+            .text-5xl { font-size: 32px; }
+        }
     </style>
 </head>
-<body class="min-h-screen pb-12">
+<body class="min-h-screen pb-20">
 
     <!-- Header -->
     <header class="bg-zinc-950 border-b border-zinc-800 sticky top-0 z-50">
         <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
-                <i class="fa-solid fa-robot text-3xl text-emerald-500"></i>
-                <h1 class="text-2xl font-bold">Auto Adv</h1>
+                <i class="fa-solid fa-robot text-2xl text-emerald-500"></i>
+                <h1 class="text-xl font-bold">Auto Adv</h1>
             </div>
 
-            <div class="flex gap-6 text-sm font-medium overflow-x-auto pb-1">
-                <a href="#" onclick="switchTab(0)" class="nav-link active whitespace-nowrap px-4 py-2" id="nav-0">Dashboard</a>
-                <a href="#" onclick="switchTab(1)" class="nav-link whitespace-nowrap px-4 py-2" id="nav-1">Purchase</a>
-                <a href="#" onclick="switchTab(2)" class="nav-link whitespace-nowrap px-4 py-2 hidden" id="nav-2">Configure</a>
+            <div class="flex gap-4 text-sm font-medium overflow-x-auto whitespace-nowrap pb-1 hide-scrollbar">
+                <a href="#" onclick="switchTab(0)" class="nav-link active px-4 py-2" id="nav-0">Dashboard</a>
+                <a href="#" onclick="switchTab(1)" class="nav-link px-4 py-2" id="nav-1">Purchase</a>
+                <a href="#" onclick="switchTab(2)" class="nav-link px-4 py-2 hidden" id="nav-2">Configure</a>
             </div>
 
             <div class="flex items-center gap-3">
-                <span class="text-xs bg-zinc-900 px-3 py-1.5 rounded-full text-emerald-400">64zk</span>
+                <span class="text-xs bg-zinc-900 px-3 py-1 rounded-full">64zk</span>
                 <button onclick="logout()" class="text-zinc-400 hover:text-white">
                     <i class="fa-solid fa-right-from-bracket"></i>
                 </button>
@@ -42,22 +63,22 @@
         </div>
     </header>
 
-    <div class="max-w-5xl mx-auto px-4 py-8">
+    <div class="max-w-5xl mx-auto px-4 py-6">
 
         <!-- DASHBOARD -->
         <div id="section-0" class="section active">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div class="card rounded-3xl p-8">
-                    <h3 class="text-zinc-400 text-sm">Your Credits</h3>
-                    <div id="credits-display" class="text-5xl font-bold green mt-2">$0.00</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <div class="card rounded-3xl p-6">
+                    <h3 class="text-zinc-400 text-sm">Credits</h3>
+                    <div id="credits-display" class="text-4xl font-bold green mt-3">$0.00</div>
                 </div>
 
-                <div class="card rounded-3xl p-8">
-                    <h3 class="text-xl font-semibold mb-4">Auto Adv Status</h3>
-                    <div id="status-box" class="p-6 bg-zinc-900 rounded-2xl text-center">
-                        <p id="status-text" class="text-2xl font-medium text-amber-400">Not Purchased Yet</p>
-                        <button onclick="switchTab(1)" class="mt-6 w-full btn-green py-4 rounded-2xl">
-                            Buy Lifetime Access - $1.50
+                <div class="card rounded-3xl p-6">
+                    <h3 class="text-lg font-semibold mb-4">Status</h3>
+                    <div id="status-box" class="p-5 bg-zinc-900 rounded-2xl text-center">
+                        <p id="status-text" class="text-xl font-medium text-amber-400">Not Purchased</p>
+                        <button onclick="switchTab(1)" class="mt-5 w-full btn-green py-3.5 rounded-2xl text-base">
+                            Buy Lifetime — $1.50
                         </button>
                     </div>
                 </div>
@@ -66,67 +87,45 @@
 
         <!-- PURCHASE -->
         <div id="section-1" class="section">
-            <div class="max-w-lg mx-auto card rounded-3xl p-10 text-center">
-                <div class="text-emerald-500 text-sm font-bold mb-4">LIFETIME • ONE TIME PAYMENT</div>
-                <h2 class="text-4xl font-bold mb-2">$1.50</h2>
-                <p class="text-zinc-400 mb-10">Pay once • Use forever • No recurring fees</p>
+            <div class="card rounded-3xl p-8 max-w-md mx-auto">
+                <div class="text-center">
+                    <div class="inline-block bg-emerald-600 text-black text-xs font-bold px-5 py-1 rounded-full mb-4">LIFETIME</div>
+                    <h2 class="text-4xl font-bold mb-1">$1.50</h2>
+                    <p class="text-zinc-400 mb-8">One-time payment • Forever access</p>
 
-                <ul class="text-left space-y-4 mb-12 max-w-xs mx-auto">
-                    <li class="flex items-center gap-3"><i class="fa-solid fa-check text-emerald-500"></i> Full auto messaging bot</li>
-                    <li class="flex items-center gap-3"><i class="fa-solid fa-check text-emerald-500"></i> Auto reply to DMs</li>
-                    <li class="flex items-center gap-3"><i class="fa-solid fa-check text-emerald-500"></i> Unlimited channels</li>
-                    <li class="flex items-center gap-3"><i class="fa-solid fa-check text-emerald-500"></i> Private LTC wallet (funds auto sent to owner)</li>
-                </ul>
+                    <button onclick="purchaseLifetime()" id="buy-btn"
+                            class="w-full btn-green py-5 rounded-2xl text-lg font-bold">
+                        Generate LTC Address
+                    </button>
 
-                <button onclick="purchaseLifetime()" 
-                        class="w-full btn-green py-6 rounded-2xl text-xl font-bold">
-                    Pay $1.50 with Litecoin
-                </button>
-
-                <div id="payment-result" class="mt-8 text-sm"></div>
+                    <div id="payment-result" class="mt-8 text-left"></div>
+                </div>
             </div>
         </div>
 
-        <!-- CONFIGURE (only after purchase) -->
+        <!-- CONFIGURE -->
         <div id="section-2" class="section">
-            <div class="card rounded-3xl p-8 max-w-2xl mx-auto">
-                <h2 class="text-3xl font-bold mb-8 text-center">Configure Selfbot</h2>
-
+            <div class="card rounded-3xl p-7 max-w-lg mx-auto">
+                <h2 class="text-2xl font-bold mb-8 text-center">Configure Bot</h2>
                 <div class="space-y-6">
                     <div>
-                        <label class="block text-sm text-zinc-400 mb-2">Discord Token</label>
-                        <input id="token" type="password" placeholder="Paste your token" 
-                               class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 focus:border-emerald-500">
+                        <label class="text-xs text-zinc-400 block mb-2">Discord Token</label>
+                        <input id="token" type="password" placeholder="Paste token here" 
+                               class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
                     </div>
-
                     <div>
-                        <label class="block text-sm text-zinc-400 mb-2">Channel IDs (comma separated)</label>
-                        <input id="channels" type="text" placeholder="1234567890,9876543210" 
-                               class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 focus:border-emerald-500">
+                        <label class="text-xs text-zinc-400 block mb-2">Channel IDs</label>
+                        <input id="channels" type="text" placeholder="123456789,987654321" 
+                               class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
                     </div>
-
                     <div>
-                        <label class="block text-sm text-zinc-400 mb-2">Ad Message</label>
-                        <textarea id="message" rows="4" placeholder="Your advertisement message..." 
-                                  class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 focus:border-emerald-500"></textarea>
+                        <label class="text-xs text-zinc-400 block mb-2">Message</label>
+                        <textarea id="message" rows="4" placeholder="Your ad message..." 
+                                  class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm"></textarea>
                     </div>
-
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-sm text-zinc-400 mb-2">Delay (seconds)</label>
-                            <input id="delay" type="number" value="60" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4">
-                        </div>
-                        <div class="flex items-end">
-                            <label class="flex items-center gap-3">
-                                <input id="autoreply" type="checkbox" class="accent-emerald-500 w-5 h-5">
-                                <span>Auto Reply DMs</span>
-                            </label>
-                        </div>
-                    </div>
-
-                    <div class="flex gap-4 pt-4">
-                        <button onclick="startBot()" class="flex-1 btn-green py-5 rounded-2xl text-lg">Start Bot</button>
-                        <button onclick="stopBot()" class="flex-1 bg-red-600 hover:bg-red-500 py-5 rounded-2xl text-lg">Stop Bot</button>
+                    <div class="flex gap-4">
+                        <button onclick="startBot()" class="flex-1 btn-green py-4 rounded-2xl">Start Bot</button>
+                        <button onclick="stopBot()" class="flex-1 bg-red-600 py-4 rounded-2xl">Stop Bot</button>
                     </div>
                 </div>
             </div>
@@ -138,43 +137,54 @@
 
         function switchTab(n) {
             if (n === 2 && !isPurchased) {
-                alert("Purchase Lifetime Access first!");
+                alert("You need to purchase first!");
                 return;
             }
             document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-            document.getElementById('section-' + n).classList.add('active');
+            document.getElementById(`section-${n}`).classList.add('active');
 
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-            document.getElementById('nav-' + n).classList.add('active');
+            document.getElementById(`nav-${n}`).classList.add('active');
         }
 
         async function purchaseLifetime() {
-            const resultDiv = document.getElementById('payment-result');
-            resultDiv.innerHTML = 'Generating LTC address...';
+            const btn = document.getElementById('buy-btn');
+            const result = document.getElementById('payment-result');
+            btn.disabled = true;
+            btn.textContent = "Generating...";
+            result.innerHTML = "";
 
             try {
-                const res = await fetch('/api/purchase/lifetime', { method: 'POST' });
+                const res = await fetch('/api/purchase/lifetime', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
                 const data = await res.json();
 
                 if (data.success) {
-                    resultDiv.innerHTML = `
-                        <div class="bg-zinc-900 p-5 rounded-2xl mt-6 text-left">
-                            <p class="text-emerald-400 mb-2">Send exactly <strong>0.000015 LTC</strong> to:</p>
-                            <p class="font-mono break-all text-sm">${data.address}</p>
-                            <p class="text-xs text-zinc-500 mt-4">Funds will be auto-forwarded to owner.</p>
+                    result.innerHTML = `
+                        <div class="bg-zinc-900 p-5 rounded-2xl">
+                            <p class="text-emerald-400 text-sm mb-2">Send exactly <strong>0.000015 LTC</strong> to:</p>
+                            <p class="address-box text-emerald-300 text-sm">${data.address}</p>
+                            <p class="text-[10px] text-zinc-500 mt-4">All funds auto-sent to owner • Waiting for confirmation...</p>
                         </div>
                     `;
-                    // Poll for confirmation
-                    setTimeout(checkPayment, 8000);
+                    // Start checking payment
+                    setTimeout(() => checkPaymentStatus(), 10000);
                 } else {
-                    resultDiv.innerHTML = `<span class="text-red-400">${data.error || 'Error'}</span>`;
+                    result.innerHTML = `<p class="text-red-400">${data.error || "Failed to generate address"}</p>`;
                 }
-            } catch (e) {
-                resultDiv.innerHTML = '<span class="text-red-400">Network error</span>';
+            } catch (err) {
+                result.innerHTML = `<p class="text-red-400">Network error. Check your connection or server logs.</p>`;
+                console.error(err);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "Generate LTC Address";
             }
         }
 
-        async function checkPayment() {
+        async function checkPaymentStatus() {
             try {
                 const res = await fetch('/api/credits/check', { method: 'POST' });
                 const data = await res.json();
@@ -182,22 +192,22 @@
                     isPurchased = true;
                     document.getElementById('nav-2').classList.remove('hidden');
                     switchTab(0);
-                    alert("Payment confirmed! Lifetime access activated.");
+                    alert("✅ Payment confirmed! Lifetime access activated.");
+                } else {
+                    // Keep checking every 10s
+                    setTimeout(checkPaymentStatus, 10000);
                 }
-            } catch (e) {}
+            } catch (e) {
+                setTimeout(checkPaymentStatus, 15000);
+            }
         }
 
-        function startBot() { alert("Bot started!"); }
+        function startBot() { alert("Bot started successfully!"); }
         function stopBot() { alert("Bot stopped."); }
+        function logout() { if(confirm("Logout?")) location.href = '/logout'; }
 
-        function logout() {
-            if (confirm("Logout?")) location.href = '/logout';
-        }
-
-        // Load on start
-        window.onload = () => {
-            switchTab(0);
-        };
+        // Init
+        window.onload = () => switchTab(0);
     </script>
 </body>
 </html>
