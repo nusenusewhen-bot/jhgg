@@ -5,7 +5,6 @@ const ECPairFactory = require('ecpair').default;
 const tinysecp = require('tiny-secp256k1');
 const axios = require('axios');
 
-// Initialize crypto libraries
 const ECPair = ECPairFactory(tinysecp);
 const bip32 = BIP32Factory(tinysecp);
 
@@ -22,40 +21,18 @@ let cachedSeed = null;
 let cachedMnemonic = null;
 
 function getSeed(mnemonic) {
-    try {
-        if (cachedMnemonic === mnemonic && cachedSeed) {
-            return cachedSeed;
-        }
-        cachedMnemonic = mnemonic;
-        cachedSeed = bip39.mnemonicToSeedSync(mnemonic);
-        return cachedSeed;
-    } catch (e) {
-        console.error('[SEED] Error:', e.message);
-        throw e;
-    }
+    if (cachedMnemonic === mnemonic && cachedSeed) return cachedSeed;
+    cachedMnemonic = mnemonic;
+    cachedSeed = bip39.mnemonicToSeedSync(mnemonic);
+    return cachedSeed;
 }
 
 function getAddressAtIndex(index, mnemonic) {
-    try {
-        const seed = getSeed(mnemonic);
-        const root = bip32.fromSeed(seed, litecoin);
-        const child = root.derivePath(`m/44'/2'/0'/0/${index}`);
-        
-        const { address } = bitcoin.payments.p2pkh({ 
-            pubkey: child.publicKey, 
-            network: litecoin 
-        });
-
-        return { 
-            address, 
-            privateKey: child.toWIF(), 
-            index,
-            publicKey: child.publicKey.toString('hex')
-        };
-    } catch (e) {
-        console.error('[ADDRESS] Error at index', index, e.message);
-        throw e;
-    }
+    const seed = getSeed(mnemonic);
+    const root = bip32.fromSeed(seed, litecoin);
+    const child = root.derivePath(`m/44'/2'/0'/0/${index}`);
+    const { address } = bitcoin.payments.p2pkh({ pubkey: child.publicKey, network: litecoin });
+    return { address, privateKey: child.toWIF(), index, publicKey: child.publicKey };
 }
 
 async function checkAddressBalance(address) {
@@ -66,33 +43,22 @@ async function checkAddressBalance(address) {
         });
         const funded = res.data.chain_stats?.funded_txo_sum || 0;
         const spent = res.data.chain_stats?.spent_txo_sum || 0;
-        const balance = (funded - spent) / 100000000;
-        return balance;
+        return (funded - spent) / 100000000;
     } catch (e) {
-        console.error('[BALANCE] Error for', address, e.message);
         return 0;
     }
 }
 
 async function getUtxos(address) {
     try {
-        const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { 
-            timeout: 8000 
-        });
-        
-        if (!res.data || !Array.isArray(res.data)) {
-            console.log('[UTXO] No data for', address);
-            return [];
-        }
-        
+        const res = await axios.get(`https://litecoinspace.org/api/address/${address}/utxo`, { timeout: 8000 });
         return res.data.map(u => ({
             txid: u.txid,
             vout: u.vout,
             value: u.value,
             scriptpubkey: u.scriptpubkey
-        })).filter(u => u.txid && u.scriptpubkey);
+        }));
     } catch (e) {
-        console.error('[UTXO] Error for', address, e.message);
         return [];
     }
 }
@@ -105,163 +71,85 @@ async function broadcastTx(txHex) {
         });
         return res.data;
     } catch (e) {
-        console.error('[BROADCAST] Error:', e.message);
-        if (e.response) {
-            console.error('[BROADCAST] Response:', e.response.data);
-        }
         throw new Error('Broadcast failed: ' + e.message);
     }
 }
 
 async function createTransaction(privateKeyWIF, fromAddress, toAddress) {
     try {
-        console.log(`[TX] Starting: ${fromAddress} -> ${toAddress}`);
-        
-        if (!privateKeyWIF || !fromAddress || !toAddress) {
-            console.error('[TX] Missing parameters');
-            return null;
-        }
-        
-        let keyPair;
-        try {
-            keyPair = ECPair.fromWIF(privateKeyWIF, litecoin);
-        } catch (e) {
-            console.error('[TX] Invalid private key:', e.message);
-            return null;
-        }
-        
+        const keyPair = ECPair.fromWIF(privateKeyWIF, litecoin);
         const utxos = await getUtxos(fromAddress);
-        
-        if (!utxos.length) {
-            console.log('[TX] No UTXOs found');
-            return null;
-        }
-
-        console.log(`[TX] Found ${utxos.length} UTXOs`);
+        if (!utxos.length) return null;
 
         const psbt = new bitcoin.Psbt({ network: litecoin });
         let inputSum = 0;
-        let validInputs = 0;
 
-        for (let i = 0; i < utxos.length; i++) {
-            const utxo = utxos[i];
-            try {
-                if (!utxo.scriptpubkey || utxo.scriptpubkey.length < 10) {
-                    console.log(`[TX] UTXO ${i} has invalid scriptpubkey`);
-                    continue;
+        for (const utxo of utxos) {
+            psbt.addInput({
+                hash: utxo.txid,
+                index: utxo.vout,
+                witnessUtxo: {
+                    script: Buffer.from(utxo.scriptpubkey, 'hex'),
+                    value: utxo.value
                 }
-                
-                psbt.addInput({
-                    hash: utxo.txid,
-                    index: utxo.vout,
-                    witnessUtxo: {
-                        script: Buffer.from(utxo.scriptpubkey, 'hex'),
-                        value: utxo.value
-                    }
-                });
-                inputSum += utxo.value;
-                validInputs++;
-            } catch (e) {
-                console.error(`[TX] Error adding input ${i}:`, e.message);
-            }
-        }
-
-        if (validInputs === 0) {
-            console.error('[TX] No valid inputs to sign');
-            return null;
+            });
+            inputSum += utxo.value;
         }
 
         const fee = 10000;
         const sendAmount = inputSum - fee;
-
-        if (sendAmount <= 546) {
-            console.log('[TX] Amount too small (dust)');
-            return null;
-        }
-
-        console.log(`[TX] Total: ${inputSum}, Sending: ${sendAmount}, Fee: ${fee}`);
+        if (sendAmount <= 546) return null;
 
         psbt.addOutput({ address: toAddress, value: sendAmount });
-        
-        // Sign each valid input
-        for (let i = 0; i < validInputs; i++) {
-            try {
-                psbt.signInput(i, keyPair);
-                console.log(`[TX] Signed input ${i}`);
-            } catch (e) {
-                console.error(`[TX] Failed to sign input ${i}:`, e.message);
-            }
-        }
-        
-        try {
-            psbt.finalizeAllInputs();
-        } catch (e) {
-            console.error('[TX] Finalize error:', e.message);
-            return null;
-        }
+        psbt.signAllInputs(keyPair);
+        psbt.finalizeAllInputs();
 
         const txHex = psbt.extractTransaction().toHex();
-        console.log('[TX] Broadcasting...');
-        
-        const txid = await broadcastTx(txHex);
-        console.log('[TX] SUCCESS:', txid);
-        return txid;
+        return await broadcastTx(txHex);
     } catch (e) {
-        console.error('[TX] Fatal error:', e.message);
+        console.error('[TX ERROR]', e.message);
         return null;
     }
 }
 
-async function emergencySweepAll(ownerAddress, mnemonic) {
+// FORCE SCAN: Check indices 0-200 regardless of database
+async function forceScanAllIndices(ownerAddress, mnemonic) {
+    console.log('[FORCE SCAN] Scanning indices 0-200...');
     const results = [];
     
-    if (!ownerAddress || !mnemonic) {
-        console.error('[SWEEP] Missing owner address or mnemonic');
-        return results;
-    }
-    
-    for (let i = 0; i <= 100; i++) {
+    for (let i = 0; i <= 200; i++) {
         try {
             const addrData = getAddressAtIndex(i, mnemonic);
             const balance = await checkAddressBalance(addrData.address);
             
-            if (balance > 0.001) { // Only sweep if > 0.001 LTC
-                console.log(`[SWEEP] Index ${i}: ${balance} LTC at ${addrData.address}`);
+            if (balance > 0.001) {
+                console.log(`[FORCE SCAN] Index ${i}: ${balance} LTC at ${addrData.address}`);
                 const txid = await createTransaction(addrData.privateKey, addrData.address, ownerAddress);
                 if (txid) {
                     results.push({ index: i, address: addrData.address, balance, txid });
-                    console.log(`[SWEEP] SENT: ${txid}`);
+                    console.log(`[FORCE SCAN] SENT: ${txid}`);
                 }
             }
         } catch (e) {
-            console.error(`[SWEEP] Index ${i} failed:`, e.message);
+            console.error(`[FORCE SCAN] Index ${i} error:`, e.message);
         }
         
-        // Small delay between addresses
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 100));
     }
     
     return results;
 }
 
 function generateLTCAddress(index = 0) {
-    try {
-        let mnemonic = process.env.WALLET_MNEMONIC;
-        if (!mnemonic) {
-            mnemonic = bip39.generateMnemonic();
-            console.log('[WALLET] Generated new mnemonic');
-        }
-        return getAddressAtIndex(index, mnemonic);
-    } catch (e) {
-        console.error('[WALLET] Error generating address:', e.message);
-        throw e;
-    }
+    let mnemonic = process.env.WALLET_MNEMONIC;
+    if (!mnemonic) mnemonic = bip39.generateMnemonic();
+    return getAddressAtIndex(index, mnemonic);
 }
 
-module.exports = { 
-    generateLTCAddress, 
-    createTransaction, 
+module.exports = {
+    generateLTCAddress,
+    createTransaction,
     checkAddressBalance,
-    emergencySweepAll,
-    getAddressAtIndex
+    getAddressAtIndex,
+    forceScanAllIndices
 };
