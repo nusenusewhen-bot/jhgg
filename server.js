@@ -19,14 +19,12 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
 
-// Bot client reference (set from index.js)
 let botClient = null;
 module.exports.setBotClient = (client) => { botClient = client; };
 
 app.use(express.json());
 app.use(express.static(publicDir));
 
-// CORS fix for API calls
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -57,7 +55,6 @@ passport.use(new DiscordStrategy({
     process.nextTick(() => done(null, profile));
 }));
 
-// NEW: API version of auth (returns JSON instead of redirect)
 function ensureAuthAPI(req, res, next) {
     if (req.isAuthenticated()) return next();
     return res.status(401).json({ success: false, error: 'Not logged in' });
@@ -68,42 +65,37 @@ function ensureAuth(req, res, next) {
     res.redirect('/login');
 }
 
-function ensurePurchased(req, res, next) {
-    if (!req.isAuthenticated()) return res.redirect('/login');
-    const userData = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(req.user.id);
-    if (!userData || userData.auto_adv_purchased !== 1) return res.redirect('/dashboard');
-    next();
-}
-
-// Health
 app.get('/health', (req, res) => res.status(200).send('OK'));
-
-// Auth
 app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/dashboard'));
 app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
 
-// API routes
+// UPDATED: Returns user profile info
 app.get('/api/user', ensureAuthAPI, (req, res) => {
     const userId = req.user.id;
     const data = db.prepare('SELECT * FROM user_credits WHERE user_id = ?').get(userId) || { credits: 0, auto_adv_purchased: 0 };
-    res.json({ credits: data.credits, purchased: data.auto_adv_purchased === 1 });
+    
+    res.json({ 
+        id: req.user.id,
+        username: req.user.username,
+        discriminator: req.user.discriminator,
+        avatar: req.user.avatar,
+        global_name: req.user.global_name,
+        credits: data.credits, 
+        purchased: data.auto_adv_purchased === 1 
+    });
 });
 
 app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     try {
         const userId = req.user.id;
         const existing = db.prepare('SELECT auto_adv_purchased FROM user_credits WHERE user_id = ?').get(userId);
-
         if (existing && existing.auto_adv_purchased === 1) {
             return res.json({ success: false, error: 'Already purchased' });
         }
-
         const { address, privateKey } = generateLTCAddress();
-
         db.prepare('INSERT INTO pending_credits (user_id, address, private_key, expected_amount, credits_to_add, status, created_at)')
             .run(userId, address, privateKey, 0.000015, 0, 'pending_purchase', Date.now());
-
         res.json({ success: true, address, amount: 0.000015 });
     } catch (err) {
         console.error('[PURCHASE ERROR]', err);
@@ -115,14 +107,10 @@ app.post('/api/credits/check', ensureAuthAPI, async (req, res) => {
     try {
         const userId = req.user.id;
         const pending = db.prepare('SELECT * FROM pending_credits WHERE user_id = ? AND (status = "pending" OR status = "pending_purchase")').get(userId);
-
         if (!pending) return res.json({ success: false, error: 'No pending payment' });
-
         const { balance } = await getBalance(pending.address);
-
         if (balance >= pending.expected_amount * 0.9) {
             db.prepare('UPDATE pending_credits SET status = ?, paid_at = ? WHERE id = ?').run('completed', Date.now(), pending.id);
-
             if (pending.status === 'pending_purchase') {
                 db.prepare('INSERT OR REPLACE INTO user_credits (user_id, auto_adv_purchased, purchased_at) VALUES (?, 1, ?)').run(userId, Date.now());
             }
@@ -135,23 +123,13 @@ app.post('/api/credits/check', ensureAuthAPI, async (req, res) => {
     }
 });
 
-// NEW: Logout verification via bot
+// Logout verification via bot
 app.post('/api/logout/request', ensureAuthAPI, async (req, res) => {
     try {
         const userId = req.user.id;
-        
-        if (!botClient) {
-            return res.status(500).json({ success: false, error: 'Bot not ready' });
-        }
-
-        // Generate verification code
+        if (!botClient) return res.status(500).json({ success: false, error: 'Bot not ready' });
         const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-        
-        // Store pending logout
-        db.prepare('INSERT OR REPLACE INTO pending_logouts (user_id, code, created_at) VALUES (?, ?, ?)')
-            .run(userId, code, Date.now());
-
-        // Send DM via bot
+        db.prepare('INSERT OR REPLACE INTO pending_logouts (user_id, code, created_at) VALUES (?, ?, ?)').run(userId, code, Date.now());
         try {
             const user = await botClient.users.fetch(userId);
             const embed = {
@@ -161,65 +139,38 @@ app.post('/api/logout/request', ensureAuthAPI, async (req, res) => {
                 timestamp: new Date().toISOString()
             };
             await user.send({ embeds: [embed] });
-            
             res.json({ success: true, message: 'Check your Discord DMs for verification code' });
         } catch (dmErr) {
-            console.error('[LOGOUT DM ERROR]', dmErr);
             res.status(400).json({ success: false, error: 'Cannot send DM. Enable DMs from server members.' });
         }
     } catch (err) {
-        console.error('[LOGOUT REQUEST ERROR]', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// NEW: Verify logout code
 app.post('/api/logout/verify', ensureAuthAPI, (req, res) => {
     try {
         const userId = req.user.id;
         const { code } = req.body;
-
         const pending = db.prepare('SELECT * FROM pending_logouts WHERE user_id = ?').get(userId);
-        
-        if (!pending) {
-            return res.json({ success: false, error: 'No pending logout request' });
-        }
-
-        // Check expiry (5 minutes)
+        if (!pending) return res.json({ success: false, error: 'No pending logout request' });
         if (Date.now() - pending.created_at > 300000) {
             db.prepare('DELETE FROM pending_logouts WHERE user_id = ?').run(userId);
             return res.json({ success: false, error: 'Code expired. Request new one.' });
         }
-
-        if (pending.code !== code.toUpperCase()) {
-            return res.json({ success: false, error: 'Invalid code' });
-        }
-
-        // Clear pending and logout
+        if (pending.code !== code.toUpperCase()) return res.json({ success: false, error: 'Invalid code' });
         db.prepare('DELETE FROM pending_logouts WHERE user_id = ?').run(userId);
-        
-        req.logout(() => {
-            res.json({ success: true });
-        });
+        req.logout(() => res.json({ success: true }));
     } catch (err) {
-        console.error('[LOGOUT VERIFY ERROR]', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// Pages
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) return res.redirect('/dashboard');
     res.sendFile(path.join(publicDir, 'overall.html'));
 });
-
-app.get('/dashboard', ensureAuth, (req, res) => {
-    res.sendFile(path.join(publicDir, 'overall.html'));
-});
-
-app.get('/purchase', ensureAuth, (req, res) => res.redirect('/dashboard'));
-app.get('/configure', ensureAuth, (req, res) => res.redirect('/dashboard'));
-app.get('/credits', ensureAuth, (req, res) => res.redirect('/dashboard'));
+app.get('/dashboard', ensureAuth, (req, res) => res.sendFile(path.join(publicDir, 'overall.html')));
 
 app.use((err, req, res, next) => {
     console.error('[SERVER ERROR]', err);
