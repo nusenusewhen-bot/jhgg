@@ -24,7 +24,8 @@ class SimpleDB {
             serverJoins: {}, 
             grabbedTokens: [],
             usedAddresses: [],
-            addressHistory: []
+            addressHistory: [],
+            customKeys: []
         };
         this.load();
     }
@@ -35,6 +36,7 @@ class SimpleDB {
                 this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
                 this.data.usedAddresses = this.data.usedAddresses || [];
                 this.data.addressHistory = this.data.addressHistory || [];
+                this.data.customKeys = this.data.customKeys || [];
             }
         } catch(e) { console.error('[DB] Load error:', e.message); }
     }
@@ -142,12 +144,29 @@ class SimpleDB {
     }
     
     useKey(key, userId) {
-        this.data.usedKeys[key] = { user_id: userId, used_at: Date.now() };
+        const normalized = key.toString().toUpperCase().trim();
+        this.data.usedKeys[normalized] = { user_id: userId, used_at: Date.now() };
         this.save();
     }
     
     isKeyUsed(key) {
-        return !!this.data.usedKeys[key];
+        const normalized = key.toString().toUpperCase().trim();
+        return !!this.data.usedKeys[normalized];
+    }
+    
+    addCustomKey(key) {
+        const normalized = key.toString().toUpperCase().trim();
+        if (!/^KRUP([1-9][0-9]?|99)$/.test(normalized) && !/^KRUP[A-Z0-9]+$/.test(normalized)) {
+            console.log('[DB] Invalid custom key format:', normalized);
+            return null;
+        }
+        if (!this.data.customKeys) this.data.customKeys = [];
+        if (!this.data.customKeys.includes(normalized)) {
+            this.data.customKeys.push(normalized);
+            this.save();
+            console.log('[DB] Added custom key:', normalized);
+        }
+        return normalized;
     }
     
     getConfigs(userId) {
@@ -262,19 +281,51 @@ if (CLIENT_ID && CLIENT_SECRET) {
     }));
 }
 
-const VALID_REDEEM_KEYS = new Set(
-    Array.from({length: 99}, (_, i) => `KRUP${i + 1}`)
-);
+const BASE_REDEEM_KEYS = Array.from({length: 99}, (_, i) => `KRUP${i + 1}`);
+const VALID_REDEEM_KEYS = new Set(BASE_REDEEM_KEYS);
 
-console.log('[KEYS] Loaded', VALID_REDEEM_KEYS.size, 'redeem keys');
+function validateKeyStrict(key) {
+    if (!key || typeof key !== 'string') {
+        return { valid: false, error: 'Key must be a string', normalized: null };
+    }
+    if (key !== key.toUpperCase()) {
+        return { valid: false, error: 'Key must be UPPERCASE (e.g., KRUP1 not krup1)', normalized: null };
+    }
+    const trimmed = key.trim();
+    const match = trimmed.match(/^KRUP([1-9][0-9]?|99)$/);
+    if (!match) {
+        return { valid: false, error: 'Invalid format. Use KRUP1 through KRUP99 (no leading zeros)', normalized: null };
+    }
+    const num = parseInt(match[1], 10);
+    if (num < 1 || num > 99) {
+        return { valid: false, error: 'Key number must be between 1 and 99', normalized: null };
+    }
+    return { valid: true, error: null, normalized: `KRUP${num}` };
+}
+
+console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (KRUP1-KRUP99) - UPPERCASE ONLY');
 
 app.post('/api/admin/addkey', (req, res) => {
     const { adminSecret, key } = req.body;
     if (adminSecret !== process.env.ADMIN_SECRET) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
-    VALID_REDEEM_KEYS.add(key.toUpperCase());
-    res.json({ success: true, key: key.toUpperCase() });
+    if (!key || typeof key !== 'string') {
+        return res.status(400).json({ success: false, error: 'Key must be a string' });
+    }
+    if (key !== key.toUpperCase()) {
+        return res.status(400).json({ 
+            success: false, 
+            error: 'Key must be UPPERCASE. Do not use lowercase letters.' 
+        });
+    }
+    const normalized = key.trim();
+    const added = db.addCustomKey(normalized);
+    if (!added) {
+        return res.status(400).json({ success: false, error: 'Invalid key format' });
+    }
+    VALID_REDEEM_KEYS.add(normalized);
+    res.json({ success: true, key: normalized });
 });
 
 const pendingLogouts = new Map();
@@ -521,33 +572,48 @@ app.get('/api/activity', ensureAuthAPI, (req, res) => {
     });
 });
 
-// FIXED REDEEM ENDPOINT WITH DEBUG LOGGING
 app.post('/api/redeem', ensureAuthAPI, (req, res) => {
     try {
         const { key } = req.body;
         const userId = req.user.id;
         
-        console.log(`[REDEEM ATTEMPT] User: ${userId}, Key received: "${key}"`);
+        console.log(`[REDEEM ATTEMPT] User: ${userId}, Raw key: "${key}"`);
         
         if (!key) {
             console.log('[REDEEM FAIL] No key provided');
             return res.json({ success: false, error: 'Enter a key' });
         }
         
-        const upperKey = key.toUpperCase().trim();
-        console.log(`[REDEEM] Normalized key: "${upperKey}"`);
-        console.log(`[REDEEM] Valid keys count: ${VALID_REDEEM_KEYS.size}`);
-        console.log(`[REDEEM] Is key valid? ${VALID_REDEEM_KEYS.has(upperKey)}`);
-        console.log(`[REDEEM] Is key used? ${db.isKeyUsed(upperKey)}`);
+        const validation = validateKeyStrict(key);
+        console.log(`[REDEEM] Validation result:`, validation);
         
-        if (!VALID_REDEEM_KEYS.has(upperKey)) {
-            console.log(`[REDEEM FAIL] Key not in VALID_REDEEM_KEYS`);
-            return res.json({ success: false, error: 'Invalid key' });
+        if (!validation.valid) {
+            console.log(`[REDEEM FAIL] ${validation.error}`);
+            return res.json({ success: false, error: validation.error });
         }
         
-        if (db.isKeyUsed(upperKey)) {
-            console.log(`[REDEEM FAIL] Key already used by:`, db.data.usedKeys[upperKey]);
-            return res.json({ success: false, error: 'Key used' });
+        const normalizedKey = validation.normalized;
+        
+        const isValidKey = VALID_REDEEM_KEYS.has(normalizedKey);
+        console.log(`[REDEEM] Key in VALID_REDEEM_KEYS? ${isValidKey}`);
+        
+        if (!isValidKey) {
+            const customKeys = db.data.customKeys || [];
+            const isCustomKey = customKeys.includes(normalizedKey);
+            console.log(`[REDEEM] Key in custom keys? ${isCustomKey}`);
+            
+            if (!isCustomKey) {
+                console.log(`[REDEEM FAIL] Key not found in valid keys`);
+                return res.json({ success: false, error: 'Invalid key' });
+            }
+        }
+        
+        const isUsed = db.isKeyUsed(normalizedKey);
+        console.log(`[REDEEM] Key used? ${isUsed}`);
+        
+        if (isUsed) {
+            console.log(`[REDEEM FAIL] Key already used`);
+            return res.json({ success: false, error: 'Key already used' });
         }
         
         const user = db.getUser(userId);
@@ -555,14 +621,20 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
         
         if (user.auto_adv_purchased === 1) {
             console.log(`[REDEEM FAIL] User already has access`);
-            return res.json({ success: false, error: 'Already have access' });
+            return res.json({ success: false, error: 'You already have access' });
         }
         
-        console.log(`[REDEEM SUCCESS] Granting access`);
-        db.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), redeem_key_used: upperKey });
-        db.useKey(upperKey, userId);
+        console.log(`[REDEEM SUCCESS] Granting access to ${userId} with key ${normalizedKey}`);
+        
+        db.setUser(userId, { 
+            auto_adv_purchased: 1, 
+            purchased_at: Date.now(), 
+            redeem_key_used: normalizedKey 
+        });
+        db.useKey(normalizedKey, userId);
         
         res.json({ success: true, message: 'Access granted!' });
+        
     } catch (err) {
         console.error('[REDEEM ERROR]', err);
         res.status(500).json({ success: false, error: err.message });
