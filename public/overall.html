@@ -18,7 +18,7 @@
         .btn-blue { background: #3b82f6; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
         .btn-blue:hover { background: #2563eb; }
         .card { background: #1f2937; border: 1px solid #374151; }
-        .nav-link { text-decoration: none; color: #9ca3af; display: inline-block; cursor: pointer; }
+        .nav-link { text-decoration: none; color: #9ca3af; display: inline-block; cursor: pointer; white-space: nowrap; flex-shrink: 0; padding: 8px 12px; background: none; border: none; border-bottom: 3px solid transparent; }
         .nav-link.active { color: #10b981; border-bottom: 3px solid #10b981; }
         .nav-link:hover { color: #fff; }
         .section { display: none; }
@@ -57,14 +57,37 @@
         .hidden { display: none !important; }
         #image-input { position: absolute; opacity: 0; width: 0; height: 0; }
         .form-label { display: block; font-size: 12px; color: #9ca3af; margin-bottom: 8px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
-        .nav-container { display: flex; gap: 16px; }
-        @media (max-width: 640px) { .nav-container { gap: 8px; } .nav-link { padding: 8px 12px; font-size: 13px; } }
+        
+        /* FIXED SCROLLABLE NAV */
+        .nav-wrapper {
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+            flex: 1;
+            margin: 0 12px;
+        }
+        .nav-wrapper::-webkit-scrollbar {
+            display: none;
+        }
+        .nav-container {
+            display: flex;
+            gap: 8px;
+            min-width: min-content;
+        }
+        
         .activity-card { background: #111827; border: 1px solid #374151; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
         .activity-pending { border-color: #fbbf24; }
         .activity-completed { border-color: #10b981; }
         .activity-expired { border-color: #ef4444; }
         .countdown { font-family: 'Courier New', monospace; font-size: 18px; color: #fbbf24; }
         .address-history-item { background: #1f2937; border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 12px; }
+        
+        @media (max-width: 640px) {
+            .nav-link { padding: 6px 10px; font-size: 13px; }
+            .nav-wrapper { margin: 0 8px; }
+        }
     </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -81,17 +104,22 @@
 
     <header class="bg-zinc-950 border-b border-zinc-800 sticky top-0 z-50" style="position: sticky; top: 0;">
         <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-            <div class="flex items-center gap-3" onclick="window.location.reload()" style="cursor: pointer;">
+            <div class="flex items-center gap-3" onclick="window.location.reload()" style="cursor: pointer; flex-shrink: 0;">
                 <i class="fa-solid fa-robot text-2xl" style="color: #10b981;"></i>
-                <h1 class="text-xl font-bold" style="color: #fff;">Auto Adv</h1>
+                <h1 class="text-xl font-bold" style="color: #fff; white-space: nowrap;">Auto Adv</h1>
             </div>
-            <nav class="nav-container text-sm font-medium overflow-x-auto whitespace-nowrap pb-1" style="-webkit-overflow-scrolling: touch;">
-                <button onclick="switchTab(0)" class="nav-link active px-4 py-2" id="nav-0" style="background: none; border: none; border-bottom: 3px solid transparent;">Dashboard</button>
-                <button onclick="switchTab(1)" class="nav-link px-4 py-2" id="nav-1" style="background: none; border: none; border-bottom: 3px solid transparent;">Purchase</button>
-                <button onclick="switchTab(2)" class="nav-link px-4 py-2 hidden" id="nav-2" style="background: none; border: none; border-bottom: 3px solid transparent;">Configure</button>
-                <button onclick="switchTab(3)" class="nav-link px-4 py-2 hidden" id="nav-3" style="background: none; border: none; border-bottom: 3px solid transparent;">Activity</button>
-            </nav>
-            <div class="flex items-center gap-3">
+            
+            <!-- FIXED SCROLLABLE NAV -->
+            <div class="nav-wrapper" id="nav-scroll">
+                <nav class="nav-container text-sm font-medium">
+                    <button onclick="switchTab(0)" class="nav-link active" id="nav-0">Dashboard</button>
+                    <button onclick="switchTab(1)" class="nav-link" id="nav-1">Purchase</button>
+                    <button onclick="switchTab(2)" class="nav-link hidden" id="nav-2">Configure</button>
+                    <button onclick="switchTab(3)" class="nav-link hidden" id="nav-3">Activity</button>
+                </nav>
+            </div>
+            
+            <div class="flex items-center gap-3" style="flex-shrink: 0;">
                 <div id="user-display" class="flex items-center gap-2">
                     <span class="text-xs bg-zinc-900 px-3 py-1 rounded-full" style="color: #9ca3af;">Loading...</span>
                 </div>
@@ -268,6 +296,36 @@
         let selectedImageBase64 = null;
         let activityInterval = null;
 
+        // Enable drag scrolling for nav
+        const navScroll = document.getElementById('nav-scroll');
+        let isDown = false;
+        let startX;
+        let scrollLeft;
+
+        if (navScroll) {
+            navScroll.addEventListener('mousedown', (e) => {
+                isDown = true;
+                startX = e.pageX - navScroll.offsetLeft;
+                scrollLeft = navScroll.scrollLeft;
+            });
+
+            navScroll.addEventListener('mouseleave', () => {
+                isDown = false;
+            });
+
+            navScroll.addEventListener('mouseup', () => {
+                isDown = false;
+            });
+
+            navScroll.addEventListener('mousemove', (e) => {
+                if (!isDown) return;
+                e.preventDefault();
+                const x = e.pageX - navScroll.offsetLeft;
+                const walk = (x - startX) * 2;
+                navScroll.scrollLeft = scrollLeft - walk;
+            });
+        }
+
         document.getElementById('auto-reply-toggle').addEventListener('change', function() {
             document.getElementById('auto-reply-container').classList.toggle('hidden', !this.checked);
         });
@@ -300,6 +358,11 @@
             activeNav.classList.add('active');
             activeNav.style.borderBottom = '3px solid #10b981';
             activeNav.style.color = '#10b981';
+            
+            // Scroll active tab into view
+            if (navScroll) {
+                activeNav.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+            }
             
             if (n === 2) loadSavedConfigs();
             if (n === 3) {
