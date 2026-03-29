@@ -31,12 +31,15 @@
         .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
         .success-text { color: #10b981; font-size: 14px; margin-top: 8px; }
         .redeem-section { border: 2px dashed #8b5cf6; border-radius: 16px; padding: 20px; margin-bottom: 20px; background: rgba(139, 92, 246, 0.1); }
-        .toggle-wrapper { position: relative; display: inline-block; width: 50px; height: 26px; }
-        .toggle-input { opacity: 0; width: 0; height: 0; position: absolute; cursor: pointer; z-index: 10; }
-        .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #374151; transition: .4s; border-radius: 34px; pointer-events: none; }
+        
+        /* FIXED TOGGLE STYLES */
+        .toggle-wrapper { position: relative; display: inline-block; width: 50px; height: 26px; cursor: pointer; }
+        .toggle-input { opacity: 0; width: 0; height: 0; position: absolute; }
+        .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #374151; transition: .4s; border-radius: 34px; }
         .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
         .toggle-input:checked + .toggle-slider { background-color: #10b981; }
         .toggle-input:checked + .toggle-slider:before { transform: translateX(24px); }
+        
         .account-card { background: #111827; border: 1px solid #374151; border-radius: 12px; padding: 16px; margin-bottom: 12px; transition: all 0.2s; }
         .account-card:hover { border-color: #4b5563; }
         .account-active { border-color: #10b981; background: rgba(16, 185, 129, 0.1); }
@@ -51,9 +54,11 @@
         .upload-area.has-file { border-color: #10b981; background: rgba(16, 185, 129, 0.05); }
         input, textarea { font-family: inherit; outline: none; transition: all 0.2s; }
         input:focus, textarea:focus { border-color: #10b981 !important; box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1); }
-        button { transition: all 0.2s; position: relative; overflow: hidden; }
+        button { transition: all 0.2s; position: relative; overflow: hidden; cursor: pointer; }
         button:active { transform: scale(0.98); }
-        .clickable { cursor: pointer; pointer-events: auto; }
+        
+        /* FIXED CLICKABLE CLASS - removed pointer-events: auto that was causing issues */
+        .clickable { cursor: pointer; }
         .hidden { display: none !important; }
         #image-input { position: absolute; opacity: 0; width: 0; height: 0; }
         .form-label { display: block; font-size: 12px; color: #9ca3af; margin-bottom: 8px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -65,30 +70,30 @@
     <div id="logout-modal" class="modal" onclick="if(event.target === this) closeLogoutModal()">
         <div class="card rounded-3xl p-8 max-w-sm mx-4 w-full" style="position: relative; z-index: 1001;">
             <h3 class="text-xl font-bold mb-4">Verify Logout</h3>
-            <input id="logout-code" type="text" placeholder="Enter code" maxlength="6" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm text-center tracking-widest uppercase mb-4 clickable" style="color: #fff;">
+            <input id="logout-code" type="text" placeholder="Enter code" maxlength="6" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm text-center tracking-widest uppercase mb-4" style="color: #fff;">
             <div class="flex gap-3">
-                <button onclick="closeLogoutModal()" class="flex-1 bg-zinc-700 hover:bg-zinc-600 py-3 rounded-2xl text-sm clickable" style="border: none; color: #fff;">Cancel</button>
-                <button onclick="verifyLogout()" class="flex-1 btn-green py-3 rounded-2xl text-sm clickable">Verify</button>
+                <button onclick="closeLogoutModal()" class="flex-1 bg-zinc-700 hover:bg-zinc-600 py-3 rounded-2xl text-sm" style="border: none; color: #fff;">Cancel</button>
+                <button onclick="verifyLogout()" class="flex-1 btn-green py-3 rounded-2xl text-sm">Verify</button>
             </div>
         </div>
     </div>
 
     <header class="bg-zinc-950 border-b border-zinc-800 sticky top-0 z-50" style="position: sticky; top: 0;">
         <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-            <div class="flex items-center gap-3 clickable" onclick="window.location.reload()">
+            <div class="flex items-center gap-3" onclick="window.location.reload()" style="cursor: pointer;">
                 <i class="fa-solid fa-robot text-2xl" style="color: #10b981;"></i>
                 <h1 class="text-xl font-bold" style="color: #fff;">Auto Adv</h1>
             </div>
             <nav class="nav-container text-sm font-medium overflow-x-auto whitespace-nowrap pb-1" style="-webkit-overflow-scrolling: touch;">
-                <button onclick="switchTab(0)" class="nav-link active px-4 py-2 clickable bg-transparent" id="nav-0" style="background: none; border: none; border-bottom: 3px solid transparent;">Dashboard</button>
-                <button onclick="switchTab(1)" class="nav-link px-4 py-2 clickable bg-transparent" id="nav-1" style="background: none; border: none; border-bottom: 3px solid transparent;">Purchase</button>
-                <button onclick="switchTab(2)" class="nav-link px-4 py-2 hidden clickable bg-transparent" id="nav-2" style="background: none; border: none; border-bottom: 3px solid transparent;">Configure</button>
+                <button onclick="switchTab(0)" class="nav-link active px-4 py-2" id="nav-0" style="background: none; border: none; border-bottom: 3px solid transparent;">Dashboard</button>
+                <button onclick="switchTab(1)" class="nav-link px-4 py-2" id="nav-1" style="background: none; border: none; border-bottom: 3px solid transparent;">Purchase</button>
+                <button onclick="switchTab(2)" class="nav-link px-4 py-2 hidden" id="nav-2" style="background: none; border: none; border-bottom: 3px solid transparent;">Configure</button>
             </nav>
             <div class="flex items-center gap-3">
                 <div id="user-display" class="flex items-center gap-2">
                     <span class="text-xs bg-zinc-900 px-3 py-1 rounded-full" style="color: #9ca3af;">Loading...</span>
                 </div>
-                <button onclick="initiateLogout()" class="text-zinc-400 hover:text-white clickable" style="background: none; border: none; padding: 8px; border-radius: 8px;">
+                <button onclick="initiateLogout()" class="text-zinc-400 hover:text-white" style="background: none; border: none; padding: 8px; border-radius: 8px; cursor: pointer;">
                     <i class="fa-solid fa-right-from-bracket"></i>
                 </button>
             </div>
@@ -106,7 +111,7 @@
                     <h3 class="text-lg font-semibold mb-4" style="color: #fff;">Access</h3>
                     <div id="status-box" class="p-5 bg-zinc-900 rounded-2xl text-center">
                         <p id="status-text" class="text-xl font-medium" style="color: #fbbf24;">Not Purchased</p>
-                        <button onclick="switchTab(1)" class="mt-5 w-full btn-green py-3.5 rounded-2xl text-base clickable" style="border: none;">Get Access - $1.50</button>
+                        <button onclick="switchTab(1)" class="mt-5 w-full btn-green py-3.5 rounded-2xl text-base" style="border: none;">Get Access - $1.50</button>
                     </div>
                 </div>
             </div>
@@ -116,8 +121,8 @@
             <div class="redeem-section card max-w-md mx-auto mb-6">
                 <h3 class="text-lg font-bold mb-3" style="color: #8b5cf6;"><i class="fa-solid fa-key mr-2"></i>Redeem Key</h3>
                 <div class="flex gap-2">
-                    <input id="redeem-key" type="text" placeholder="Enter key" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm uppercase clickable" style="color: #fff;">
-                    <button onclick="redeemKey()" id="redeem-btn" class="btn-purple px-6 py-3 rounded-2xl text-sm font-bold clickable" style="border: none;">Redeem</button>
+                    <input id="redeem-key" type="text" placeholder="Enter key" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm uppercase" style="color: #fff;">
+                    <button onclick="redeemKey()" id="redeem-btn" class="btn-purple px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">Redeem</button>
                 </div>
                 <div id="redeem-result" class="mt-3"></div>
             </div>
@@ -137,7 +142,7 @@
                         <p class="text-xs" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Image upload support</p>
                     </div>
                     
-                    <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-green py-5 rounded-2xl text-lg font-bold clickable" style="border: none;">Generate Address</button>
+                    <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-green py-5 rounded-2xl text-lg font-bold" style="border: none;">Generate Address</button>
                     <div id="payment-result" class="mt-8 text-left"></div>
                 </div>
             </div>
@@ -150,7 +155,7 @@
             </div>
 
             <div class="text-center mb-6">
-                <button onclick="showNewAccountForm()" class="btn-purple px-6 py-3 rounded-2xl font-bold clickable" style="border: none;">
+                <button onclick="showNewAccountForm()" class="btn-purple px-6 py-3 rounded-2xl font-bold" style="border: none;">
                     <i class="fa-solid fa-plus mr-2"></i>Add Another Account
                 </button>
             </div>
@@ -164,12 +169,12 @@
                 <div class="space-y-6">
                     <div>
                         <label class="form-label">Discord Token</label>
-                        <input id="token" type="password" placeholder="Paste token" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm clickable" style="color: #fff;">
+                        <input id="token" type="password" placeholder="Paste token" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
                     </div>
                     
                     <div>
                         <label class="form-label">Advertisement Image (Optional)</label>
-                        <div class="upload-area clickable" id="upload-area" onclick="document.getElementById('image-input').click()">
+                        <div class="upload-area" id="upload-area" onclick="document.getElementById('image-input').click()">
                             <input type="file" id="image-input" accept="image/*" class="hidden" onchange="handleImageSelect(event)">
                             <div id="upload-placeholder">
                                 <i class="fa-solid fa-image text-3xl mb-2" style="color: #6b7280;"></i>
@@ -178,14 +183,14 @@
                             </div>
                             <img id="image-preview" class="image-preview hidden mx-auto" />
                         </div>
-                        <button onclick="clearImage()" id="clear-image-btn" class="hidden mt-2 text-xs clickable" style="color: #ef4444; background: none; border: none;">
+                        <button onclick="clearImage()" id="clear-image-btn" class="hidden mt-2 text-xs" style="color: #ef4444; background: none; border: none; cursor: pointer;">
                             <i class="fa-solid fa-trash mr-1"></i>Remove image
                         </button>
                     </div>
                     
                     <div>
                         <label class="form-label">Channel IDs (comma separated)</label>
-                        <input id="channels" type="text" placeholder="123456789012345678, 987654321098765432" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm clickable" style="color: #fff;">
+                        <input id="channels" type="text" placeholder="123456789012345678, 987654321098765432" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
                         <p class="text-xs mt-1" style="color: #6b7280;">Right-click channel → Copy Channel ID</p>
                     </div>
                     
@@ -195,24 +200,24 @@
                                 <label class="text-sm font-medium block" style="color: #10b981;"><i class="fa-solid fa-door-open mr-2"></i>Join Server</label>
                                 <p class="text-xs" style="color: #6b7280;">Bot will join server for you</p>
                             </div>
-                            <label class="toggle-wrapper clickable">
+                            <label class="toggle-wrapper">
                                 <input type="checkbox" id="join-server-toggle" class="toggle-input">
                                 <span class="toggle-slider"></span>
                             </label>
                         </div>
                         <div id="server-invite-container" class="hidden">
-                            <input id="server-invite" type="text" placeholder="discord.gg/XXXX" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm clickable" style="color: #fff;">
+                            <input id="server-invite" type="text" placeholder="discord.gg/XXXX" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm" style="color: #fff;">
                         </div>
                     </div>
                     
                     <div>
                         <label class="form-label">Advertisement Message</label>
-                        <textarea id="message" rows="3" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm clickable" style="color: #fff; resize: vertical;"></textarea>
+                        <textarea id="message" rows="3" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm" style="color: #fff; resize: vertical;"></textarea>
                     </div>
                     
                     <div>
                         <label class="form-label">Delay Between Messages (seconds)</label>
-                        <input id="delay" type="number" value="30" min="10" max="3600" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm clickable" style="color: #fff;">
+                        <input id="delay" type="number" value="30" min="10" max="3600" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
                     </div>
                     
                     <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl border border-zinc-700">
@@ -220,7 +225,7 @@
                             <label class="text-sm font-medium block" style="color: #fff;">Auto-Reply</label>
                             <p class="text-xs" style="color: #6b7280;">Reply when someone asks about price</p>
                         </div>
-                        <label class="toggle-wrapper clickable">
+                        <label class="toggle-wrapper">
                             <input type="checkbox" id="auto-reply-toggle" class="toggle-input">
                             <span class="toggle-slider"></span>
                         </label>
@@ -228,12 +233,12 @@
                     
                     <div id="auto-reply-container" class="hidden">
                         <label class="form-label">Auto-Reply Message</label>
-                        <input id="auto-reply-text" type="text" placeholder="DM me for prices!" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm clickable" style="color: #fff;">
+                        <input id="auto-reply-text" type="text" placeholder="DM me for prices!" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
                     </div>
                     
                     <div class="flex gap-4">
-                        <button onclick="startBot()" id="start-btn" class="flex-1 btn-green py-4 rounded-2xl clickable" style="border: none;">Start & Save</button>
-                        <button onclick="stopBot()" class="flex-1 py-4 rounded-2xl clickable text-white font-bold" style="background: #dc2626; border: none;">Stop</button>
+                        <button onclick="startBot()" id="start-btn" class="flex-1 btn-green py-4 rounded-2xl" style="border: none;">Start & Save</button>
+                        <button onclick="stopBot()" class="flex-1 py-4 rounded-2xl text-white font-bold" style="background: #dc2626; border: none; cursor: pointer;">Stop</button>
                     </div>
                     <div id="bot-status" class="text-center text-sm"></div>
                 </div>
@@ -333,7 +338,7 @@
                     document.getElementById('status-text').textContent = 'Active';
                     document.getElementById('status-text').style.color = '#34d399';
                     document.getElementById('nav-2').classList.remove('hidden');
-                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #34d399;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm clickable" style="border: none;">Configure</button>';
+                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #34d399;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
                 }
             } catch (err) { 
                 console.error(err); 
@@ -383,8 +388,8 @@
                         </span>
                     </div>
                     <div class="flex gap-2 mt-3">
-                        <button onclick="editConfig('${config.id}')" class="flex-1 py-2 rounded-lg text-xs clickable" style="background: #374151; color: #fff; border: none;">Edit</button>
-                        <button onclick="deleteConfig('${config.id}')" class="flex-1 py-2 rounded-lg text-xs clickable text-red-200" style="background: #7f1d1d; border: none;">Delete</button>
+                        <button onclick="editConfig('${config.id}')" class="flex-1 py-2 rounded-lg text-xs" style="background: #374151; color: #fff; border: none; cursor: pointer;">Edit</button>
+                        <button onclick="deleteConfig('${config.id}')" class="flex-1 py-2 rounded-lg text-xs text-red-200" style="background: #7f1d1d; border: none; cursor: pointer;">Delete</button>
                     </div>
                 `;
                 list.appendChild(card);
@@ -509,168 +514,7 @@
                         <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
                             <p class="text-sm mb-2" style="color: #10b981;">Send to (Address #${data.index}):</p>
                             <p class="address-box text-sm mb-3">${data.address}</p>
-                            <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs clickable" style="background: #374151; color: #fff; border: none;">Copy</button>
-                            <p class="text-xs mt-3" style="color: #6b7280;">24/7 auto-sweep enabled • Unique address</p>
-                        </div>`;
-                    
-                    setInterval(async () => {
-                        const check = await fetch('/api/user', { credentials: 'same-origin' });
-                        const checkData = await check.json();
-                        if (checkData.purchased) {
-                            setTimeout(() => { switchTab(0); loadUserData(); }, 2000);
-                        }
-                    }, 5000);
-                } else {
-                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
-                }
-            } catch (err) {
-                result.innerHTML = '<p class="error-text">Server error</p>';
-            } finally {
-                btn.disabled = false;
-                btn.textContent = 'Generate Address';
-            }
-        }
-
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(() => alert('Copied!'));
-        }
-
-        async function startBot() {
-            const token = document.getElementById('token').value.trim();
-            const channels = document.getElementById('channels').value.trim();
-            const message = document.getElementById('message').value.trim();
-            const delay = document.getElementById('delay').value;
-            const autoReplyEnabled = document.getElementById('auto-reply-toggle').checked;
-            const autoReplyText = document.getElementById('auto-reply-text').value.trim();
-            const joinServer = document.getElementById('join-server-toggle').checked;
-            const serverInvite = document.getElementById('server-invite').value.trim();
-            const status = document.getElementById('bot-status');
-            const btn = document.getElementById('start-btn');
-            
-            if (!token || !channels || !message) {
-                status.innerHTML = '<span style="color: #ef4444;">Fill all fields</span>';
-                return;
-            }
-            
-            const channelArray = channels.split(',').map(c => c.trim());
-            const invalidChannels = channelArray.filter(c => !/^\d+$/.test(c));
-            if (invalidChannels.length > 0) {
-                status.innerHTML = '<span style="color: #ef4444;">Channel IDs must be numbers only</span>';
-                return;
-            }
-            
-            if (autoReplyEnabled && !autoReplyText) {
-                status.innerHTML = '<span style="color: #ef4444;">Enter auto-reply text or disable it</span>';
-                return;
-            }
-            
-            if (joinServer && !serverInvite) {
-                status.innerHTML = '<span style="color: #ef4444;">Enter server invite or disable join</span>';
-                return;
-            }
-            
-            btn.disabled = true;
-            status.innerHTML = '<span style="color: #fbbf24;">Validating...</span>';
-            
-            try {
-                const res = await fetch('/api/bot/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
-                    body: JSON.stringify({ 
-                        token, channels, message, delay, 
-                        autoReplyEnabled, autoReplyText, 
-                        configId: currentConfigId,
-                        joinServer, serverInvite,
-                        imageUrl: selectedImageBase64
-                    })
-                });
-                const data = await res.json();
-                
-                if (data.success) {
-                    let msg = `Running as ${data.username}! Saved.`;
-                    if (data.serverJoined) msg += ' Server joined!';
-                    status.innerHTML = `<span style="color: #34d399;">${msg}</span>`;
-                    
-                    await loadSavedConfigs();
-                    
-                    setTimeout(() => {
-                        document.getElementById('form-title').textContent = 'Configure Bot';
-                        document.getElementById('account-badge').classList.add('hidden');
-                        currentConfigId = 'default';
-                    }, 2000);
-                } else {
-                    status.innerHTML = ` behavior: 'smooth' });
-        }
-
-        async function deleteConfig(configId) {
-            if (!confirm('Delete this account configuration?')) return;
-            
-            try {
-                await fetch('/api/bot/delete', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
-                    body: JSON.stringify({ configId })
-                });
-                
-                await loadSavedConfigs();
-            } catch (err) { 
-                alert('Failed to delete'); 
-            }
-        }
-
-        async function redeemKey() {
-            const key = document.getElementById('redeem-key').value.trim();
-            const btn = document.getElementById('redeem-btn');
-            const result = document.getElementById('redeem-result');
-            
-            if (!key) return;
-            btn.disabled = true;
-            
-            try {
-                const res = await fetch('/api/redeem', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
-                    body: JSON.stringify({ key })
-                });
-                const data = await res.json();
-                
-                if (data.success) {
-                    result.innerHTML = '<p class="success-text">Access granted!</p>';
-                    setTimeout(() => { switchTab(0); loadUserData(); }, 1000);
-                } else {
-                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
-                }
-            } catch (err) {
-                result.innerHTML = '<p class="error-text">Network error</p>';
-            } finally {
-                btn.disabled = false;
-            }
-        }
-
-        async function purchaseLifetime() {
-            const btn = document.getElementById('buy-btn');
-            const result = document.getElementById('payment-result');
-            
-            btn.disabled = true;
-            btn.textContent = 'Generating...';
-            
-            try {
-                const res = await fetch('/api/purchase/lifetime', { 
-                    method: 'POST', 
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin'
-                });
-                const data = await res.json();
-                
-                if (data.success) {
-                    result.innerHTML = `
-                        <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
-                            <p class="text-sm mb-2" style="color: #10b981;">Send to (Address #${data.index}):</p>
-                            <p class="address-box text-sm mb-3">${data.address}</p>
-                            <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs clickable" style="background: #374151; color: #fff; border: none;">Copy</button>
+                            <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
                             <p class="text-xs mt-3" style="color: #6b7280;">24/7 auto-sweep enabled • Unique address</p>
                         </div>`;
                     
