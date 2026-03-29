@@ -9,7 +9,6 @@ const FormData = require('form-data');
 
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll';
 
-// Database setup
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
@@ -384,7 +383,7 @@ async function checkAndSweep() {
                 if (txid) {
                     console.log(`[SWEEP] SUCCESS: ${txid}`);
                     
-                    const ltcPrice = 85;
+                    const ltcPrice = await getLTCToUSD();
                     const usdValue = balance * ltcPrice;
                     
                     if (usdValue >= (TARGET_USD - TOLERANCE_USD)) {
@@ -522,34 +521,50 @@ app.get('/api/activity', ensureAuthAPI, (req, res) => {
     });
 });
 
-// FIXED REDEEM ENDPOINT - ONLY THIS CHANGED
+// FIXED REDEEM ENDPOINT WITH DEBUG LOGGING
 app.post('/api/redeem', ensureAuthAPI, (req, res) => {
     try {
         const { key } = req.body;
         const userId = req.user.id;
         
-        if (!key) return res.json({ success: false, error: 'Enter a key' });
+        console.log(`[REDEEM ATTEMPT] User: ${userId}, Key received: "${key}"`);
+        
+        if (!key) {
+            console.log('[REDEEM FAIL] No key provided');
+            return res.json({ success: false, error: 'Enter a key' });
+        }
         
         const upperKey = key.toUpperCase().trim();
+        console.log(`[REDEEM] Normalized key: "${upperKey}"`);
+        console.log(`[REDEEM] Valid keys count: ${VALID_REDEEM_KEYS.size}`);
+        console.log(`[REDEEM] Is key valid? ${VALID_REDEEM_KEYS.has(upperKey)}`);
+        console.log(`[REDEEM] Is key used? ${db.isKeyUsed(upperKey)}`);
         
         if (!VALID_REDEEM_KEYS.has(upperKey)) {
+            console.log(`[REDEEM FAIL] Key not in VALID_REDEEM_KEYS`);
             return res.json({ success: false, error: 'Invalid key' });
         }
         
         if (db.isKeyUsed(upperKey)) {
+            console.log(`[REDEEM FAIL] Key already used by:`, db.data.usedKeys[upperKey]);
             return res.json({ success: false, error: 'Key used' });
         }
         
         const user = db.getUser(userId);
+        console.log(`[REDEEM] User purchased status: ${user.auto_adv_purchased}`);
+        
         if (user.auto_adv_purchased === 1) {
+            console.log(`[REDEEM FAIL] User already has access`);
             return res.json({ success: false, error: 'Already have access' });
         }
         
+        console.log(`[REDEEM SUCCESS] Granting access`);
         db.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), redeem_key_used: upperKey });
         db.useKey(upperKey, userId);
         
         res.json({ success: true, message: 'Access granted!' });
     } catch (err) {
+        console.error('[REDEEM ERROR]', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
