@@ -224,14 +224,25 @@
                         <p class="text-xs mt-1" style="color: #6b7280;">Right-click channel → Copy Channel ID</p>
                     </div>
                     
-                    <div>
-                        <label class="form-label">Advertisement Message</label>
-                        <textarea id="message" rows="3" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm" style="color: #fff; resize: vertical;"></textarea>
+                    <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl border border-zinc-700 mb-4">
+                        <div>
+                            <label class="text-sm font-medium block" style="color: #10b981;"><i class="fa-solid fa-bolt mr-2"></i>Send All At Once</label>
+                            <p class="text-xs" style="color: #6b7280;">Send to all channels simultaneously</p>
+                        </div>
+                        <label class="toggle-wrapper">
+                            <input type="checkbox" id="send-all-at-once-toggle" class="toggle-input" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    
+                    <div id="delay-container" class="hidden">
+                        <label class="form-label">Delay Between Messages (seconds)</label>
+                        <input id="delay" type="number" value="30" min="10" max="3600" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
                     </div>
                     
                     <div>
-                        <label class="form-label">Delay Between Messages (seconds)</label>
-                        <input id="delay" type="number" value="30" min="10" max="3600" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
+                        <label class="form-label">Advertisement Message</label>
+                        <textarea id="message" rows="3" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm" style="color: #fff; resize: vertical;"></textarea>
                     </div>
                     
                     <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl border border-zinc-700">
@@ -312,6 +323,10 @@
 
         document.getElementById('auto-reply-toggle').addEventListener('change', function() {
             document.getElementById('auto-reply-container').classList.toggle('hidden', !this.checked);
+        });
+        
+        document.getElementById('send-all-at-once-toggle').addEventListener('change', function() {
+            document.getElementById('delay-container').classList.toggle('hidden', this.checked);
         });
 
         function switchTab(n) {
@@ -628,6 +643,8 @@
             document.getElementById('auto-reply-container').classList.add('hidden');
             document.getElementById('auto-reply-text').value = '';
             document.getElementById('bot-status').innerHTML = '';
+            document.getElementById('send-all-at-once-toggle').checked = true;
+            document.getElementById('delay-container').classList.add('hidden');
             clearImage();
             
             document.getElementById('config-form').scrollIntoView({ behavior: 'smooth' });
@@ -648,6 +665,8 @@
             document.getElementById('auto-reply-toggle').checked = config.auto_reply_enabled === 1;
             document.getElementById('auto-reply-container').classList.toggle('hidden', config.auto_reply_enabled !== 1);
             document.getElementById('auto-reply-text').value = config.auto_reply_text || '';
+            document.getElementById('send-all-at-once-toggle').checked = config.send_all_at_once !== 0;
+            document.getElementById('delay-container').classList.toggle('hidden', config.send_all_at_once !== 0);
             
             if (config.image_url) {
                 selectedImageBase64 = config.image_url;
@@ -770,6 +789,7 @@
             const delay = document.getElementById('delay').value;
             const autoReplyEnabled = document.getElementById('auto-reply-toggle').checked;
             const autoReplyText = document.getElementById('auto-reply-text').value.trim();
+            const sendAllAtOnce = document.getElementById('send-all-at-once-toggle').checked;
             const status = document.getElementById('bot-status');
             const btn = document.getElementById('start-btn');
             
@@ -802,7 +822,8 @@
                         token, channels, message, delay, 
                         autoReplyEnabled, autoReplyText, 
                         configId: currentConfigId,
-                        imageUrl: selectedImageBase64
+                        imageUrl: selectedImageBase64,
+                        sendAllAtOnce
                     })
                 });
                 const data = await res.json();
