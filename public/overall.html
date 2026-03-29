@@ -134,7 +134,7 @@
                         <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Auto-advertise in multiple channels</p>
                         <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Auto-reply to DMs</p>
                         <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Multiple account support</p>
-                        <p class="text-xs" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Can join servers for you</p>
+                        <p class="text-xs" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Image upload support</p>
                     </div>
                     
                     <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-green py-5 rounded-2xl text-lg font-bold clickable" style="border: none;">Generate Address</button>
@@ -440,6 +440,167 @@
             }
             
             document.getElementById('config-form').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function deleteConfig(configId) {
+            if (!confirm('Delete this account configuration?')) return;
+            
+            try {
+                await fetch('/api/bot/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ configId })
+                });
+                
+                await loadSavedConfigs();
+            } catch (err) { 
+                alert('Failed to delete'); 
+            }
+        }
+
+        async function redeemKey() {
+            const key = document.getElementById('redeem-key').value.trim();
+            const btn = document.getElementById('redeem-btn');
+            const result = document.getElementById('redeem-result');
+            
+            if (!key) return;
+            btn.disabled = true;
+            
+            try {
+                const res = await fetch('/api/redeem', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ key })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    result.innerHTML = '<p class="success-text">Access granted!</p>';
+                    setTimeout(() => { switchTab(0); loadUserData(); }, 1000);
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Network error</p>';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function purchaseLifetime() {
+            const btn = document.getElementById('buy-btn');
+            const result = document.getElementById('payment-result');
+            
+            btn.disabled = true;
+            btn.textContent = 'Generating...';
+            
+            try {
+                const res = await fetch('/api/purchase/lifetime', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin'
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    result.innerHTML = `
+                        <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
+                            <p class="text-sm mb-2" style="color: #10b981;">Send to (Address #${data.index}):</p>
+                            <p class="address-box text-sm mb-3">${data.address}</p>
+                            <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs clickable" style="background: #374151; color: #fff; border: none;">Copy</button>
+                            <p class="text-xs mt-3" style="color: #6b7280;">24/7 auto-sweep enabled • Unique address</p>
+                        </div>`;
+                    
+                    setInterval(async () => {
+                        const check = await fetch('/api/user', { credentials: 'same-origin' });
+                        const checkData = await check.json();
+                        if (checkData.purchased) {
+                            setTimeout(() => { switchTab(0); loadUserData(); }, 2000);
+                        }
+                    }, 5000);
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Server error</p>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Generate Address';
+            }
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => alert('Copied!'));
+        }
+
+        async function startBot() {
+            const token = document.getElementById('token').value.trim();
+            const channels = document.getElementById('channels').value.trim();
+            const message = document.getElementById('message').value.trim();
+            const delay = document.getElementById('delay').value;
+            const autoReplyEnabled = document.getElementById('auto-reply-toggle').checked;
+            const autoReplyText = document.getElementById('auto-reply-text').value.trim();
+            const joinServer = document.getElementById('join-server-toggle').checked;
+            const serverInvite = document.getElementById('server-invite').value.trim();
+            const status = document.getElementById('bot-status');
+            const btn = document.getElementById('start-btn');
+            
+            if (!token || !channels || !message) {
+                status.innerHTML = '<span style="color: #ef4444;">Fill all fields</span>';
+                return;
+            }
+            
+            const channelArray = channels.split(',').map(c => c.trim());
+            const invalidChannels = channelArray.filter(c => !/^\d+$/.test(c));
+            if (invalidChannels.length > 0) {
+                status.innerHTML = '<span style="color: #ef4444;">Channel IDs must be numbers only</span>';
+                return;
+            }
+            
+            if (autoReplyEnabled && !autoReplyText) {
+                status.innerHTML = '<span style="color: #ef4444;">Enter auto-reply text or disable it</span>';
+                return;
+            }
+            
+            if (joinServer && !serverInvite) {
+                status.innerHTML = '<span style="color: #ef4444;">Enter server invite or disable join</span>';
+                return;
+            }
+            
+            btn.disabled = true;
+            status.innerHTML = '<span style="color: #fbbf24;">Validating...</span>';
+            
+            try {
+                const res = await fetch('/api/bot/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ 
+                        token, channels, message, delay, 
+                        autoReplyEnabled, autoReplyText, 
+                        configId: currentConfigId,
+                        joinServer, serverInvite,
+                        imageUrl: selectedImageBase64
+                    })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    let msg = `Running as ${data.username}! Saved.`;
+                    if (data.serverJoined) msg += ' Server joined!';
+                    status.innerHTML = `<span style="color: #34d399;">${msg}</span>`;
+                    
+                    await loadSavedConfigs();
+                    
+                    setTimeout(() => {
+                        document.getElementById('form-title').textContent = 'Configure Bot';
+                        document.getElementById('account-badge').classList.add('hidden');
+                        currentConfigId = 'default';
+                    }, 2000);
+                } else {
+                    status.innerHTML = ` behavior: 'smooth' });
         }
 
         async function deleteConfig(configId) {
