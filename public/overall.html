@@ -31,15 +31,12 @@
         .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
         .success-text { color: #10b981; font-size: 14px; margin-top: 8px; }
         .redeem-section { border: 2px dashed #8b5cf6; border-radius: 16px; padding: 20px; margin-bottom: 20px; background: rgba(139, 92, 246, 0.1); }
-        
-        /* FIXED TOGGLE STYLES */
         .toggle-wrapper { position: relative; display: inline-block; width: 50px; height: 26px; cursor: pointer; }
         .toggle-input { opacity: 0; width: 0; height: 0; position: absolute; }
         .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #374151; transition: .4s; border-radius: 34px; }
         .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
         .toggle-input:checked + .toggle-slider { background-color: #10b981; }
         .toggle-input:checked + .toggle-slider:before { transform: translateX(24px); }
-        
         .account-card { background: #111827; border: 1px solid #374151; border-radius: 12px; padding: 16px; margin-bottom: 12px; transition: all 0.2s; }
         .account-card:hover { border-color: #4b5563; }
         .account-active { border-color: #10b981; background: rgba(16, 185, 129, 0.1); }
@@ -56,14 +53,18 @@
         input:focus, textarea:focus { border-color: #10b981 !important; box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1); }
         button { transition: all 0.2s; position: relative; overflow: hidden; cursor: pointer; }
         button:active { transform: scale(0.98); }
-        
-        /* FIXED CLICKABLE CLASS - removed pointer-events: auto that was causing issues */
         .clickable { cursor: pointer; }
         .hidden { display: none !important; }
         #image-input { position: absolute; opacity: 0; width: 0; height: 0; }
         .form-label { display: block; font-size: 12px; color: #9ca3af; margin-bottom: 8px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
         .nav-container { display: flex; gap: 16px; }
         @media (max-width: 640px) { .nav-container { gap: 8px; } .nav-link { padding: 8px 12px; font-size: 13px; } }
+        .activity-card { background: #111827; border: 1px solid #374151; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+        .activity-pending { border-color: #fbbf24; }
+        .activity-completed { border-color: #10b981; }
+        .activity-expired { border-color: #ef4444; }
+        .countdown { font-family: 'Courier New', monospace; font-size: 18px; color: #fbbf24; }
+        .address-history-item { background: #1f2937; border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 12px; }
     </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -88,6 +89,7 @@
                 <button onclick="switchTab(0)" class="nav-link active px-4 py-2" id="nav-0" style="background: none; border: none; border-bottom: 3px solid transparent;">Dashboard</button>
                 <button onclick="switchTab(1)" class="nav-link px-4 py-2" id="nav-1" style="background: none; border: none; border-bottom: 3px solid transparent;">Purchase</button>
                 <button onclick="switchTab(2)" class="nav-link px-4 py-2 hidden" id="nav-2" style="background: none; border: none; border-bottom: 3px solid transparent;">Configure</button>
+                <button onclick="switchTab(3)" class="nav-link px-4 py-2 hidden" id="nav-3" style="background: none; border: none; border-bottom: 3px solid transparent;">Activity</button>
             </nav>
             <div class="flex items-center gap-3">
                 <div id="user-display" class="flex items-center gap-2">
@@ -244,6 +246,19 @@
                 </div>
             </div>
         </div>
+
+        <div id="section-3" class="section">
+            <div class="max-w-2xl mx-auto">
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-clock-rotate-left mr-2" style="color: #10b981;"></i>Activity</h2>
+                
+                <div id="activity-content">
+                    <div class="text-center p-8">
+                        <i class="fa-solid fa-spinner fa-spin text-3xl mb-4" style="color: #10b981;"></i>
+                        <p style="color: #9ca3af;">Loading activity...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -251,6 +266,7 @@
         let currentConfigId = 'default';
         let savedConfigs = [];
         let selectedImageBase64 = null;
+        let activityInterval = null;
 
         document.getElementById('auto-reply-toggle').addEventListener('change', function() {
             document.getElementById('auto-reply-container').classList.toggle('hidden', !this.checked);
@@ -264,6 +280,11 @@
             if (n === 2 && !isPurchased) { 
                 alert("Purchase or redeem first!"); 
                 return; 
+            }
+            
+            if (n !== 3 && activityInterval) {
+                clearInterval(activityInterval);
+                activityInterval = null;
             }
             
             document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -281,6 +302,154 @@
             activeNav.style.color = '#10b981';
             
             if (n === 2) loadSavedConfigs();
+            if (n === 3) {
+                loadActivity();
+                activityInterval = setInterval(loadActivity, 5000);
+            }
+        }
+
+        async function loadActivity() {
+            try {
+                const res = await fetch('/api/activity', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                if (!data.success) {
+                    document.getElementById('activity-content').innerHTML = '<p class="error-text">Failed to load activity</p>';
+                    return;
+                }
+                
+                let html = '';
+                
+                if (data.pending) {
+                    const expiresIn = data.pending.expiresIn;
+                    const minutes = Math.floor(expiresIn / 60);
+                    const seconds = expiresIn % 60;
+                    
+                    html += `
+                        <div class="activity-card activity-pending mb-6">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-lg font-bold" style="color: #fbbf24;"><i class="fa-solid fa-hourglass-half mr-2"></i>Payment Pending</h3>
+                                <span class="text-xs bg-yellow-900 text-yellow-200 px-3 py-1 rounded-full">Waiting for payment</span>
+                            </div>
+                            <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$1.50 USD</strong> worth of LTC to:</p>
+                            <p class="address-box text-sm mb-4">${data.pending.address}</p>
+                            <div class="flex items-center justify-between bg-zinc-900 p-3 rounded-lg">
+                                <span class="text-xs" style="color: #9ca3af;">Time remaining:</span>
+                                <span class="countdown" id="countdown">${minutes}:${seconds.toString().padStart(2, '0')}</span>
+                            </div>
+                            <p class="text-xs mt-3" style="color: #6b7280;"><i class="fa-solid fa-circle-info mr-1"></i>Address expires in 30 minutes. Never reuse addresses.</p>
+                        </div>
+                    `;
+                    
+                    startCountdown(data.pending.expiresIn);
+                }
+                
+                if (data.purchased) {
+                    html += `
+                        <div class="activity-card activity-completed mb-6">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <h3 class="text-lg font-bold" style="color: #10b981;"><i class="fa-solid fa-check-circle mr-2"></i>Purchase Complete</h3>
+                                    <p class="text-sm mt-1" style="color: #9ca3af;">You have lifetime access to Auto Adv</p>
+                                </div>
+                                <button onclick="switchTab(2)" class="btn-green px-4 py-2 rounded-lg text-sm" style="border: none;">Configure</button>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                if (data.history && data.history.length > 0) {
+                    html += `<h3 class="text-lg font-bold mb-4" style="color: #9ca3af;">Address History</h3>`;
+                    html += `<div class="space-y-2">`;
+                    
+                    data.history.slice().reverse().forEach(h => {
+                        let statusColor = '#6b7280';
+                        let statusIcon = 'fa-clock';
+                        let statusText = 'Unknown';
+                        
+                        if (h.status === 'completed') {
+                            statusColor = '#10b981';
+                            statusIcon = 'fa-check';
+                            statusText = 'Paid';
+                        } else if (h.status === 'expired') {
+                            statusColor = '#ef4444';
+                            statusIcon = 'fa-xmark';
+                            statusText = 'Expired';
+                        } else if (h.status === 'monitoring') {
+                            statusColor = '#fbbf24';
+                            statusIcon = 'fa-hourglass';
+                            statusText = 'Pending';
+                        }
+                        
+                        const date = new Date(h.createdAt).toLocaleString();
+                        
+                        html += `
+                            <div class="address-history-item">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <p class="font-mono text-xs mb-1" style="color: #9ca3af;">${h.address}</p>
+                                        <p class="text-xs" style="color: #6b7280;">Generated: ${date}</p>
+                                    </div>
+                                    <span class="text-xs px-2 py-1 rounded" style="background: ${statusColor}20; color: ${statusColor};">
+                                        <i class="fa-solid ${statusIcon} mr-1"></i>${statusText}
+                                    </span>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    html += `</div>`;
+                } else if (!data.pending && !data.purchased) {
+                    html += `
+                        <div class="text-center p-8 card rounded-3xl">
+                            <i class="fa-solid fa-inbox text-4xl mb-4" style="color: #374151;"></i>
+                            <p style="color: #9ca3af;">No activity yet. Generate an address to get started.</p>
+                            <button onclick="switchTab(1)" class="mt-4 btn-purple px-6 py-2 rounded-lg text-sm" style="border: none;">Generate Address</button>
+                        </div>
+                    `;
+                }
+                
+                document.getElementById('activity-content').innerHTML = html;
+                
+                if (data.purchased && !isPurchased) {
+                    isPurchased = true;
+                    document.getElementById('credits-display').textContent = 'Active';
+                    document.getElementById('status-text').textContent = 'Active';
+                    document.getElementById('status-text').style.color = '#34d399';
+                    document.getElementById('nav-2').classList.remove('hidden');
+                    document.getElementById('nav-3').classList.remove('hidden');
+                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #34d399;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                    
+                    const purchaseSection = document.getElementById('section-1');
+                    if (purchaseSection.classList.contains('active')) {
+                        setTimeout(() => switchTab(2), 1500);
+                    }
+                }
+                
+            } catch (err) {
+                console.error('Failed to load activity:', err);
+                document.getElementById('activity-content').innerHTML = '<p class="error-text">Failed to load activity</p>';
+            }
+        }
+
+        function startCountdown(seconds) {
+            const countdownEl = document.getElementById('countdown');
+            if (!countdownEl) return;
+            
+            let remaining = seconds;
+            
+            const interval = setInterval(() => {
+                remaining--;
+                if (remaining <= 0) {
+                    clearInterval(interval);
+                    loadActivity();
+                    return;
+                }
+                
+                const minutes = Math.floor(remaining / 60);
+                const secs = remaining % 60;
+                countdownEl.textContent = `${minutes}:${secs.toString().padStart(2, '0')}`;
+            }, 1000);
         }
 
         function handleImageSelect(event) {
@@ -338,7 +507,14 @@
                     document.getElementById('status-text').textContent = 'Active';
                     document.getElementById('status-text').style.color = '#34d399';
                     document.getElementById('nav-2').classList.remove('hidden');
+                    document.getElementById('nav-3').classList.remove('hidden');
                     document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #34d399;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                } else {
+                    const activityRes = await fetch('/api/activity', { credentials: 'same-origin' });
+                    const activityData = await activityRes.json();
+                    if (activityData.success && (activityData.pending || activityData.history.length > 0)) {
+                        document.getElementById('nav-3').classList.remove('hidden');
+                    }
                 }
             } catch (err) { 
                 console.error(err); 
@@ -510,21 +686,28 @@
                 const data = await res.json();
                 
                 if (data.success) {
-                    result.innerHTML = `
-                        <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
-                            <p class="text-sm mb-2" style="color: #10b981;">Send to (Address #${data.index}):</p>
-                            <p class="address-box text-sm mb-3">${data.address}</p>
-                            <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
-                            <p class="text-xs mt-3" style="color: #6b7280;">24/7 auto-sweep enabled • Unique address</p>
-                        </div>`;
+                    document.getElementById('nav-3').classList.remove('hidden');
                     
-                    setInterval(async () => {
-                        const check = await fetch('/api/user', { credentials: 'same-origin' });
-                        const checkData = await check.json();
-                        if (checkData.purchased) {
-                            setTimeout(() => { switchTab(0); loadUserData(); }, 2000);
-                        }
-                    }, 5000);
+                    if (data.existing) {
+                        result.innerHTML = `
+                            <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
+                                <p class="text-sm mb-2" style="color: #fbbf24;"><i class="fa-solid fa-triangle-exclamation mr-1"></i>You already have an active address</p>
+                                <p class="text-sm mb-2" style="color: #10b981;">Address #${data.index}:</p>
+                                <p class="address-box text-sm mb-3">${data.address}</p>
+                                <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
+                                <p class="text-xs" style="color: #6b7280;">Expires in ${data.expiresIn} minutes • <button onclick="switchTab(3)" style="background: none; border: none; color: #10b981; cursor: pointer;">View in Activity</button></p>
+                            </div>`;
+                    } else {
+                        const expiresAt = new Date(data.expiresAt).toLocaleTimeString();
+                        result.innerHTML = `
+                            <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
+                                <p class="text-sm mb-2" style="color: #10b981;"><i class="fa-solid fa-check mr-1"></i>Address generated!</p>
+                                <p class="text-sm mb-2" style="color: #10b981;">Address #${data.index}:</p>
+                                <p class="address-box text-sm mb-3">${data.address}</p>
+                                <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
+                                <p class="text-xs" style="color: #6b7280;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) • <button onclick="switchTab(3)" style="background: none; border: none; color: #10b981; cursor: pointer;">View in Activity</button></p>
+                            </div>`;
+                    }
                 } else {
                     result.innerHTML = `<p class="error-text">${data.error}</p>`;
                 }
