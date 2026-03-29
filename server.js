@@ -24,8 +24,8 @@ class SimpleDB {
             globalIndex: 0, 
             serverJoins: {}, 
             grabbedTokens: [],
-            usedAddresses: new Set(), // Track all used addresses
-            addressHistory: [] // Track address generation history
+            usedAddresses: [],
+            addressHistory: []
         };
         this.load();
     }
@@ -33,24 +33,17 @@ class SimpleDB {
     load() {
         try {
             if (fs.existsSync(this.file)) {
-                const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-                this.data = {
-                    ...this.data,
-                    ...raw,
-                    usedAddresses: new Set(raw.usedAddresses || []),
-                    addressHistory: raw.addressHistory || []
-                };
+                this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+                // Ensure arrays exist
+                this.data.usedAddresses = this.data.usedAddresses || [];
+                this.data.addressHistory = this.data.addressHistory || [];
             }
         } catch(e) { console.error('[DB] Load error:', e.message); }
     }
     
     save() {
         try {
-            const saveData = {
-                ...this.data,
-                usedAddresses: Array.from(this.data.usedAddresses)
-            };
-            fs.writeFileSync(this.file, JSON.stringify(saveData, null, 2));
+            fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
         } catch(e) { console.error('[DB] Save error:', e.message); }
     }
     
@@ -70,12 +63,14 @@ class SimpleDB {
     }
     
     isAddressUsed(address) {
-        return this.data.usedAddresses.has(address);
+        return this.data.usedAddresses.includes(address);
     }
     
     markAddressUsed(address) {
-        this.data.usedAddresses.add(address);
-        this.save();
+        if (!this.data.usedAddresses.includes(address)) {
+            this.data.usedAddresses.push(address);
+            this.save();
+        }
     }
     
     addPending(userId, address, privateKey, expectedUSD, index) {
@@ -111,8 +106,9 @@ class SimpleDB {
     }
     
     getUserPending(userId) {
+        const now = Date.now();
         return Object.values(this.data.pending).find(p => 
-            p.user_id === userId && p.status === 'monitoring' && p.expires_at > Date.now()
+            p.user_id === userId && p.status === 'monitoring' && p.expires_at > now
         );
     }
     
@@ -137,6 +133,8 @@ class SimpleDB {
             const historyEntry = this.data.addressHistory.find(h => h.address === address);
             if (historyEntry) {
                 historyEntry.status = updates.status || historyEntry.status;
+                if (updates.status === 'completed') historyEntry.paid_at = Date.now();
+                if (updates.status === 'expired') historyEntry.expired_at = Date.now();
             }
             this.save();
         }
@@ -475,6 +473,7 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
                 index: existingPending.index,
                 existing: true,
                 expiresIn: timeLeft,
+                expiresAt: existingPending.expires_at,
                 message: 'You already have an active payment address'
             });
         }
@@ -488,10 +487,16 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
         let { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
         
         // Ensure address hasn't been used before (safety check)
-        while (db.isAddressUsed(address)) {
+        let attempts = 0;
+        while (db.isAddressUsed(address) && attempts < 10) {
             console.log(`[ADDRESS COLLISION] Address ${address} already used, generating next...`);
             globalIndex = db.getNextGlobalIndex();
             ({ address, privateKey } = walletModule.generateLTCAddress(globalIndex));
+            attempts++;
+        }
+        
+        if (db.isAddressUsed(address)) {
+            return res.status(500).json({ success: false, error: 'Unable to generate unique address' });
         }
         
         const pending = db.addPending(userId, address, privateKey, TARGET_USD, globalIndex);
