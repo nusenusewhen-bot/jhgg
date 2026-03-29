@@ -95,19 +95,26 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
     
     const client = new Client({ checkUpdate: false });
     const channelList = channels;
+    let currentIndex = 0;
     let intervalId = null;
     
     client.on('ready', async () => {
         console.log(`[SELFBOT ${configId}] Logged in as ${client.user.tag}`);
         console.log(`[SELFBOT ${configId}] Mode: ${sendAllAtOnce ? 'ALL AT ONCE' : 'SEQUENTIAL'}`);
+        console.log(`[SELFBOT ${configId}] Channels: ${channelList.length}, Delay: ${delay}ms`);
         
         intervalId = setInterval(async () => {
             if (sendAllAtOnce) {
                 // SEND TO ALL CHANNELS SIMULTANEOUSLY
+                console.log(`[SELFBOT ${configId}] Sending to all ${channelList.length} channels...`);
+                
                 const sendPromises = channelList.map(async (channelId) => {
                     try {
                         const channel = await client.channels.fetch(channelId);
-                        if (!channel) return;
+                        if (!channel) {
+                            console.log(`[SELFBOT ${configId}] Channel ${channelId} not found`);
+                            return;
+                        }
                         
                         if (imageUrl && imageUrl.startsWith('data:')) {
                             const base64Data = imageUrl.split(',')[1];
@@ -133,15 +140,15 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                             await channel.send(message);
                         }
                         
-                        console.log(`[SELFBOT ${configId}] Sent to ${channelId}`);
+                        console.log(`[SELFBOT ${configId}] ✓ Sent to ${channelId}`);
                     } catch (e) {
-                        console.error(`[SELFBOT ${configId}] Error sending to ${channelId}:`, e.message);
+                        console.error(`[SELFBOT ${configId}] ✗ Error sending to ${channelId}:`, e.message);
                     }
                 });
                 
                 // Wait for all sends to complete (they run in parallel)
                 await Promise.all(sendPromises);
-                console.log(`[SELFBOT ${configId}] Batch sent to all ${channelList.length} channels`);
+                console.log(`[SELFBOT ${configId}] Batch complete. Waiting ${delay}ms...`);
                 
             } else {
                 // SEQUENTIAL MODE - Send to one channel at a time with delay between each
@@ -176,7 +183,7 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                         await channel.send(message);
                     }
                     
-                    console.log(`[SELFBOT ${configId}] Sent to ${channelId}`);
+                    console.log(`[SELFBOT ${configId}] Sent to ${channelId} (${currentIndex}/${channelList.length})`);
                 } catch (e) {
                     console.error(`[SELFBOT ${configId}] Error:`, e.message);
                 }
