@@ -288,7 +288,11 @@ function validateKeyStrict(key) {
     if (!key || typeof key !== 'string') {
         return { valid: false, error: 'Invalid key', normalized: null };
     }
-    const trimmed = key.trim().toUpperCase();
+    // Normalize: uppercase, trim, and fix common typos (KPUR->KRUP, KURP->KRUP, etc.)
+    let trimmed = key.trim().toUpperCase();
+    
+    // Fix common misspellings of KRUP
+    trimmed = trimmed.replace(/^KPUR/, 'KRUP').replace(/^KURP/, 'KRUP').replace(/^KPRU/, 'KRUP').replace(/^KRPU/, 'KRUP');
     
     const baseMatch = trimmed.match(/^KRUP([1-9][0-9]?|99)$/);
     if (baseMatch) {
