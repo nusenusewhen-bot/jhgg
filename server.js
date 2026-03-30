@@ -288,25 +288,23 @@ function validateKeyStrict(key) {
     if (!key || typeof key !== 'string') {
         return { valid: false, error: 'Invalid key', normalized: null };
     }
-    // Normalize: uppercase, trim, and fix common typos (KPUR->KRUP, KURP->KRUP, etc.)
+    // Normalize: uppercase, trim
     let trimmed = key.trim().toUpperCase();
-    
-    // Fix common misspellings of KRUP
-    trimmed = trimmed.replace(/^KPUR/, 'KRUP').replace(/^KURP/, 'KRUP').replace(/^KPRU/, 'KRUP').replace(/^KRPU/, 'KRUP');
-    
-    const baseMatch = trimmed.match(/^KRUP([1-9][0-9]?|99)$/);
+
+    // Match TOKOS100-TOKOS200 (case insensitive)
+    const baseMatch = trimmed.match(/^TOKOS(1[0-9][0-9]|200)$/);
     if (baseMatch) {
         const num = parseInt(baseMatch[1], 10);
-        if (num >= 1 && num <= 99) {
-            return { valid: true, error: null, normalized: `KRUP${num}` };
+        if (num >= 100 && num <= 200) {
+            return { valid: true, error: null, normalized: `TOKOS${num}` };
         }
     }
-    
+
     const customKeys = db.data.customKeys || [];
     if (customKeys.includes(trimmed)) {
         return { valid: true, error: null, normalized: trimmed };
     }
-    
+
     return { valid: false, error: 'Invalid key', normalized: null };
 }
 
