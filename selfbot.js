@@ -194,7 +194,9 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
     if (autoReply) {
         client.on('messageCreate', async (msg) => {
             if (msg.author.id === client.user.id) return;
-            if (!channelList.includes(msg.channel.id)) return;
+            
+            const isDM = msg.channel.type === 1 || msg.channel.type === 'DM';
+            if (!isDM && !channelList.includes(msg.channel.id)) return;
             
             const content = msg.content.toLowerCase();
             const triggers = ['price', 'cost', 'how much', 'price?', 'cost?', 'how much?', 'howmuch', 'pricing'];
