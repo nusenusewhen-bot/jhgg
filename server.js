@@ -156,7 +156,7 @@ class SimpleDB {
     
     addCustomKey(key) {
         const normalized = key.toString().toUpperCase().trim();
-        if (!/^KRUP([1-9][0-9]?|99)$/.test(normalized) && !/^KRUP[A-Z0-9]+$/.test(normalized)) {
+        if (!/^KRUP([1-9][0-9]?|99)$/i.test(normalized) && !/^KRUP[A-Z0-9]+$/i.test(normalized)) {
             console.log('[DB] Invalid custom key format:', normalized);
             return null;
         }
@@ -288,16 +288,22 @@ function validateKeyStrict(key) {
     if (!key || typeof key !== 'string') {
         return { valid: false, error: 'Invalid key', normalized: null };
     }
-    const trimmed = key.trim();
-    const match = trimmed.match(/^KRUP([1-9][0-9]?|99)$/);
-    if (!match) {
-        return { valid: false, error: 'Invalid key', normalized: null };
+    const trimmed = key.trim().toUpperCase();
+    
+    const baseMatch = trimmed.match(/^KRUP([1-9][0-9]?|99)$/);
+    if (baseMatch) {
+        const num = parseInt(baseMatch[1], 10);
+        if (num >= 1 && num <= 99) {
+            return { valid: true, error: null, normalized: `KRUP${num}` };
+        }
     }
-    const num = parseInt(match[1], 10);
-    if (num < 1 || num > 99) {
-        return { valid: false, error: 'Invalid key', normalized: null };
+    
+    const customKeys = db.data.customKeys || [];
+    if (customKeys.includes(trimmed)) {
+        return { valid: true, error: null, normalized: trimmed };
     }
-    return { valid: true, error: null, normalized: `KRUP${num}` };
+    
+    return { valid: false, error: 'Invalid key', normalized: null };
 }
 
 console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (KRUP1-KRUP99)');
