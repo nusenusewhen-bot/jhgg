@@ -9,76 +9,259 @@
     <style>
         * { box-sizing: border-box; }
         body { 
-    background: linear-gradient(135deg, #0f0a0a 0%, #1a0a0a 50%, #0f0a0a 100%); 
-    color: #e5e7eb; 
-    font-size: 15px; 
-    margin: 0; 
-    padding: 0; 
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    min-height: 100vh;
-}
+            background: linear-gradient(135deg, #0f0a0a 0%, #1a0a0a 50%, #0f0a0a 100%); 
+            color: #e5e7eb; 
+            font-size: 15px; 
+            margin: 0; 
+            padding: 0; 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            min-height: 100vh;
+        }
         .red { color: #ef4444; }
-        .btn-red { background: #ef4444; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
+        .btn-red { 
+            background: #ef4444; 
+            color: #fff; 
+            font-weight: 700; 
+            border: none; 
+            cursor: pointer; 
+            display: inline-block; 
+            position: relative;
+            z-index: 10;
+            pointer-events: auto;
+        }
         .btn-red:hover { background: #dc2626; }
         .btn-red:disabled { background: #7f1d1d; cursor: not-allowed; opacity: 0.6; }
-        .btn-purple { background: #8b5cf6; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
+        .btn-purple { 
+            background: #8b5cf6; 
+            color: #fff; 
+            font-weight: 700; 
+            border: none; 
+            cursor: pointer; 
+            display: inline-block;
+            position: relative;
+            z-index: 10;
+            pointer-events: auto;
+        }
         .btn-purple:hover { background: #7c3aed; }
         .btn-blue { background: #3b82f6; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
         .btn-blue:hover { background: #2563eb; }
-        .card { background: linear-gradient(145deg, #1f1a1a 0%, #1a1515 100%); border: 1px solid #4a2d2d; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
-        .nav-link { text-decoration: none; color: #9ca3af; display: inline-block; cursor: pointer; white-space: nowrap; flex-shrink: 0; padding: 8px 12px; background: none; border: none; border-bottom: 3px solid transparent; }
+        .card { 
+            background: linear-gradient(145deg, #1f1a1a 0%, #1a1515 100%); 
+            border: 1px solid #4a2d2d; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3); 
+        }
+        .nav-link { 
+            text-decoration: none; 
+            color: #9ca3af; 
+            display: inline-block; 
+            cursor: pointer; 
+            white-space: nowrap; 
+            flex-shrink: 0; 
+            padding: 8px 12px; 
+            background: none; 
+            border: none; 
+            border-bottom: 3px solid transparent;
+            pointer-events: auto;
+            position: relative;
+            z-index: 20;
+        }
         .nav-link.active { 
-    color: #ef4444; 
-    border-bottom: 3px solid #ef4444;
-    text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
-}
+            color: #ef4444; 
+            border-bottom: 3px solid #ef4444;
+            text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+        }
         .nav-link:hover { color: #fff; }
-        .section { display: none; }
-        .section.active { display: block; animation: fadeIn 0.3s ease-in; }
+        .section { 
+            display: none; 
+            pointer-events: auto;
+        }
+        .section.active { 
+            display: block; 
+            animation: fadeIn 0.3s ease-in;
+            pointer-events: auto;
+        }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .address-box { font-family: 'Courier New', monospace; word-break: break-all; font-size: 14px; background: linear-gradient(145deg, #0f0a0a 0%, #150a0a 100%); padding: 12px; border-radius: 8px; border: 1px solid #ef4444; color: #ef4444; box-shadow: 0 0 10px rgba(239, 68, 68, 0.2); }
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+        .address-box { 
+            font-family: 'Courier New', monospace; 
+            word-break: break-all; 
+            font-size: 14px; 
+            background: linear-gradient(145deg, #0f0a0a 0%, #150a0a 100%); 
+            padding: 12px; 
+            border-radius: 8px; 
+            border: 1px solid #ef4444; 
+            color: #ef4444; 
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.2); 
+        }
+        .modal { 
+            display: none; 
+            position: fixed; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            background: rgba(0,0,0,0.85); 
+            z-index: 1000; 
+            align-items: center; 
+            justify-content: center; 
+            backdrop-filter: blur(4px);
+            pointer-events: auto;
+        }
         .modal.active { display: flex; }
-        .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 2px solid #ef4444; }
+        .user-avatar { 
+            width: 32px; 
+            height: 32px; 
+            border-radius: 50%; 
+            object-fit: cover; 
+            border: 2px solid #ef4444; 
+        }
         .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
         .success-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
-        .redeem-section { border: 2px dashed #ef4444; border-radius: 16px; padding: 20px; margin-bottom: 20px; background: linear-gradient(145deg, rgba(239, 68, 68, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); }
-        .toggle-wrapper { position: relative; display: inline-block; width: 50px; height: 26px; cursor: pointer; }
-        .toggle-input { opacity: 0; width: 0; height: 0; position: absolute; }
-        .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #374151; transition: .4s; border-radius: 34px; }
-        .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
+        .redeem-section { 
+            border: 2px dashed #ef4444; 
+            border-radius: 16px; 
+            padding: 20px; 
+            margin-bottom: 20px; 
+            background: linear-gradient(145deg, rgba(239, 68, 68, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); 
+        }
+        .toggle-wrapper { 
+            position: relative; 
+            display: inline-block; 
+            width: 50px; 
+            height: 26px; 
+            cursor: pointer;
+            pointer-events: auto;
+            z-index: 10;
+        }
+        .toggle-input { 
+            opacity: 0; 
+            width: 0; 
+            height: 0; 
+            position: absolute;
+            cursor: pointer;
+        }
+        .toggle-slider { 
+            position: absolute; 
+            cursor: pointer; 
+            top: 0; 
+            left: 0; 
+            right: 0; 
+            bottom: 0; 
+            background-color: #374151; 
+            transition: .4s; 
+            border-radius: 34px; 
+            pointer-events: auto;
+        }
+        .toggle-slider:before { 
+            position: absolute; 
+            content: ""; 
+            height: 18px; 
+            width: 18px; 
+            left: 4px; 
+            bottom: 4px; 
+            background-color: white; 
+            transition: .4s; 
+            border-radius: 50%; 
+        }
         .toggle-input:checked + .toggle-slider { background-color: #ef4444; }
         .toggle-input:checked + .toggle-slider:before { transform: translateX(24px); }
         .account-card { 
-    background: linear-gradient(145deg, #181111 0%, #151111 100%); 
-    border: 1px solid #3a2d2d; 
-    border-radius: 12px; 
-    padding: 16px; 
-    margin-bottom: 12px; 
-    transition: all 0.2s; 
-}
-.account-card:hover { border-color: #ef4444; box-shadow: 0 0 20px rgba(239, 68, 68, 0.2); }
-        .account-card:hover { border-color: #4b5563; }
-        .account-active { border-color: #ef4444; background: rgba(239, 68, 68, 0.1); }
-        .status-badge { display: inline-block; padding: 4px 12px; border-radius: 9999px; font-size: 12px; font-weight: 600; }
+            background: linear-gradient(145deg, #181111 0%, #151111 100%); 
+            border: 1px solid #3a2d2d; 
+            border-radius: 12px; 
+            padding: 16px; 
+            margin-bottom: 12px; 
+            transition: all 0.2s;
+            pointer-events: auto;
+        }
+        .account-card:hover { 
+            border-color: #ef4444; 
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.2); 
+        }
+        .account-active { 
+            border-color: #ef4444; 
+            background: rgba(239, 68, 68, 0.1); 
+        }
+        .status-badge { 
+            display: inline-block; 
+            padding: 4px 12px; 
+            border-radius: 9999px; 
+            font-size: 12px; 
+            font-weight: 600; 
+        }
         .status-running { background: #4a0f0f; color: #fca5a5; }
         .status-stopped { background: #4a0f0f; color: #fca5a5; }
         .feature-check { color: #ef4444; margin-right: 8px; }
-        .image-preview { max-width: 200px; max-height: 200px; border-radius: 8px; border: 2px dashed #374151; object-fit: cover; }
-        .image-preview.has-image { border-color: #ef4444; border-style: solid; }
-        .upload-area { border: 2px dashed #374151; border-radius: 12px; padding: 30px; text-align: center; cursor: pointer; transition: all 0.2s; background: #111827; }
-        .upload-area:hover { border-color: #ef4444; background: rgba(239, 68, 68, 0.1); }
-        .upload-area.has-file { border-color: #ef4444; background: rgba(239, 68, 68, 0.05); }
-        input, textarea { font-family: inherit; outline: none; transition: all 0.2s; }
-        input:focus, textarea:focus { border-color: #ef4444 !important; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1); }
-        button { transition: all 0.2s; position: relative; overflow: hidden; cursor: pointer; }
+        .image-preview { 
+            max-width: 200px; 
+            max-height: 200px; 
+            border-radius: 8px; 
+            border: 2px dashed #374151; 
+            object-fit: cover; 
+        }
+        .image-preview.has-image { 
+            border-color: #ef4444; 
+            border-style: solid; 
+        }
+        .upload-area { 
+            border: 2px dashed #374151; 
+            border-radius: 12px; 
+            padding: 30px; 
+            text-align: center; 
+            cursor: pointer; 
+            transition: all 0.2s; 
+            background: #111827;
+            pointer-events: auto;
+            position: relative;
+            z-index: 5;
+        }
+        .upload-area:hover { 
+            border-color: #ef4444; 
+            background: rgba(239, 68, 68, 0.1); 
+        }
+        .upload-area.has-file { 
+            border-color: #ef4444; 
+            background: rgba(239, 68, 68, 0.05); 
+        }
+        input, textarea { 
+            font-family: inherit; 
+            outline: none; 
+            transition: all 0.2s;
+            pointer-events: auto;
+        }
+        input:focus, textarea:focus { 
+            border-color: #ef4444 !important; 
+            box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1); 
+        }
+        button { 
+            transition: all 0.2s; 
+            position: relative; 
+            overflow: hidden; 
+            cursor: pointer;
+            pointer-events: auto;
+        }
         button:active { transform: scale(0.98); }
-        .clickable { cursor: pointer; }
+        .clickable { 
+            cursor: pointer;
+            pointer-events: auto;
+        }
         .hidden { display: none !important; }
-        #image-input { position: absolute; opacity: 0; width: 0; height: 0; }
-        .form-label { display: block; font-size: 12px; color: #9ca3af; margin-bottom: 8px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
+        #image-input { 
+            position: absolute; 
+            opacity: 0; 
+            width: 0; 
+            height: 0;
+            pointer-events: none;
+        }
+        .form-label { 
+            display: block; 
+            font-size: 12px; 
+            color: #9ca3af; 
+            margin-bottom: 8px; 
+            font-weight: 500; 
+            text-transform: uppercase; 
+            letter-spacing: 0.05em; 
+        }
         
-        /* FIXED SCROLLABLE NAV */
         .nav-wrapper {
             overflow-x: auto;
             overflow-y: hidden;
@@ -87,22 +270,39 @@
             -ms-overflow-style: none;
             flex: 1;
             margin: 0 12px;
+            pointer-events: auto;
         }
-        .nav-wrapper::-webkit-scrollbar {
-            display: none;
-        }
+        .nav-wrapper::-webkit-scrollbar { display: none; }
         .nav-container {
             display: flex;
             gap: 8px;
             min-width: min-content;
         }
         
-        .activity-card { background: #111827; border: 1px solid #374151; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+        .activity-card { 
+            background: #111827; 
+            border: 1px solid #374151; 
+            border-radius: 16px; 
+            padding: 20px; 
+            margin-bottom: 16px;
+            pointer-events: auto;
+        }
         .activity-pending { border-color: #fbbf24; }
         .activity-completed { border-color: #ef4444; }
         .activity-expired { border-color: #ef4444; }
-        .countdown { font-family: 'Courier New', monospace; font-size: 18px; color: #fbbf24; }
-        .address-history-item { background: #1f2937; border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 12px; }
+        .countdown { 
+            font-family: 'Courier New', monospace; 
+            font-size: 18px; 
+            color: #fbbf24; 
+        }
+        .address-history-item { 
+            background: #1f2937; 
+            border-radius: 8px; 
+            padding: 12px; 
+            margin-bottom: 8px; 
+            font-size: 12px;
+            pointer-events: auto;
+        }
         
         @media (max-width: 640px) {
             .nav-link { padding: 6px 10px; font-size: 13px; }
@@ -122,20 +322,19 @@
         </div>
     </div>
 
-    <header class="sticky top-0 z-50" style="background: linear-gradient(90deg, #1a0f0f 0%, #1a0a0a 50%, #1a0f0f 100%); border-bottom: 1px solid #4a2d2d;" style="position: sticky; top: 0;">
+    <header class="sticky top-0 z-50" style="background: linear-gradient(90deg, #1a0f0f 0%, #1a0a0a 50%, #1a0f0f 100%); border-bottom: 1px solid #4a2d2d; position: sticky; top: 0;">
         <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-            <div class="flex items-center gap-3" onclick="window.location.reload()" style="cursor: pointer; flex-shrink: 0;">
+            <div class="flex items-center gap-3 clickable" onclick="window.location.reload()" style="cursor: pointer; flex-shrink: 0;">
                 <i class="fa-solid fa-robot text-2xl" style="color: #ef4444;"></i>
                 <h1 class="text-xl font-bold" style="color: #fff; white-space: nowrap;">Auto Adv</h1>
             </div>
             
-            <!-- FIXED SCROLLABLE NAV -->
             <div class="nav-wrapper" id="nav-scroll">
                 <nav class="nav-container text-sm font-medium">
-                    <button onclick="switchTab(0)" class="nav-link active" id="nav-0">Main</button>
-                    <button onclick="switchTab(1)" class="nav-link" id="nav-1">Purchase</button>
-                    <button onclick="switchTab(2)" class="nav-link hidden" id="nav-2">Configure</button>
-                    <button onclick="switchTab(3)" class="nav-link hidden" id="nav-3">Purchase Logs</button>
+                    <button class="nav-link active" id="nav-0" data-tab="0">Main</button>
+                    <button class="nav-link" id="nav-1" data-tab="1">Purchase</button>
+                    <button class="nav-link hidden" id="nav-2" data-tab="2">Configure</button>
+                    <button class="nav-link hidden" id="nav-3" data-tab="3">Purchase Logs</button>
                 </nav>
             </div>
             
@@ -172,7 +371,7 @@
                 <h3 class="text-lg font-bold mb-3" style="color: #8b5cf6;"><i class="fa-solid fa-key mr-2"></i>Redeem Key</h3>
                 <div class="flex gap-2">
                     <input id="redeem-key" type="text" placeholder="Enter key" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm uppercase" style="color: #fff;">
-                    <button onclick="redeemKey()" id="redeem-btn" class="btn-purple px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">Redeem</button>
+                    <button id="redeem-btn" class="btn-purple px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">Redeem</button>
                 </div>
                 <div id="redeem-result" class="mt-3"></div>
             </div>
@@ -192,7 +391,7 @@
                         <p class="text-xs" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Image upload support</p>
                     </div>
                     
-                    <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-red py-5 rounded-2xl text-lg font-bold" style="border: none;">Generate Address</button>
+                    <button id="buy-btn" class="w-full btn-red py-5 rounded-2xl text-lg font-bold" style="border: none;">Generate Address</button>
                     <div id="payment-result" class="mt-8 text-left"></div>
                 </div>
             </div>
@@ -205,7 +404,7 @@
             </div>
 
             <div class="text-center mb-6">
-                <button onclick="showNewAccountForm()" class="btn-purple px-6 py-3 rounded-2xl font-bold" style="border: none;">
+                <button id="add-account-btn" class="btn-purple px-6 py-3 rounded-2xl font-bold" style="border: none;">
                     <i class="fa-solid fa-plus mr-2"></i>Add Another Account
                 </button>
             </div>
@@ -224,8 +423,8 @@
                     
                     <div>
                         <label class="form-label">Advertisement Image (Optional)</label>
-                        <div class="upload-area" id="upload-area" onclick="document.getElementById('image-input').click()">
-                            <input type="file" id="image-input" accept="image/*" class="hidden" onchange="handleImageSelect(event)">
+                        <div class="upload-area" id="upload-area">
+                            <input type="file" id="image-input" accept="image/*" class="hidden">
                             <div id="upload-placeholder">
                                 <i class="fa-solid fa-image text-3xl mb-2" style="color: #6b7280;"></i>
                                 <p class="text-sm" style="color: #9ca3af;">Click to upload image</p>
@@ -233,7 +432,7 @@
                             </div>
                             <img id="image-preview" class="image-preview hidden mx-auto" />
                         </div>
-                        <button onclick="clearImage()" id="clear-image-btn" class="hidden mt-2 text-xs" style="color: #ef4444; background: none; border: none; cursor: pointer;">
+                        <button id="clear-image-btn" class="hidden mt-2 text-xs" style="color: #ef4444; background: none; border: none; cursor: pointer;">
                             <i class="fa-solid fa-trash mr-1"></i>Remove image
                         </button>
                     </div>
@@ -250,7 +449,7 @@
                             <label class="text-sm font-medium block" style="color: #ef4444;"><i class="fa-solid fa-bolt mr-2"></i>Send All At Once</label>
                             <p class="text-xs" style="color: #6b7280;">Send to all channels simultaneously</p>
                         </div>
-                        <label class="toggle-wrapper">
+                        <label class="toggle-wrapper" for="send-all-at-once-toggle">
                             <input type="checkbox" id="send-all-at-once-toggle" class="toggle-input" checked>
                             <span class="toggle-slider"></span>
                         </label>
@@ -271,7 +470,7 @@
                             <label class="text-sm font-medium block" style="color: #fff;">Auto-Reply</label>
                             <p class="text-xs" style="color: #6b7280;">Reply when someone asks about price</p>
                         </div>
-                        <label class="toggle-wrapper">
+                        <label class="toggle-wrapper" for="auto-reply-toggle">
                             <input type="checkbox" id="auto-reply-toggle" class="toggle-input">
                             <span class="toggle-slider"></span>
                         </label>
@@ -283,8 +482,8 @@
                     </div>
                     
                     <div class="flex gap-4">
-                        <button onclick="startBot()" id="start-btn" class="flex-1 btn-red py-4 rounded-2xl" style="border: none;">Start & Save</button>
-                        <button onclick="stopBot()" class="flex-1 py-4 rounded-2xl text-white font-bold" style="background: #dc2626; border: none; cursor: pointer;">Stop</button>
+                        <button id="start-btn" class="flex-1 btn-red py-4 rounded-2xl" style="border: none;">Start & Save</button>
+                        <button id="stop-btn" class="flex-1 py-4 rounded-2xl text-white font-bold" style="background: #dc2626; border: none; cursor: pointer;">Stop</button>
                     </div>
                     <div id="bot-status" class="text-center text-sm"></div>
                 </div>
@@ -307,18 +506,98 @@
 
     <script>
         let isPurchased = false;
-        let currentConfigId = 'default';
+        let currentConfigId = 'TOKOS100';
         let savedConfigs = [];
         let selectedImageBase64 = null;
         let activityInterval = null;
 
-        // Enable drag scrolling for nav
-        const navScroll = document.getElementById('nav-scroll');
-        let isDown = false;
-        let startX;
-        let scrollLeft;
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeEventListeners();
+            loadUserData();
+            setInterval(() => {
+                fetch('/api/user', { credentials: 'same-origin' }).catch(() => {});
+            }, 60000);
+        });
 
-        if (navScroll) {
+        function initializeEventListeners() {
+            // Nav buttons
+            document.querySelectorAll('.nav-link').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const tabIndex = parseInt(this.getAttribute('data-tab'));
+                    switchTab(tabIndex);
+                });
+            });
+
+            // Redeem button
+            document.getElementById('redeem-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                redeemKey();
+            });
+
+            // Buy button
+            document.getElementById('buy-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                purchaseLifetime();
+            });
+
+            // Add account button
+            document.getElementById('add-account-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                showNewAccountForm();
+            });
+
+            // Upload area
+            document.getElementById('upload-area').addEventListener('click', function(e) {
+                e.preventDefault();
+                document.getElementById('image-input').click();
+            });
+
+            // Image input
+            document.getElementById('image-input').addEventListener('change', handleImageSelect);
+
+            // Clear image button
+            document.getElementById('clear-image-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                clearImage();
+            });
+
+            // Auto-reply toggle
+            document.getElementById('auto-reply-toggle').addEventListener('change', function() {
+                const container = document.getElementById('auto-reply-container');
+                if (this.checked) {
+                    container.classList.remove('hidden');
+                } else {
+                    container.classList.add('hidden');
+                }
+            });
+
+            // Send all at once toggle
+            document.getElementById('send-all-at-once-toggle').addEventListener('change', function() {
+                const isAllAtOnce = this.checked;
+                document.getElementById('delay-label').textContent = isAllAtOnce ? 'Delay (seconds)' : 'Delay (seconds)';
+            });
+
+            // Start button
+            document.getElementById('start-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                startBot();
+            });
+
+            // Stop button
+            document.getElementById('stop-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                stopBot();
+            });
+
+            // Drag scrolling for nav
+            const navScroll = document.getElementById('nav-scroll');
+            let isDown = false;
+            let startX;
+            let scrollLeft;
+
             navScroll.addEventListener('mousedown', (e) => {
                 isDown = true;
                 startX = e.pageX - navScroll.offsetLeft;
@@ -341,20 +620,6 @@
                 navScroll.scrollLeft = scrollLeft - walk;
             });
         }
-
-        document.getElementById('auto-reply-toggle').addEventListener('change', function() {
-            const container = document.getElementById('auto-reply-container');
-            if (this.checked) {
-                container.classList.remove('hidden');
-            } else {
-                container.classList.add('hidden');
-            }
-        });
-        
-        document.getElementById('send-all-at-once-toggle').addEventListener('change', function() {
-            const isAllAtOnce = this.checked;
-            document.getElementById('delay-label').textContent = isAllAtOnce ? 'Delay (seconds)' : 'Delay (seconds)';
-        });
 
         function switchTab(n) {
             if (n === 2 && !isPurchased) { 
@@ -381,19 +646,19 @@
             activeNav.style.borderBottom = '3px solid #ef4444';
             activeNav.style.color = '#ef4444';
             
-            // Scroll active tab into view
+            const navScroll = document.getElementById('nav-scroll');
             if (navScroll) {
                 activeNav.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
             }
             
             if (n === 2) loadSavedConfigs();
             if (n === 3) {
-                loadPurchase Logs();
-                activityInterval = setInterval(loadPurchase Logs, 5000);
+                loadPurchaseLogs();
+                activityInterval = setInterval(loadPurchaseLogs, 5000);
             }
         }
 
-        async function loadPurchase Logs() {
+        async function loadPurchaseLogs() {
             try {
                 const res = await fetch('/api/activity', { credentials: 'same-origin' });
                 const data = await res.json();
@@ -527,7 +792,7 @@
                 remaining--;
                 if (remaining <= 0) {
                     clearInterval(interval);
-                    loadPurchase Logs();
+                    loadPurchaseLogs();
                     return;
                 }
                 
@@ -826,7 +1091,6 @@
                 return;
             }
             
-            // Validate channel IDs - numbers only
             const channelArray = channels.split(',').map(c => c.trim());
             const invalidChannels = channelArray.filter(c => !/^\d+$/.test(c));
             if (invalidChannels.length > 0) {
@@ -869,7 +1133,7 @@
                     setTimeout(() => {
                         document.getElementById('form-title').textContent = 'Configure Bot';
                         document.getElementById('account-badge').classList.add('hidden');
-                        currentConfigId = 'default';
+                        currentConfigId = 'TOKOS100';
                     }, 2000);
                 } else {
                     status.innerHTML = `<span style="color: #ef4444;">${data.error}</span>`;
@@ -925,13 +1189,6 @@
                 if (data.success) window.location.href = '/';
             } catch (err) {}
         }
-
-        window.onload = () => { 
-            loadUserData();
-            setInterval(() => {
-                fetch('/api/user', { credentials: 'same-origin' }).catch(() => {});
-            }, 60000);
-        };
     </script>
 </body>
 </html>
