@@ -8,7 +8,15 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
     <style>
         * { box-sizing: border-box; }
-        body { background: #0a0a0a; color: #e5e7eb; font-size: 15px; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        body { 
+    background: linear-gradient(135deg, #0a0f0a 0%, #1a0a0a 50%, #0a0f0a 100%); 
+    color: #e5e7eb; 
+    font-size: 15px; 
+    margin: 0; 
+    padding: 0; 
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    min-height: 100vh;
+}
         .green { color: #10b981; }
         .btn-green { background: #10b981; color: #000; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
         .btn-green:hover { background: #34d399; }
@@ -17,27 +25,39 @@
         .btn-purple:hover { background: #7c3aed; }
         .btn-blue { background: #3b82f6; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
         .btn-blue:hover { background: #2563eb; }
-        .card { background: #1f2937; border: 1px solid #374151; }
+        .card { background: linear-gradient(145deg, #1a1f1a 0%, #1f1a1a 100%); border: 1px solid #2d4a2d; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
         .nav-link { text-decoration: none; color: #9ca3af; display: inline-block; cursor: pointer; white-space: nowrap; flex-shrink: 0; padding: 8px 12px; background: none; border: none; border-bottom: 3px solid transparent; }
-        .nav-link.active { color: #10b981; border-bottom: 3px solid #10b981; }
+        .nav-link.active { 
+    color: #10b981; 
+    border-bottom: 3px solid #10b981;
+    text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+}
         .nav-link:hover { color: #fff; }
         .section { display: none; }
         .section.active { display: block; animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .address-box { font-family: 'Courier New', monospace; word-break: break-all; font-size: 14px; background: #0a0a0a; padding: 12px; border-radius: 8px; border: 1px solid #10b981; color: #10b981; }
+        .address-box { font-family: 'Courier New', monospace; word-break: break-all; font-size: 14px; background: linear-gradient(145deg, #0a0f0a 0%, #0f0a0a 100%); padding: 12px; border-radius: 8px; border: 1px solid #10b981; color: #10b981; box-shadow: 0 0 10px rgba(16, 185, 129, 0.2); }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
         .modal.active { display: flex; }
         .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 2px solid #10b981; }
         .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
         .success-text { color: #10b981; font-size: 14px; margin-top: 8px; }
-        .redeem-section { border: 2px dashed #8b5cf6; border-radius: 16px; padding: 20px; margin-bottom: 20px; background: rgba(139, 92, 246, 0.1); }
+        .redeem-section { border: 2px dashed #10b981; border-radius: 16px; padding: 20px; margin-bottom: 20px; background: linear-gradient(145deg, rgba(16, 185, 129, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); }
         .toggle-wrapper { position: relative; display: inline-block; width: 50px; height: 26px; cursor: pointer; }
         .toggle-input { opacity: 0; width: 0; height: 0; position: absolute; }
         .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #374151; transition: .4s; border-radius: 34px; }
         .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
         .toggle-input:checked + .toggle-slider { background-color: #10b981; }
         .toggle-input:checked + .toggle-slider:before { transform: translateX(24px); }
-        .account-card { background: #111827; border: 1px solid #374151; border-radius: 12px; padding: 16px; margin-bottom: 12px; transition: all 0.2s; }
+        .account-card { 
+    background: linear-gradient(145deg, #111811 0%, #181111 100%); 
+    border: 1px solid #2d3a2d; 
+    border-radius: 12px; 
+    padding: 16px; 
+    margin-bottom: 12px; 
+    transition: all 0.2s; 
+}
+.account-card:hover { border-color: #10b981; box-shadow: 0 0 20px rgba(16, 185, 129, 0.2); }
         .account-card:hover { border-color: #4b5563; }
         .account-active { border-color: #10b981; background: rgba(16, 185, 129, 0.1); }
         .status-badge { display: inline-block; padding: 4px 12px; border-radius: 9999px; font-size: 12px; font-weight: 600; }
@@ -46,9 +66,21 @@
         .feature-check { color: #10b981; margin-right: 8px; }
         .image-preview { max-width: 200px; max-height: 200px; border-radius: 8px; border: 2px dashed #374151; object-fit: cover; }
         .image-preview.has-image { border-color: #10b981; border-style: solid; }
-        .upload-area { border: 2px dashed #374151; border-radius: 12px; padding: 30px; text-align: center; cursor: pointer; transition: all 0.2s; background: #111827; }
-        .upload-area:hover { border-color: #10b981; background: rgba(16, 185, 129, 0.1); }
-        .upload-area.has-file { border-color: #10b981; background: rgba(16, 185, 129, 0.05); }
+        .upload-area { 
+    border: 2px dashed #2d4a2d; 
+    border-radius: 12px; 
+    padding: 30px; 
+    text-align: center; 
+    cursor: pointer; 
+    transition: all 0.2s; 
+    background: linear-gradient(145deg, #111811 0%, #181111 100%); 
+}
+.upload-area:hover { 
+    border-color: #10b981; 
+    background: linear-gradient(145deg, rgba(16, 185, 129, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); 
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.2);
+}
+.upload-area.has-file { border-color: #10b981; background: rgba(16, 185, 129, 0.05); }
         input, textarea { font-family: inherit; outline: none; transition: all 0.2s; }
         input:focus, textarea:focus { border-color: #10b981 !important; box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1); }
         button { transition: all 0.2s; position: relative; overflow: hidden; cursor: pointer; }
@@ -77,10 +109,17 @@
             min-width: min-content;
         }
         
-        .activity-card { background: #111827; border: 1px solid #374151; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
-        .activity-pending { border-color: #fbbf24; }
-        .activity-completed { border-color: #10b981; }
-        .activity-expired { border-color: #ef4444; }
+        .activity-card { 
+    background: linear-gradient(145deg, #111811 0%, #181111 100%); 
+    border: 1px solid #2d3a2d; 
+    border-radius: 16px; 
+    padding: 20px; 
+    margin-bottom: 16px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+}
+.activity-pending { border-color: #fbbf24; border-left: 4px solid #fbbf24; }
+.activity-completed { border-color: #10b981; border-left: 4px solid #10b981; }
+.activity-expired { border-color: #ef4444; border-left: 4px solid #ef4444; }
         .countdown { font-family: 'Courier New', monospace; font-size: 18px; color: #fbbf24; }
         .address-history-item { background: #1f2937; border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 12px; }
         
@@ -102,7 +141,7 @@
         </div>
     </div>
 
-    <header class="bg-zinc-950 border-b border-zinc-800 sticky top-0 z-50" style="position: sticky; top: 0;">
+    <header class="sticky top-0 z-50" style="background: linear-gradient(90deg, #0f1a0f 0%, #1a0f0f 50%, #0f1a0f 100%); border-bottom: 1px solid #2d4a2d;" style="position: sticky; top: 0;">
         <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
             <div class="flex items-center gap-3" onclick="window.location.reload()" style="cursor: pointer; flex-shrink: 0;">
                 <i class="fa-solid fa-robot text-2xl" style="color: #10b981;"></i>
@@ -112,10 +151,10 @@
             <!-- FIXED SCROLLABLE NAV -->
             <div class="nav-wrapper" id="nav-scroll">
                 <nav class="nav-container text-sm font-medium">
-                    <button onclick="switchTab(0)" class="nav-link active" id="nav-0">Dashboard</button>
+                    <button onclick="switchTab(0)" class="nav-link active" id="nav-0">Main</button>
                     <button onclick="switchTab(1)" class="nav-link" id="nav-1">Purchase</button>
                     <button onclick="switchTab(2)" class="nav-link hidden" id="nav-2">Configure</button>
-                    <button onclick="switchTab(3)" class="nav-link hidden" id="nav-3">Activity</button>
+                    <button onclick="switchTab(3)" class="nav-link hidden" id="nav-3">Purchase Logs</button>
                 </nav>
             </div>
             
@@ -272,7 +311,7 @@
 
         <div id="section-3" class="section">
             <div class="max-w-2xl mx-auto">
-                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-clock-rotate-left mr-2" style="color: #10b981;"></i>Activity</h2>
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-clock-rotate-left mr-2" style="color: #10b981;"></i>Purchase Logs</h2>
                 
                 <div id="activity-content">
                     <div class="text-center p-8">
@@ -362,12 +401,12 @@
             
             if (n === 2) loadSavedConfigs();
             if (n === 3) {
-                loadActivity();
-                activityInterval = setInterval(loadActivity, 5000);
+                loadPurchase Logs();
+                activityInterval = setInterval(loadPurchase Logs, 5000);
             }
         }
 
-        async function loadActivity() {
+        async function loadPurchase Logs() {
             try {
                 const res = await fetch('/api/activity', { credentials: 'same-origin' });
                 const data = await res.json();
@@ -429,7 +468,7 @@
                         if (h.status === 'completed') {
                             statusColor = '#10b981';
                             statusIcon = 'fa-check';
-                                                       statusText = 'Paid';
+                            statusText = 'Paid';
                         } else if (h.status === 'expired') {
                             statusColor = '#ef4444';
                             statusIcon = 'fa-xmark';
@@ -501,7 +540,7 @@
                 remaining--;
                 if (remaining <= 0) {
                     clearInterval(interval);
-                    loadActivity();
+                    loadPurchase Logs();
                     return;
                 }
                 
@@ -753,7 +792,7 @@
                                 <p class="text-sm mb-2" style="color: #10b981;">Address #${data.index}:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
                                 <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
-                                <p class="text-xs" style="color: #6b7280;">Expires in ${data.expiresIn} minutes • <button onclick="switchTab(3)" style="background: none; border: none; color: #10b981; cursor: pointer;">View in Activity</button></p>
+                                <p class="text-xs" style="color: #6b7280;">Expires in ${data.expiresIn} minutes • <button onclick="switchTab(3)" style="background: none; border: none; color: #10b981; cursor: pointer;">View in Purchase Logs</button></p>
                             </div>`;
                     } else {
                         const expiresAt = new Date(data.expiresAt).toLocaleTimeString();
@@ -763,7 +802,7 @@
                                 <p class="text-sm mb-2" style="color: #10b981;">Address #${data.index}:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
                                 <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
-                                <p class="text-xs" style="color: #6b7280;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) • <button onclick="switchTab(3)" style="background: none; border: none; color: #10b981; cursor: pointer;">View in Activity</button></p>
+                                <p class="text-xs" style="color: #6b7280;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) • <button onclick="switchTab(3)" style="background: none; border: none; color: #10b981; cursor: pointer;">View in Purchase Logs</button></p>
                             </div>`;
                     }
                 } else {
