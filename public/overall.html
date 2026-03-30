@@ -9,7 +9,7 @@
     <style>
         * { box-sizing: border-box; }
         body { 
-    background: linear-gradient(135deg, #0a0f0a 0%, #1a0a0a 50%, #0a0f0a 100%); 
+    background: linear-gradient(135deg, #0f0a0a 0%, #1a0a0a 50%, #0f0a0a 100%); 
     color: #e5e7eb; 
     font-size: 15px; 
     margin: 0; 
@@ -17,60 +17,60 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     min-height: 100vh;
 }
-        .green { color: #10b981; }
-        .btn-green { background: #10b981; color: #000; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
-        .btn-green:hover { background: #34d399; }
-        .btn-green:disabled { background: #065f46; cursor: not-allowed; opacity: 0.6; }
+        .red { color: #ef4444; }
+        .btn-red { background: #ef4444; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
+        .btn-red:hover { background: #dc2626; }
+        .btn-red:disabled { background: #7f1d1d; cursor: not-allowed; opacity: 0.6; }
         .btn-purple { background: #8b5cf6; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
         .btn-purple:hover { background: #7c3aed; }
         .btn-blue { background: #3b82f6; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
         .btn-blue:hover { background: #2563eb; }
-        .card { background: linear-gradient(145deg, #1a1f1a 0%, #1f1a1a 100%); border: 1px solid #2d4a2d; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        .card { background: linear-gradient(145deg, #1f1a1a 0%, #1a1515 100%); border: 1px solid #4a2d2d; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
         .nav-link { text-decoration: none; color: #9ca3af; display: inline-block; cursor: pointer; white-space: nowrap; flex-shrink: 0; padding: 8px 12px; background: none; border: none; border-bottom: 3px solid transparent; }
         .nav-link.active { 
-    color: #10b981; 
-    border-bottom: 3px solid #10b981;
-    text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+    color: #ef4444; 
+    border-bottom: 3px solid #ef4444;
+    text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
 }
         .nav-link:hover { color: #fff; }
         .section { display: none; }
         .section.active { display: block; animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .address-box { font-family: 'Courier New', monospace; word-break: break-all; font-size: 14px; background: linear-gradient(145deg, #0a0f0a 0%, #0f0a0a 100%); padding: 12px; border-radius: 8px; border: 1px solid #10b981; color: #10b981; box-shadow: 0 0 10px rgba(16, 185, 129, 0.2); }
+        .address-box { font-family: 'Courier New', monospace; word-break: break-all; font-size: 14px; background: linear-gradient(145deg, #0f0a0a 0%, #150a0a 100%); padding: 12px; border-radius: 8px; border: 1px solid #ef4444; color: #ef4444; box-shadow: 0 0 10px rgba(239, 68, 68, 0.2); }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
         .modal.active { display: flex; }
-        .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 2px solid #10b981; }
+        .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 2px solid #ef4444; }
         .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
-        .success-text { color: #10b981; font-size: 14px; margin-top: 8px; }
-        .redeem-section { border: 2px dashed #10b981; border-radius: 16px; padding: 20px; margin-bottom: 20px; background: linear-gradient(145deg, rgba(16, 185, 129, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); }
+        .success-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
+        .redeem-section { border: 2px dashed #ef4444; border-radius: 16px; padding: 20px; margin-bottom: 20px; background: linear-gradient(145deg, rgba(239, 68, 68, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); }
         .toggle-wrapper { position: relative; display: inline-block; width: 50px; height: 26px; cursor: pointer; }
         .toggle-input { opacity: 0; width: 0; height: 0; position: absolute; }
         .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #374151; transition: .4s; border-radius: 34px; }
         .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
-        .toggle-input:checked + .toggle-slider { background-color: #10b981; }
+        .toggle-input:checked + .toggle-slider { background-color: #ef4444; }
         .toggle-input:checked + .toggle-slider:before { transform: translateX(24px); }
         .account-card { 
-    background: linear-gradient(145deg, #111811 0%, #181111 100%); 
-    border: 1px solid #2d3a2d; 
+    background: linear-gradient(145deg, #181111 0%, #151111 100%); 
+    border: 1px solid #3a2d2d; 
     border-radius: 12px; 
     padding: 16px; 
     margin-bottom: 12px; 
     transition: all 0.2s; 
 }
-.account-card:hover { border-color: #10b981; box-shadow: 0 0 20px rgba(16, 185, 129, 0.2); }
+.account-card:hover { border-color: #ef4444; box-shadow: 0 0 20px rgba(239, 68, 68, 0.2); }
         .account-card:hover { border-color: #4b5563; }
-        .account-active { border-color: #10b981; background: rgba(16, 185, 129, 0.1); }
+        .account-active { border-color: #ef4444; background: rgba(239, 68, 68, 0.1); }
         .status-badge { display: inline-block; padding: 4px 12px; border-radius: 9999px; font-size: 12px; font-weight: 600; }
-        .status-running { background: #064e3b; color: #34d399; }
-        .status-stopped { background: #7f1d1d; color: #fca5a5; }
-        .feature-check { color: #10b981; margin-right: 8px; }
+        .status-running { background: #4a0f0f; color: #fca5a5; }
+        .status-stopped { background: #4a0f0f; color: #fca5a5; }
+        .feature-check { color: #ef4444; margin-right: 8px; }
         .image-preview { max-width: 200px; max-height: 200px; border-radius: 8px; border: 2px dashed #374151; object-fit: cover; }
-        .image-preview.has-image { border-color: #10b981; border-style: solid; }
+        .image-preview.has-image { border-color: #ef4444; border-style: solid; }
         .upload-area { border: 2px dashed #374151; border-radius: 12px; padding: 30px; text-align: center; cursor: pointer; transition: all 0.2s; background: #111827; }
-        .upload-area:hover { border-color: #10b981; background: rgba(16, 185, 129, 0.1); }
-        .upload-area.has-file { border-color: #10b981; background: rgba(16, 185, 129, 0.05); }
+        .upload-area:hover { border-color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+        .upload-area.has-file { border-color: #ef4444; background: rgba(239, 68, 68, 0.05); }
         input, textarea { font-family: inherit; outline: none; transition: all 0.2s; }
-        input:focus, textarea:focus { border-color: #10b981 !important; box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1); }
+        input:focus, textarea:focus { border-color: #ef4444 !important; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1); }
         button { transition: all 0.2s; position: relative; overflow: hidden; cursor: pointer; }
         button:active { transform: scale(0.98); }
         .clickable { cursor: pointer; }
@@ -99,7 +99,7 @@
         
         .activity-card { background: #111827; border: 1px solid #374151; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
         .activity-pending { border-color: #fbbf24; }
-        .activity-completed { border-color: #10b981; }
+        .activity-completed { border-color: #ef4444; }
         .activity-expired { border-color: #ef4444; }
         .countdown { font-family: 'Courier New', monospace; font-size: 18px; color: #fbbf24; }
         .address-history-item { background: #1f2937; border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 12px; }
@@ -117,15 +117,15 @@
             <input id="logout-code" type="text" placeholder="Enter code" maxlength="6" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm text-center tracking-widest uppercase mb-4" style="color: #fff;">
             <div class="flex gap-3">
                 <button onclick="closeLogoutModal()" class="flex-1 bg-zinc-700 hover:bg-zinc-600 py-3 rounded-2xl text-sm" style="border: none; color: #fff;">Cancel</button>
-                <button onclick="verifyLogout()" class="flex-1 btn-green py-3 rounded-2xl text-sm">Verify</button>
+                <button onclick="verifyLogout()" class="flex-1 btn-red py-3 rounded-2xl text-sm">Verify</button>
             </div>
         </div>
     </div>
 
-    <header class="sticky top-0 z-50" style="background: linear-gradient(90deg, #0f1a0f 0%, #1a0f0f 50%, #0f1a0f 100%); border-bottom: 1px solid #2d4a2d;" style="position: sticky; top: 0;">
+    <header class="sticky top-0 z-50" style="background: linear-gradient(90deg, #1a0f0f 0%, #1a0a0a 50%, #1a0f0f 100%); border-bottom: 1px solid #4a2d2d;" style="position: sticky; top: 0;">
         <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
             <div class="flex items-center gap-3" onclick="window.location.reload()" style="cursor: pointer; flex-shrink: 0;">
-                <i class="fa-solid fa-robot text-2xl" style="color: #10b981;"></i>
+                <i class="fa-solid fa-robot text-2xl" style="color: #ef4444;"></i>
                 <h1 class="text-xl font-bold" style="color: #fff; white-space: nowrap;">Auto Adv</h1>
             </div>
             
@@ -155,13 +155,13 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <div class="card rounded-3xl p-6">
                     <h3 class="text-zinc-400 text-sm" style="color: #9ca3af;">Status</h3>
-                    <div id="credits-display" class="text-4xl font-bold green mt-3" style="color: #10b981;">Free User</div>
+                    <div id="credits-display" class="text-4xl font-bold red mt-3" style="color: #ef4444;">Free User</div>
                 </div>
                 <div class="card rounded-3xl p-6">
                     <h3 class="text-lg font-semibold mb-4" style="color: #fff;">Access</h3>
                     <div id="status-box" class="p-5 bg-zinc-900 rounded-2xl text-center">
                         <p id="status-text" class="text-xl font-medium" style="color: #fbbf24;">Not Purchased</p>
-                        <button onclick="switchTab(1)" class="mt-5 w-full btn-green py-3.5 rounded-2xl text-base" style="border: none;">Get Access - $1.50</button>
+                        <button onclick="switchTab(1)" class="mt-5 w-full btn-red py-3.5 rounded-2xl text-base" style="border: none;">Get Access - $1.50</button>
                     </div>
                 </div>
             </div>
@@ -179,20 +179,20 @@
 
             <div class="card rounded-3xl p-8 max-w-md mx-auto">
                 <div class="text-center">
-                    <div class="inline-block text-black text-xs font-bold px-5 py-1 rounded-full mb-4" style="background: #10b981;">LIFETIME</div>
+                    <div class="inline-block text-white text-xs font-bold px-5 py-1 rounded-full mb-4" style="background: #ef4444;">LIFETIME</div>
                     <h2 class="text-4xl font-bold mb-1" style="color: #fff;">$1.50</h2>
                     <p class="text-zinc-400 mb-2" style="color: #9ca3af;">One-time payment</p>
                     <p class="text-xs mb-6" style="color: #6b7280;">Send any amount, auto-swept 24/7</p>
                     
                     <div class="text-left bg-zinc-900 p-4 rounded-xl mb-6">
-                        <p class="text-sm font-medium mb-2" style="color: #10b981;">Includes:</p>
+                        <p class="text-sm font-medium mb-2" style="color: #ef4444;">Includes:</p>
                         <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Auto-advertise in multiple channels</p>
                         <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Auto-reply to DMs</p>
                         <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Multiple account support</p>
                         <p class="text-xs" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Image upload support</p>
                     </div>
                     
-                    <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-green py-5 rounded-2xl text-lg font-bold" style="border: none;">Generate Address</button>
+                    <button onclick="purchaseLifetime()" id="buy-btn" class="w-full btn-red py-5 rounded-2xl text-lg font-bold" style="border: none;">Generate Address</button>
                     <div id="payment-result" class="mt-8 text-left"></div>
                 </div>
             </div>
@@ -200,7 +200,7 @@
 
         <div id="section-2" class="section">
             <div id="active-accounts" class="mb-6 hidden">
-                <h3 class="text-lg font-bold mb-4" style="color: #10b981;"><i class="fa-solid fa-server mr-2"></i>Running Accounts</h3>
+                <h3 class="text-lg font-bold mb-4" style="color: #ef4444;"><i class="fa-solid fa-server mr-2"></i>Running Accounts</h3>
                 <div id="accounts-list"></div>
             </div>
 
@@ -241,12 +241,13 @@
                     <div>
                         <label class="form-label">Channel IDs (comma separated)</label>
                         <input id="channels" type="text" placeholder="123456789012345678, 987654321098765432" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
-                        <p class="text-xs mt-1" style="color: #6b7280;">Right-click channel â Copy Channel ID</p>
+                        <p class="text-xs mt-1" style="color: #6b7280;">Right-click channel → Copy Channel ID (numbers only)</p>
+                        <p class="text-xs mt-1" style="color: #ef4444; display: none;" id="channel-error">Channel IDs must be numbers only</p>
                     </div>
                     
                     <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl border border-zinc-700 mb-4">
                         <div>
-                            <label class="text-sm font-medium block" style="color: #10b981;"><i class="fa-solid fa-bolt mr-2"></i>Send All At Once</label>
+                            <label class="text-sm font-medium block" style="color: #ef4444;"><i class="fa-solid fa-bolt mr-2"></i>Send All At Once</label>
                             <p class="text-xs" style="color: #6b7280;">Send to all channels simultaneously</p>
                         </div>
                         <label class="toggle-wrapper">
@@ -282,7 +283,7 @@
                     </div>
                     
                     <div class="flex gap-4">
-                        <button onclick="startBot()" id="start-btn" class="flex-1 btn-green py-4 rounded-2xl" style="border: none;">Start & Save</button>
+                        <button onclick="startBot()" id="start-btn" class="flex-1 btn-red py-4 rounded-2xl" style="border: none;">Start & Save</button>
                         <button onclick="stopBot()" class="flex-1 py-4 rounded-2xl text-white font-bold" style="background: #dc2626; border: none; cursor: pointer;">Stop</button>
                     </div>
                     <div id="bot-status" class="text-center text-sm"></div>
@@ -292,11 +293,11 @@
 
         <div id="section-3" class="section">
             <div class="max-w-2xl mx-auto">
-                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-clock-rotate-left mr-2" style="color: #10b981;"></i>Purchase Logs</h2>
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-clock-rotate-left mr-2" style="color: #ef4444;"></i>Purchase Logs</h2>
                 
                 <div id="activity-content">
                     <div class="text-center p-8">
-                        <i class="fa-solid fa-spinner fa-spin text-3xl mb-4" style="color: #10b981;"></i>
+                        <i class="fa-solid fa-spinner fa-spin text-3xl mb-4" style="color: #ef4444;"></i>
                         <p style="color: #9ca3af;">Loading activity...</p>
                     </div>
                 </div>
@@ -342,7 +343,12 @@
         }
 
         document.getElementById('auto-reply-toggle').addEventListener('change', function() {
-            document.getElementById('auto-reply-container').classList.toggle('hidden', !this.checked);
+            const container = document.getElementById('auto-reply-container');
+            if (this.checked) {
+                container.classList.remove('hidden');
+            } else {
+                container.classList.add('hidden');
+            }
         });
         
         document.getElementById('send-all-at-once-toggle').addEventListener('change', function() {
@@ -372,8 +378,8 @@
             
             const activeNav = document.getElementById('nav-' + n);
             activeNav.classList.add('active');
-            activeNav.style.borderBottom = '3px solid #10b981';
-            activeNav.style.color = '#10b981';
+            activeNav.style.borderBottom = '3px solid #ef4444';
+            activeNav.style.color = '#ef4444';
             
             // Scroll active tab into view
             if (navScroll) {
@@ -428,10 +434,10 @@
                         <div class="activity-card activity-completed mb-6">
                             <div class="flex items-center justify-between">
                                 <div>
-                                    <h3 class="text-lg font-bold" style="color: #10b981;"><i class="fa-solid fa-check-circle mr-2"></i>Purchase Complete</h3>
+                                    <h3 class="text-lg font-bold" style="color: #ef4444;"><i class="fa-solid fa-check-circle mr-2"></i>Purchase Complete</h3>
                                     <p class="text-sm mt-1" style="color: #9ca3af;">You have lifetime access to Auto Adv</p>
                                 </div>
-                                <button onclick="switchTab(2)" class="btn-green px-4 py-2 rounded-lg text-sm" style="border: none;">Configure</button>
+                                <button onclick="switchTab(2)" class="btn-red px-4 py-2 rounded-lg text-sm" style="border: none;">Configure</button>
                             </div>
                         </div>
                     `;
@@ -447,9 +453,9 @@
                         let statusText = 'Unknown';
                         
                         if (h.status === 'completed') {
-                            statusColor = '#10b981';
+                            statusColor = '#ef4444';
                             statusIcon = 'fa-check';
-                                                       statusText = 'Paid';
+                            statusText = 'Paid';
                         } else if (h.status === 'expired') {
                             statusColor = '#ef4444';
                             statusIcon = 'fa-xmark';
@@ -494,10 +500,10 @@
                     isPurchased = true;
                     document.getElementById('credits-display').textContent = 'Active';
                     document.getElementById('status-text').textContent = 'Active';
-                    document.getElementById('status-text').style.color = '#34d399';
+                    document.getElementById('status-text').style.color = '#fca5a5';
                     document.getElementById('nav-2').classList.remove('hidden');
                     document.getElementById('nav-3').classList.remove('hidden');
-                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #34d399;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #fca5a5;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-red py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
                     
                     const purchaseSection = document.getElementById('section-1');
                     if (purchaseSection.classList.contains('active')) {
@@ -584,10 +590,10 @@
                     isPurchased = true;
                     document.getElementById('credits-display').textContent = 'Active';
                     document.getElementById('status-text').textContent = 'Active';
-                    document.getElementById('status-text').style.color = '#34d399';
+                    document.getElementById('status-text').style.color = '#fca5a5';
                     document.getElementById('nav-2').classList.remove('hidden');
                     document.getElementById('nav-3').classList.remove('hidden');
-                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #34d399;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #fca5a5;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-red py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
                 } else {
                     const activityRes = await fetch('/api/activity', { credentials: 'same-origin' });
                     const activityData = await activityRes.json();
@@ -626,14 +632,14 @@
             container.classList.remove('hidden');
             list.innerHTML = '';
             
-            savedConfigs.forEach((config) => {
+            savedConfigs.forEach((config, index) => {
                 const isActive = config.active === 1;
                 const card = document.createElement('div');
                 card.className = `account-card ${isActive ? 'account-active' : ''}`;
                 card.innerHTML = `
                     <div class="flex justify-between items-start mb-2">
                         <div>
-                            <h4 class="font-bold" style="color: #10b981;">${config.username || 'Unknown'}</h4>
+                            <h4 class="font-bold" style="color: #ef4444;">${config.username || 'Unknown'}</h4>
                             <p class="text-xs mt-1" style="color: #6b7280;">Channels: ${config.channels}</p>
                             ${config.image_url ? '<p class="text-xs mt-1" style="color: #8b5cf6;"><i class="fa-solid fa-image"></i> Has image</p>' : ''}
                         </div>
@@ -651,7 +657,7 @@
         }
 
         function showNewAccountForm() {
-            currentConfigId = 'acc_' + Date.now();
+            currentConfigId = 'TOKOS' + (100 + savedConfigs.length);
             document.getElementById('form-title').textContent = 'Add New Account';
             document.getElementById('account-badge').classList.remove('hidden');
             document.getElementById('account-num').textContent = savedConfigs.length + 1;
@@ -665,6 +671,7 @@
             document.getElementById('auto-reply-text').value = '';
             document.getElementById('bot-status').innerHTML = '';
             document.getElementById('send-all-at-once-toggle').checked = true;
+            document.getElementById('channel-error').style.display = 'none';
             clearImage();
             
             document.getElementById('config-form').scrollIntoView({ behavior: 'smooth' });
@@ -686,6 +693,7 @@
             document.getElementById('auto-reply-container').classList.toggle('hidden', config.auto_reply_enabled !== 1);
             document.getElementById('auto-reply-text').value = config.auto_reply_text || '';
             document.getElementById('send-all-at-once-toggle').checked = config.send_all_at_once !== 0;
+            document.getElementById('channel-error').style.display = 'none';
             
             if (config.image_url) {
                 selectedImageBase64 = config.image_url;
@@ -770,20 +778,20 @@
                         result.innerHTML = `
                             <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
                                 <p class="text-sm mb-2" style="color: #fbbf24;"><i class="fa-solid fa-triangle-exclamation mr-1"></i>You already have an active address</p>
-                                <p class="text-sm mb-2" style="color: #10b981;">Address #${data.index}:</p>
+                                <p class="text-sm mb-2" style="color: #ef4444;">Address #${data.index}:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
                                 <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
-                                <p class="text-xs" style="color: #6b7280;">Expires in ${data.expiresIn} minutes â¢ <button onclick="switchTab(3)" style="background: none; border: none; color: #10b981; cursor: pointer;">View in Purchase Logs</button></p>
+                                <p class="text-xs" style="color: #6b7280;">Expires in ${data.expiresIn} minutes • <button onclick="switchTab(3)" style="background: none; border: none; color: #ef4444; cursor: pointer;">View in Purchase Logs</button></p>
                             </div>`;
                     } else {
                         const expiresAt = new Date(data.expiresAt).toLocaleTimeString();
                         result.innerHTML = `
                             <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
-                                <p class="text-sm mb-2" style="color: #10b981;"><i class="fa-solid fa-check mr-1"></i>Address generated!</p>
-                                <p class="text-sm mb-2" style="color: #10b981;">Address #${data.index}:</p>
+                                <p class="text-sm mb-2" style="color: #ef4444;"><i class="fa-solid fa-check mr-1"></i>Address generated!</p>
+                                <p class="text-sm mb-2" style="color: #ef4444;">Address #${data.index}:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
                                 <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
-                                <p class="text-xs" style="color: #6b7280;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) â¢ <button onclick="switchTab(3)" style="background: none; border: none; color: #10b981; cursor: pointer;">View in Purchase Logs</button></p>
+                                <p class="text-xs" style="color: #6b7280;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) • <button onclick="switchTab(3)" style="background: none; border: none; color: #ef4444; cursor: pointer;">View in Purchase Logs</button></p>
                             </div>`;
                     }
                 } else {
@@ -811,17 +819,22 @@
             const sendAllAtOnce = document.getElementById('send-all-at-once-toggle').checked;
             const status = document.getElementById('bot-status');
             const btn = document.getElementById('start-btn');
+            const channelError = document.getElementById('channel-error');
             
             if (!token || !channels || !message) {
                 status.innerHTML = '<span style="color: #ef4444;">Fill all fields</span>';
                 return;
             }
             
+            // Validate channel IDs - numbers only
             const channelArray = channels.split(',').map(c => c.trim());
             const invalidChannels = channelArray.filter(c => !/^\d+$/.test(c));
             if (invalidChannels.length > 0) {
+                channelError.style.display = 'block';
                 status.innerHTML = '<span style="color: #ef4444;">Channel IDs must be numbers only</span>';
                 return;
+            } else {
+                channelError.style.display = 'none';
             }
             
             if (autoReplyEnabled && !autoReplyText) {
@@ -849,7 +862,7 @@
                 
                 if (data.success) {
                     let msg = `Running as ${data.username}! Saved.`;
-                    status.innerHTML = `<span style="color: #34d399;">${msg}</span>`;
+                    status.innerHTML = `<span style="color: #fca5a5;">${msg}</span>`;
                     
                     await loadSavedConfigs();
                     
