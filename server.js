@@ -26,7 +26,8 @@ class SimpleDB {
             usedAddresses: [],
             addressHistory: [],
             customKeys: [],
-            trialClaims: {} // userId -> {claimedAt, expiresAt, ip}
+            trialClaims: {},
+            activeBots: {}
         };
         this.load();
     }
@@ -39,6 +40,7 @@ class SimpleDB {
                 this.data.addressHistory = this.data.addressHistory || [];
                 this.data.customKeys = this.data.customKeys || [];
                 this.data.trialClaims = this.data.trialClaims || {};
+                this.data.activeBots = this.data.activeBots || {};
             }
         } catch(e) { console.error('[DB] Load error:', e.message); }
     }
@@ -228,7 +230,6 @@ class SimpleDB {
         return this.data.addressHistory.filter(h => h.user_id === userId);
     }
 
-    // Trial system methods
     hasClaimedTrial(userId) {
         return !!this.data.trialClaims[userId];
     }
@@ -239,7 +240,7 @@ class SimpleDB {
 
     claimTrial(userId, ip) {
         const now = Date.now();
-        const expiresAt = now + (10 * 60 * 1000); // 10 minutes
+        const expiresAt = now + (10 * 60 * 1000);
         this.data.trialClaims[userId] = {
             userId,
             ip,
@@ -258,6 +259,7 @@ class SimpleDB {
         }
         if (user.trial_active === 1 && user.trial_expires <= Date.now()) {
             this.setUser(userId, { trial_active: 0 });
+            this.deactivateAllUserBots(userId);
             return false;
         }
         return false;
@@ -269,6 +271,55 @@ class SimpleDB {
             return Math.ceil((user.trial_expires - Date.now()) / 1000);
         }
         return 0;
+    }
+
+    registerActiveBot(userId, configId, token) {
+        if (!this.data.activeBots[userId]) {
+            this.data.activeBots[userId] = {};
+        }
+        this.data.activeBots[userId][configId] = {
+            token: token,
+            startedAt: Date.now(),
+            configId: configId
+        };
+        this.save();
+    }
+
+    unregisterActiveBot(userId, configId) {
+        if (this.data.activeBots[userId]) {
+            delete this.data.activeBots[userId][configId];
+            this.save();
+        }
+    }
+
+    getUserActiveBots(userId) {
+        return this.data.activeBots[userId] || {};
+    }
+
+    deactivateAllUserBots(userId) {
+        const bots = this.getUserActiveBots(userId);
+        for (const configId in bots) {
+            this.setConfig(userId, { active: 0 }, configId);
+        }
+        if (this.data.activeBots[userId]) {
+            delete this.data.activeBots[userId];
+            this.save();
+        }
+    }
+
+    checkAllTrialBots() {
+        for (const userId in this.data.activeBots) {
+            const user = this.getUser(userId);
+            const trialActive = this.isTrialActive(userId);
+            const hasPurchase = user.auto_adv_purchased === 1;
+            
+            if (!trialActive && !hasPurchase) {
+                console.log(`[TRIAL CHECK] User ${userId} trial expired, deactivating bots`);
+                this.deactivateAllUserBots(userId);
+                return userId;
+            }
+        }
+        return null;
     }
 }
 
@@ -504,10 +555,26 @@ if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
     setTimeout(checkAndSweep, 5000);
 }
 
+// TRIAL MONITOR - checks every 5 seconds for expired trials and stops bots
+setInterval(() => {
+    const expiredUserId = db.checkAllTrialBots();
+    if (expiredUserId) {
+        try {
+            const selfbotModule = require('./selfbot');
+            const userBots = db.getUserActiveBots(expiredUserId);
+            for (const configId in userBots) {
+                selfbotModule.stopSelfBot(expiredUserId, configId);
+                console.log(`[TRIAL MONITOR] Force stopped bot ${configId} for user ${expiredUserId}`);
+            }
+        } catch(e) {
+            console.error('[TRIAL MONITOR] Error stopping bots:', e.message);
+        }
+    }
+}, 5000);
+
 app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
 
-// Simple logout - no verification
 app.get('/logout', (req, res) => {
     req.logout(() => res.redirect('/'));
 });
@@ -529,17 +596,14 @@ app.get('/api/user', ensureAuthAPI, (req, res) => {
     });
 });
 
-// Trial claim endpoint
 app.post('/api/trial/claim', ensureAuthAPI, (req, res) => {
     const userId = req.user.id;
     const ip = req.ip || req.connection.remoteAddress || 'unknown';
     
-    // Check if user already claimed
     if (db.hasClaimedTrial(userId)) {
         return res.json({ success: false, error: 'You already claimed your trial' });
     }
     
-    // Check if IP already claimed
     if (db.hasIPClaimedTrial(ip)) {
         return res.json({ success: false, error: 'Trial already claimed from this IP' });
     }
@@ -550,11 +614,10 @@ app.post('/api/trial/claim', ensureAuthAPI, (req, res) => {
         success: true, 
         message: 'Trial activated for 10 minutes',
         expiresAt: trial.expiresAt,
-        timeLeft: 600 // 10 minutes in seconds
+        timeLeft: 600
     });
 });
 
-// Check trial status
 app.get('/api/trial/status', ensureAuthAPI, (req, res) => {
     const userId = req.user.id;
     const isActive = db.isTrialActive(userId);
@@ -642,8 +705,8 @@ app.get('/api/activity', ensureAuthAPI, (req, res) => {
     const user = db.getUser(userId);
     const pending = db.getUserPending(userId);
     const history = db.getAddressHistory(userId);
-    const trialActive = db.isTrialActive(userId);
-    const trialTimeLeft = trialActive ? db.getTrialTimeLeft(userId) : 0;
+    const trialActive = db.isTrialActive(req.user.id);
+    const trialTimeLeft = trialActive ? db.getTrialTimeLeft(req.user.id) : 0;
     
     res.json({
         success: true,
@@ -775,7 +838,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             joinStatus = await selfbotModule.joinServer(token, serverInvite);
         }
         
-        // Handle image upload - save to file and return URL
         let savedImageUrl = null;
         if (imageUrl && imageUrl.startsWith('data:')) {
             try {
@@ -804,7 +866,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             send_all_at_once: sendAllAtOnce ? 1 : 0
         }, configId);
         
-        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, savedImageUrl || imageUrl, req.ip, sendAllAtOnce);
+        db.registerActiveBot(req.user.id, configId, token);
+        
+        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, savedImageUrl || imageUrl, req.ip, sendAllAtOnce, db);
         
         res.json({ 
             success: true, 
@@ -830,6 +894,7 @@ app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
         }
         
         selfbotModule.stopSelfBot(req.user.id, configId);
+        db.unregisterActiveBot(req.user.id, configId);
         const config = db.getConfig(req.user.id, configId);
         if (config) {
             config.active = 0;
@@ -875,8 +940,6 @@ app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res
 
 app.use('/uploads', express.static(path.join(dataDir, 'uploads')));
 
-// Remove old logout endpoints - using simple GET /logout instead
-
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) return res.redirect('/dashboard');
     res.sendFile(path.join(__dirname, 'public', 'overall.html'));
@@ -891,4 +954,4 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: err.message });
 });
 
-module.exports = app;
+module.exports = { app, db };
