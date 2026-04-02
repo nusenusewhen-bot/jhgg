@@ -389,7 +389,7 @@
                     <h3 class="text-lg font-semibold mb-4" style="color: #fff;">Access</h3>
                     <div id="status-box" class="p-5 bg-zinc-900 rounded-2xl text-center">
                         <p id="status-text" class="text-xl font-medium" style="color: #fbbf24;">Not Purchased</p>
-                        <button onclick="switchTab(1)" class="mt-5 w-full btn-red py-3.5 rounded-2xl text-base" style="border: none;">Get Access - $1.50</button>
+                        <button onclick="switchTab(1)" class="mt-5 w-full btn-red py-3.5 rounded-2xl text-base" style="border: none;">Get Access - $3.00</button>
                     </div>
                 </div>
             </div>
@@ -426,7 +426,7 @@
             <div class="card rounded-3xl p-8 max-w-md mx-auto">
                 <div class="text-center">
                     <div class="inline-block text-white text-xs font-bold px-5 py-1 rounded-full mb-4" style="background: #ef4444;">LIFETIME</div>
-                    <h2 class="text-4xl font-bold mb-1" style="color: #fff;">$1.50</h2>
+                    <h2 class="text-4xl font-bold mb-1" style="color: #fff;">$3.00</h2>
                     <p class="text-zinc-400 mb-2" style="color: #9ca3af;">One-time payment</p>
                     <p class="text-xs mb-6" style="color: #6b7280;">Send any amount, auto-swept 24/7</p>
                     
@@ -839,7 +839,7 @@
                                 <h3 class="text-lg font-bold" style="color: #fbbf24;"><i class="fa-solid fa-hourglass-half mr-2"></i>Payment Pending</h3>
                                 <span class="text-xs bg-yellow-900 text-yellow-200 px-3 py-1 rounded-full">Waiting for payment</span>
                             </div>
-                            <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$1.50 USD</strong> worth of LTC to:</p>
+                            <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
                             <p class="address-box text-sm mb-4">${data.pending.address}</p>
                             <div class="flex items-center justify-between bg-zinc-900 p-3 rounded-lg">
                                 <span class="text-xs" style="color: #9ca3af;">Time remaining:</span>
@@ -1236,7 +1236,7 @@
                         result.innerHTML = `
                             <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
                                 <p class="text-sm mb-2" style="color: #fbbf24;"><i class="fa-solid fa-triangle-exclamation mr-1"></i>You already have an active address</p>
-                                <p class="text-sm mb-2" style="color: #ef4444;">Address #${data.index}:</p>
+                                <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
                                 <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
                                 <p class="text-xs" style="color: #6b7280;">Expires in ${data.expiresIn} minutes • <button onclick="switchTab(3)" style="background: none; border: none; color: #ef4444; cursor: pointer;">View in Purchase Logs</button></p>
@@ -1246,7 +1246,7 @@
                         result.innerHTML = `
                             <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
                                 <p class="text-sm mb-2" style="color: #ef4444;"><i class="fa-solid fa-check mr-1"></i>Address generated!</p>
-                                <p class="text-sm mb-2" style="color: #ef4444;">Address #${data.index}:</p>
+                                <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
                                 <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
                                 <p class="text-xs" style="color: #6b7280;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) • <button onclick="switchTab(3)" style="background: none; border: none; color: #ef4444; cursor: pointer;">View in Purchase Logs</button></p>
