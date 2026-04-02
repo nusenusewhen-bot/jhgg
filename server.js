@@ -363,7 +363,7 @@ const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
 const OWNER_LTC_ADDRESS = process.env.OWNER_LTC_ADDRESS || 'ltc1qc3ujjqjlfr3cqtvyqadqje9ntj3f8f82m062tc';
 const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
-const TARGET_USD = 1.50;
+const TARGET_USD = 3.00;
 const TOLERANCE_USD = 0.10;
 
 if (CLIENT_ID && CLIENT_SECRET) {
