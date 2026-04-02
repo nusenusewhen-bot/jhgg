@@ -954,4 +954,10 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: err.message });
 });
 
+// START THE SERVER - THIS IS THE FIX FOR THE HEALTH CHECK FAILING
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[SERVER] Running on port ${PORT}`);
+});
+
 module.exports = { app, db };
