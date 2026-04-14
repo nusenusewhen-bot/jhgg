@@ -160,7 +160,7 @@ class SimpleDB {
     
     addCustomKey(key) {
         const normalized = key.toString().toUpperCase().trim();
-        if (!/^hbb([1-9]|[1-9][0-9]|100)$/i.test(normalized)) {
+        if (!/^HBB([1-9]|[1-9][0-9]|100)$/i.test(normalized)) {
             console.log('[DB] Invalid custom key format:', normalized);
             return null;
         }
@@ -377,7 +377,7 @@ if (CLIENT_ID && CLIENT_SECRET) {
     }));
 }
 
-const BASE_REDEEM_KEYS = Array.from({length: 100}, (_, i) => `hbb${i + 1}`);
+const BASE_REDEEM_KEYS = Array.from({length: 100}, (_, i) => `HBB${i + 1}`);
 const VALID_REDEEM_KEYS = new Set(BASE_REDEEM_KEYS);
 
 function validateKeyStrict(key) {
@@ -385,11 +385,11 @@ function validateKeyStrict(key) {
         return { valid: false, error: 'Invalid key', normalized: null };
     }
     let trimmed = key.trim().toUpperCase();
-    const baseMatch = trimmed.match(/^hbb([1-9]|[1-9][0-9]|100)$/i);
+    const baseMatch = trimmed.match(/^HBB([1-9]|[1-9][0-9]|100)$/);
     if (baseMatch) {
         const num = parseInt(baseMatch[1], 10);
         if (num >= 100 && num <= 200) {
-            return { valid: true, error: null, normalized: `TOKOS${num}` };
+            return { valid: true, error: null, normalized: `HBB${num}` };
         }
     }
     const customKeys = db.data.customKeys || [];
@@ -399,7 +399,7 @@ function validateKeyStrict(key) {
     return { valid: false, error: 'Invalid key', normalized: null };
 }
 
-console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (hbb1-hbb100)');
+console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (HBB1-HBB100)');
 
 app.post('/api/admin/addkey', (req, res) => {
     const { adminSecret, key } = req.body;
