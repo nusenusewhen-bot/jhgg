@@ -160,7 +160,7 @@ class SimpleDB {
     
     addCustomKey(key) {
         const normalized = key.toString().toUpperCase().trim();
-        if (!/^HBB([1-9]|[1-9][0-9]|100)$/i.test(normalized)) {
+        if (!/^TOKOS(1[0-9][0-9]|200)$/i.test(normalized)) {
             console.log('[DB] Invalid custom key format:', normalized);
             return null;
         }
@@ -388,7 +388,7 @@ function validateKeyStrict(key) {
     const baseMatch = trimmed.match(/^HBB([1-9]|[1-9][0-9]|100)$/);
     if (baseMatch) {
         const num = parseInt(baseMatch[1], 10);
-        if (num >= 100 && num <= 200) {
+        if (num >= 1 && num <= 100) {
             return { valid: true, error: null, normalized: `HBB${num}` };
         }
     }
@@ -961,3 +961,4 @@ app.listen(PORT, '0.0.0.0', () => {
 });
 
 module.exports = { app, db };
+b };
