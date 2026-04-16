@@ -58,6 +58,18 @@
         }
         .btn-green:hover { background: #059669; }
         .btn-green:disabled { background: #065f46; cursor: not-allowed; opacity: 0.6; }
+        .btn-orange {
+            background: #f97316;
+            color: #fff;
+            font-weight: 700;
+            border: none;
+            cursor: pointer;
+            display: inline-block;
+            position: relative;
+            z-index: 10;
+            pointer-events: auto;
+        }
+        .btn-orange:hover { background: #ea580c; }
         .card { 
             background: linear-gradient(145deg, #1f1a1a 0%, #1a1515 100%); 
             border: 1px solid #4a2d2d; 
@@ -142,6 +154,20 @@
             padding: 20px;
             margin-bottom: 20px;
             background: linear-gradient(145deg, rgba(16, 185, 129, 0.1) 0%, rgba(16, 185, 129, 0.05) 100%);
+        }
+        .generate-section {
+            border: 2px dashed #f97316;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: linear-gradient(145deg, rgba(249, 115, 22, 0.1) 0%, rgba(249, 115, 22, 0.05) 100%);
+        }
+        .whitelist-section {
+            border: 2px dashed #3b82f6;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: linear-gradient(145deg, rgba(59, 130, 246, 0.1) 0%, rgba(59, 130, 246, 0.05) 100%);
         }
         .toggle-wrapper { 
             position: relative; 
@@ -332,6 +358,17 @@
             pointer-events: auto;
         }
         
+        .key-card {
+            background: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .key-active { border-color: #10b981; }
+        .key-revoked { border-color: #ef4444; opacity: 0.7; }
+        .key-expired { border-color: #6b7280; opacity: 0.7; }
+        
         @media (max-width: 640px) {
             .nav-link { padding: 6px 10px; font-size: 13px; }
             .nav-wrapper { margin: 0 8px; }
@@ -339,7 +376,6 @@
     </style>
 </head>
 <body class="min-h-screen pb-20">
-    <!-- Simple Logout Modal -->
     <div id="logout-modal" class="modal" onclick="if(event.target === this) closeLogoutModal()">
         <div class="card rounded-3xl p-8 max-w-sm mx-4 w-full" style="position: relative; z-index: 1001;">
             <h3 class="text-xl font-bold mb-4">Confirm Logout</h3>
@@ -364,6 +400,8 @@
                     <button class="nav-link" id="nav-1" data-tab="1">Purchase</button>
                     <button class="nav-link hidden" id="nav-2" data-tab="2">Configure</button>
                     <button class="nav-link hidden" id="nav-3" data-tab="3">Purchase Logs</button>
+                    <button class="nav-link hidden" id="nav-4" data-tab="4">Generate</button>
+                    <button class="nav-link hidden" id="nav-5" data-tab="5">Whitelist</button>
                 </nav>
             </div>
             
@@ -394,7 +432,6 @@
                 </div>
             </div>
 
-            <!-- Trial Section -->
             <div id="trial-section" class="trial-section card max-w-md mx-auto mt-8 hidden">
                 <h3 class="text-lg font-bold mb-3" style="color: #10b981;"><i class="fa-solid fa-gift mr-2"></i>Free Trial</h3>
                 <p class="text-sm mb-4" style="color: #9ca3af;">Claim 10 minutes of free access to try all features!</p>
@@ -404,7 +441,6 @@
                 <div id="trial-result" class="mt-3"></div>
             </div>
 
-            <!-- Active Trial Display -->
             <div id="active-trial-section" class="trial-section card max-w-md mx-auto mt-8 hidden">
                 <h3 class="text-lg font-bold mb-3" style="color: #10b981;"><i class="fa-solid fa-check-circle mr-2"></i>Trial Active</h3>
                 <p class="text-sm mb-2" style="color: #9ca3af;">Time remaining:</p>
@@ -549,6 +585,66 @@
                 </div>
             </div>
         </div>
+
+        <div id="section-4" class="section">
+            <div class="max-w-3xl mx-auto">
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-key mr-2" style="color: #f97316;"></i>Generate Keys</h2>
+                
+                <div class="generate-section card mb-6">
+                    <h3 class="text-lg font-bold mb-4" style="color: #f97316;"><i class="fa-solid fa-plus mr-2"></i>Create New Key</h3>
+                    <div class="flex gap-3 mb-4">
+                        <select id="key-duration" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm" style="color: #fff;">
+                            <option value="lifetime">Lifetime (Never expires)</option>
+                            <option value="1h">1 Hour</option>
+                            <option value="24h">24 Hours</option>
+                            <option value="7d">7 Days</option>
+                            <option value="30d">30 Days</option>
+                        </select>
+                        <button onclick="generateKey()" class="btn-orange px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">
+                            <i class="fa-solid fa-wand-magic-sparkles mr-2"></i>Generate
+                        </button>
+                    </div>
+                    <div id="generate-result" class="mt-3"></div>
+                </div>
+
+                <div class="card rounded-3xl p-6">
+                    <h3 class="text-lg font-bold mb-4" style="color: #fff;"><i class="fa-solid fa-list mr-2"></i>Generated Keys</h3>
+                    <div id="keys-list">
+                        <div class="text-center p-4">
+                            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2" style="color: #f97316;"></i>
+                            <p style="color: #9ca3af;">Loading keys...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="section-5" class="section">
+            <div class="max-w-2xl mx-auto">
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-shield-halved mr-2" style="color: #3b82f6;"></i>Whitelist Management</h2>
+                
+                <div class="whitelist-section card mb-6">
+                    <h3 class="text-lg font-bold mb-4" style="color: #3b82f6;"><i class="fa-solid fa-user-plus mr-2"></i>Add to Whitelist</h3>
+                    <div class="flex gap-3">
+                        <input id="whitelist-id" type="text" placeholder="Discord User ID" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm" style="color: #fff;">
+                        <button onclick="addToWhitelist()" class="btn-blue px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">
+                            <i class="fa-solid fa-plus mr-2"></i>Add
+                        </button>
+                    </div>
+                    <div id="whitelist-result" class="mt-3"></div>
+                </div>
+
+                <div class="card rounded-3xl p-6">
+                    <h3 class="text-lg font-bold mb-4" style="color: #fff;"><i class="fa-solid fa-users mr-2"></i>Whitelisted Users</h3>
+                    <div id="whitelist-list">
+                        <div class="text-center p-4">
+                            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2" style="color: #3b82f6;"></i>
+                            <p style="color: #9ca3af;">Loading whitelist...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -560,6 +656,9 @@
         let savedConfigs = [];
         let selectedImageBase64 = null;
         let activityInterval = null;
+        let isOwner = false;
+        let isWhitelisted = false;
+        let canGenerate = false;
 
         document.addEventListener('DOMContentLoaded', function() {
             initializeEventListeners();
@@ -570,7 +669,6 @@
         });
 
         function initializeEventListeners() {
-            // Nav buttons
             document.querySelectorAll('.nav-link').forEach(btn => {
                 btn.addEventListener('click', function(e) {
                     e.preventDefault();
@@ -580,42 +678,35 @@
                 });
             });
 
-            // Redeem button
             document.getElementById('redeem-btn').addEventListener('click', function(e) {
                 e.preventDefault();
                 redeemKey();
             });
 
-            // Buy button
             document.getElementById('buy-btn').addEventListener('click', function(e) {
                 e.preventDefault();
                 purchaseLifetime();
             });
 
-            // Add account button
             document.getElementById('add-account-btn').addEventListener('click', function(e) {
                 e.preventDefault();
                 showNewAccountForm();
             });
 
-            // Upload area - FIXED
             document.getElementById('upload-area').addEventListener('click', function(e) {
                 if (e.target.id !== 'image-preview') {
                     document.getElementById('image-input').click();
                 }
             });
 
-            // Image input
             document.getElementById('image-input').addEventListener('change', handleImageSelect);
 
-            // Clear image button
             document.getElementById('clear-image-btn').addEventListener('click', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
                 clearImage();
             });
 
-            // Auto-reply toggle
             document.getElementById('auto-reply-toggle').addEventListener('change', function() {
                 const container = document.getElementById('auto-reply-container');
                 if (this.checked) {
@@ -625,25 +716,21 @@
                 }
             });
 
-            // Send all at once toggle
             document.getElementById('send-all-at-once-toggle').addEventListener('change', function() {
                 const isAllAtOnce = this.checked;
                 document.getElementById('delay-label').textContent = isAllAtOnce ? 'Delay (seconds)' : 'Delay (seconds)';
             });
 
-            // Start button
             document.getElementById('start-btn').addEventListener('click', function(e) {
                 e.preventDefault();
                 startBot();
             });
 
-            // Stop button
             document.getElementById('stop-btn').addEventListener('click', function(e) {
                 e.preventDefault();
                 stopBot();
             });
 
-            // Drag scrolling for nav
             const navScroll = document.getElementById('nav-scroll');
             let isDown = false;
             let startX;
@@ -683,6 +770,16 @@
                 activityInterval = null;
             }
             
+            if (n === 4 && !canGenerate) {
+                alert("Owner or whitelisted users only!");
+                return;
+            }
+            
+            if (n === 5 && !isOwner) {
+                alert("Owner only!");
+                return;
+            }
+            
             document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
             document.getElementById('section-' + n).classList.add('active');
             
@@ -707,6 +804,8 @@
                 loadPurchaseLogs();
                 activityInterval = setInterval(loadPurchaseLogs, 5000);
             }
+            if (n === 4) loadGeneratedKeys();
+            if (n === 5) loadWhitelist();
         }
 
         async function claimTrial() {
@@ -808,7 +907,6 @@
                 
                 let html = '';
                 
-                // Trial display
                 if (data.trialActive) {
                     const minutes = Math.floor(data.trialTimeLeft / 60);
                     const seconds = data.trialTimeLeft % 60;
@@ -971,6 +1069,213 @@
             }, 1000);
         }
 
+        async function generateKey() {
+            const duration = document.getElementById('key-duration').value;
+            const result = document.getElementById('generate-result');
+            
+            try {
+                const res = await fetch('/api/admin/keys/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ duration })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    result.innerHTML = `
+                        <div class="bg-zinc-900 p-4 rounded-xl border border-orange-500">
+                            <p class="text-sm mb-2" style="color: #f97316;"><i class="fa-solid fa-check mr-1"></i>Key Generated!</p>
+                            <p class="font-mono text-lg mb-2" style="color: #fff;">${data.key.key}</p>
+                            <p class="text-xs" style="color: #9ca3af;">Duration: ${data.key.duration} • Created: ${new Date(data.key.createdAt).toLocaleString()}</p>
+                        </div>
+                    `;
+                    loadGeneratedKeys();
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Failed to generate key</p>';
+            }
+        }
+
+        async function loadGeneratedKeys() {
+            try {
+                const res = await fetch('/api/admin/keys', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                if (!data.success) {
+                    document.getElementById('keys-list').innerHTML = '<p class="error-text">Failed to load keys</p>';
+                    return;
+                }
+                
+                if (data.keys.length === 0) {
+                    document.getElementById('keys-list').innerHTML = '<p class="text-center" style="color: #6b7280;">No keys generated yet</p>';
+                    return;
+                }
+                
+                let html = '';
+                data.keys.slice().reverse().forEach(key => {
+                    let statusClass = 'key-active';
+                    let statusText = 'Active';
+                    let statusColor = '#10b981';
+                    
+                    if (!key.active) {
+                        statusClass = 'key-revoked';
+                        statusText = 'Revoked';
+                        statusColor = '#ef4444';
+                    } else if (key.expiresAt && Date.now() > key.expiresAt) {
+                        statusClass = 'key-expired';
+                        statusText = 'Expired';
+                        statusColor = '#6b7280';
+                    }
+                    
+                    const usedCount = key.usedBy ? key.usedBy.length : 0;
+                    let expiresText = 'Never';
+                    if (key.duration !== 'lifetime') {
+                        if (key.expiresAt) {
+                            expiresText = new Date(key.expiresAt).toLocaleString();
+                        }
+                    }
+                    
+                    html += `
+                        <div class="key-card ${statusClass}">
+                            <div class="flex justify-between items-start mb-2">
+                                <div>
+                                    <p class="font-mono text-sm font-bold" style="color: #fff;">${key.key}</p>
+                                    <p class="text-xs mt-1" style="color: #9ca3af;">Used by: ${usedCount} users</p>
+                                </div>
+                                <span class="text-xs px-3 py-1 rounded-full" style="background: ${statusColor}20; color: ${statusColor};">${statusText}</span>
+                            </div>
+                            <div class="flex justify-between items-center mt-3">
+                                <div class="text-xs" style="color: #6b7280;">
+                                    <span>Duration: ${key.duration}</span>
+                                    <span class="mx-2">•</span>
+                                    <span>Expires: ${expiresText}</span>
+                                </div>
+                                ${key.active ? `
+                                    <button onclick="revokeKey('${key.key}')" class="btn-red px-3 py-1 rounded text-xs" style="border: none;">
+                                        <i class="fa-solid fa-ban mr-1"></i>Revoke
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                document.getElementById('keys-list').innerHTML = html;
+            } catch (err) {
+                document.getElementById('keys-list').innerHTML = '<p class="error-text">Failed to load keys</p>';
+            }
+        }
+
+        async function revokeKey(key) {
+            if (!confirm('Revoke this key? All users using it will lose access.')) return;
+            
+            try {
+                const res = await fetch('/api/admin/keys/revoke', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ key })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    loadGeneratedKeys();
+                } else {
+                    alert('Failed to revoke key');
+                }
+            } catch (err) {
+                alert('Error revoking key');
+            }
+        }
+
+        async function addToWhitelist() {
+            const userId = document.getElementById('whitelist-id').value.trim();
+            const result = document.getElementById('whitelist-result');
+            
+            if (!userId) {
+                result.innerHTML = '<p class="error-text">Enter a User ID</p>';
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/admin/whitelist/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ userId })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    result.innerHTML = '<p class="success-text">User added to whitelist</p>';
+                    document.getElementById('whitelist-id').value = '';
+                    loadWhitelist();
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Failed to add user</p>';
+            }
+        }
+
+        async function removeFromWhitelist(userId) {
+            if (!confirm('Remove this user from whitelist?')) return;
+            
+            try {
+                const res = await fetch('/api/admin/whitelist/remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ userId })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    loadWhitelist();
+                } else {
+                    alert('Failed to remove user');
+                }
+            } catch (err) {
+                alert('Error removing user');
+            }
+        }
+
+        async function loadWhitelist() {
+            try {
+                const res = await fetch('/api/admin/whitelist', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                if (!data.success) {
+                    document.getElementById('whitelist-list').innerHTML = '<p class="error-text">Failed to load whitelist</p>';
+                    return;
+                }
+                
+                if (data.whitelist.length === 0) {
+                    document.getElementById('whitelist-list').innerHTML = '<p class="text-center" style="color: #6b7280;">No users whitelisted</p>';
+                    return;
+                }
+                
+                let html = '';
+                data.whitelist.forEach(userId => {
+                    html += `
+                        <div class="flex justify-between items-center bg-zinc-900 p-3 rounded-lg mb-2">
+                            <span class="font-mono text-sm" style="color: #fff;">${userId}</span>
+                            <button onclick="removeFromWhitelist('${userId}')" class="text-xs px-3 py-1 rounded" style="background: #7f1d1d; color: #fca5a5; border: none; cursor: pointer;">
+                                <i class="fa-solid fa-trash mr-1"></i>Remove
+                            </button>
+                        </div>
+                    `;
+                });
+                
+                document.getElementById('whitelist-list').innerHTML = html;
+            } catch (err) {
+                document.getElementById('whitelist-list').innerHTML = '<p class="error-text">Failed to load whitelist</p>';
+            }
+        }
+
         function handleImageSelect(event) {
             const file = event.target.files[0];
             if (!file) return;
@@ -1017,9 +1322,20 @@
                 }
                 const data = await res.json();
                 
+                isOwner = data.isOwner;
+                isWhitelisted = data.isWhitelisted;
+                canGenerate = data.canGenerate;
+                
                 const displayName = data.global_name || data.username;
                 const avatarUrl = data.avatar ? `https://cdn.discordapp.com/avatars/${data.id}/${data.avatar}.png?size=64` : 'https://cdn.discordapp.com/embed/avatars/0.png';
                 document.getElementById('user-display').innerHTML = `<img src="${avatarUrl}" class="user-avatar"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full" style="color: #fff;">${displayName}</span>`;
+                
+                if (isOwner) {
+                    document.getElementById('nav-4').classList.remove('hidden');
+                    document.getElementById('nav-5').classList.remove('hidden');
+                } else if (canGenerate) {
+                    document.getElementById('nav-4').classList.remove('hidden');
+                }
                 
                 if (data.purchased) {
                     isPurchased = true;
@@ -1046,7 +1362,6 @@
                     updateTrialTimerDisplay();
                     startTrialTimer();
                 } else {
-                    // Check if can claim trial
                     const trialRes = await fetch('/api/trial/status', { credentials: 'same-origin' });
                     const trialData = await trialRes.json();
                     if (trialData.success && trialData.canClaim) {
@@ -1357,7 +1672,6 @@
             }
         }
 
-        // Simple logout - no verification code
         function initiateLogout() {
             document.getElementById('logout-modal').classList.add('active');
         }
