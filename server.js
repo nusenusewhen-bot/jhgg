@@ -1009,10 +1009,11 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         }
         
         // Normalize messages
+        // FIX: Keep messages that have either text OR images, so image-only messages aren't dropped.
         const messageList = messages.map((m, idx) => ({
             text: m.text || '',
             imageIds: Array.isArray(m.imageIds) ? m.imageIds : []
-        })).filter(m => m.text.trim() !== '');
+        })).filter(m => m.text.trim() !== '' || m.imageIds.length > 0);
         
         if (messageList.length === 0) {
             return res.status(400).json({ success: false, error: 'At least one non-empty message required' });
