@@ -6,6 +6,42 @@ const path = require('path');
 const activeBots = new Map();
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll';
 
+// --- NEW: Persistent replied-users storage ---
+const REPLY_DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(REPLY_DATA_DIR)) fs.mkdirSync(REPLY_DATA_DIR, { recursive: true });
+
+function getRepliedUsersPath(userId) {
+    return path.join(REPLY_DATA_DIR, `replied_users_${userId}.json`);
+}
+
+function loadRepliedUsers(userId) {
+    const filePath = getRepliedUsersPath(userId);
+    try {
+        if (fs.existsSync(filePath)) {
+            const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            // Clean entries older than 30 days
+            const now = Date.now();
+            const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+            const cleaned = {};
+            for (const [id, timestamp] of Object.entries(data)) {
+                if (now - timestamp < thirtyDays) cleaned[id] = timestamp;
+            }
+            return new Set(Object.keys(cleaned));
+        }
+    } catch (e) { console.error('[REPLIED USERS] Load error:', e.message); }
+    return new Set();
+}
+
+function saveRepliedUsers(userId, set) {
+    const filePath = getRepliedUsersPath(userId);
+    const data = {};
+    for (const id of set) data[id] = Date.now();
+    try {
+        fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    } catch (e) { console.error('[REPLIED USERS] Save error:', e.message); }
+}
+// --- END NEW ---
+
 async function validateToken(token) {
     try {
         const res = await axios.get('https://discord.com/api/v10/users/@me', {
@@ -108,7 +144,11 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
     let currentMessageIndex = 0;
     let currentChannelIndex = 0;
     let stopped = false;
-    const autoRepliedUsers = new Set();
+    
+    // --- NEW: Load persistent replied users instead of ephemeral Set ---
+    const autoRepliedUsers = loadRepliedUsers(userId);
+    // --- END NEW ---
+    
     const botKey = `${userId}_${configId}`;
     
     const tempDir = path.join(__dirname, 'temp');
@@ -318,8 +358,17 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
                 if (!trialActive && !hasPurchase) return;
             }
             
-            if (autoRepliedUsers.has(msg.author.id)) return;
+            // --- NEW: Check persistent replied users, skip if already chatted ---
+            if (autoRepliedUsers.has(msg.author.id)) {
+                console.log(`[SELFBOT ${configId}] Skipping auto-reply to ${msg.author.username} (${msg.author.id}) — already chatted before.`);
+                return;
+            }
+            // --- END NEW ---
+            
             autoRepliedUsers.add(msg.author.id);
+            // --- NEW: Persist immediately so we don't reply again on reconnect ---
+            saveRepliedUsers(userId, autoRepliedUsers);
+            // --- END NEW ---
             
             try {
                 await msg.channel.send(autoReplyText);
