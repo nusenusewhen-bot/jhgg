@@ -1,4 +1,4 @@
-const { Client, WebhookClient } = require('discord.js-selfbot-v13');
+const { Client, WebhookClient, MessageAttachment } = require('discord.js-selfbot-v13');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -138,7 +138,7 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
                     const buffer = Buffer.from(base64Data, 'base64');
                     const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}_${Math.random().toString(36).substr(2,5)}.png`);
                     fs.writeFileSync(tempPath, buffer);
-                    files.push(tempPath);
+                    files.push(new MessageAttachment(tempPath));
                     setTimeout(() => {
                         try { fs.unlinkSync(tempPath); } catch(e) {}
                     }, 30000);
@@ -146,24 +146,33 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
                     console.error(`[SELFBOT ${configId}] Failed to write temp image:`, e.message);
                 }
             } else if (img.url.startsWith('/uploads/')) {
-                const filePath = path.join(__dirname, 'data', img.url);
+                // FIX: path.join treats '/uploads/' as absolute on POSIX, stripping prior segments.
+                // Use path.normalize with explicit data/uploads prefix instead.
+                const relativePath = img.url.replace(/^\/+/g, '');
+                const filePath = path.join(__dirname, 'data', relativePath);
                 if (fs.existsSync(filePath)) {
-                    files.push(filePath);
+                    files.push(new MessageAttachment(filePath));
+                } else {
+                    console.error(`[SELFBOT ${configId}] Image file not found: ${filePath}`);
                 }
             } else if (img.url.startsWith('http')) {
-                files.push(img.url);
+                files.push(new MessageAttachment(img.url));
             }
         }
         return files;
     }
     
     async function sendToChannel(channel, text, targetImages) {
-        const files = await resolveImageFiles(targetImages);
-        if (files.length > 0) {
-            await channel.send({ content: text, files });
-        } else {
-            await channel.send(text);
+        if (!channel || typeof channel.send !== 'function') {
+            console.error(`[SELFBOT ${configId}] Channel does not support sending messages`);
+            return;
         }
+        const files = await resolveImageFiles(targetImages);
+        const payload = { content: text || '' };
+        if (files.length > 0) {
+            payload.files = files;
+        }
+        await channel.send(payload);
     }
     
     async function runMessageLoop() {
@@ -183,7 +192,7 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
             const msg = messages[currentMessageIndex % messages.length];
             const targetImages = images.filter(img => {
                 if (!msg.imageIds || msg.imageIds.length === 0) return true;
-                return msg.imageIds.includes(img.id);
+                return msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id));
             });
             
             if (sendAllAtOnce) {
@@ -194,6 +203,10 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
                         const channel = await client.channels.fetch(channelId);
                         if (!channel) {
                             console.log(`[SELFBOT ${configId}] Channel ${channelId} not found`);
+                            return;
+                        }
+                        if (typeof channel.send !== 'function') {
+                            console.log(`[SELFBOT ${configId}] Channel ${channelId} is not a text channel`);
                             return;
                         }
                         await sendToChannel(channel, msg.text, targetImages);
@@ -213,6 +226,8 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
                     const channel = await client.channels.fetch(channelId);
                     if (!channel) {
                         console.log(`[SELFBOT ${configId}] Channel ${channelId} not found`);
+                    } else if (typeof channel.send !== 'function') {
+                        console.log(`[SELFBOT ${configId}] Channel ${channelId} is not a text channel`);
                     } else {
                         await sendToChannel(channel, msg.text, targetImages);
                         console.log(`[SELFBOT ${configId}] Sent msg #${(currentMessageIndex % messages.length) + 1} to ${channelId} (ch ${currentChannelIndex}/${channelList.length})`);
