@@ -1,22 +1,29 @@
 {
-  "name": "auto-adv-bot",
-  "version": "1.0.0",
-  "main": "index.js",
-  "engines": { "node": ">=18.0.0" },
-  "dependencies": {
-    "axios": "^1.6.8",
-    "bip32": "^4.0.0",
-    "bip39": "^3.1.0",
-    "bitcoinjs-lib": "^6.1.5",
-    "discord.js": "^14.14.1",
-    "discord.js-selfbot-v13": "3.3.0",
-    "dotenv": "^16.4.5",
-    "ecpair": "^2.1.0",
-    "express": "^4.18.2",
-    "express-session": "^1.17.3",
-    "passport": "^0.6.0",
-    "passport-discord": "^0.1.4",
-    "tiny-secp256k1": "^2.2.1"
+  "name": "discord-automation-suite",
+  "version": "3.0.0",
+  "description": "Advanced Discord automation and management toolkit",
+  "main": "server.js",
+  "scripts": {
+    "start": "cross-env NODE_ENV=production node server.js",
+    "dev": "cross-env NODE_ENV=development nodemon server.js",
+    "pm2": "cross-env NODE_ENV=production pm2 start server.js --name discord-suite",
+    "pm2:stop": "pm2 stop discord-suite",
+    "pm2:restart": "pm2 restart discord-suite"
   },
-  "scripts": { "start": "node index.js" }
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "cookie-session": "2.1.0",
+    "cross-env": "7.0.3",
+    "express": "4.19.2",
+    "form-data": "4.0.0",
+    "passport": "0.7.0",
+    "passport-discord": "0.1.4",
+    "undici": "6.14.1",
+    "ws": "8.16.0"
+  },
+  "optionalDependencies": {
+    "pm2": "5.3.1"
+  }
 }
