@@ -667,14 +667,7 @@ setInterval(() => {
 
 app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => {
-  req.session.regenerate((err) => {
-    if (err) return res.redirect('/');
-    req.session.passport = { user: req.user };
-    req.session.save((saveErr) => {
-      if (saveErr) return res.redirect('/');
-      res.redirect('/');
-    });
-  });
+  res.redirect('/');
 });
 app.get('/logout', (req, res) => { req.logout(() => res.redirect('/')); });
 
@@ -860,12 +853,16 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     let stopped = false;
     
     const msgLoop = async () => {
+      console.log(`[BOT ${configId}] Message loop started. Channels: ${channelList.join(', ')}, Messages: ${messageList.length}, Delay: ${delayMs}ms`);
       while (!stopped && activeBots.has(botKey)) {
-        if (dbInstance) {
+        if (db) {
           const user = db.getUser(req.user.id);
           const trialActive = db.isTrialActive(req.user.id);
           const hasPurchase = user.auto_adv_purchased === 1;
-          if (!trialActive && !hasPurchase) break;
+          if (!trialActive && !hasPurchase) {
+            console.log(`[BOT ${configId}] Access expired (no trial, no purchase). Stopping loop.`);
+            break;
+          }
         }
         
         const msg = messageList[currentMsgIdx % messageList.length];
@@ -874,23 +871,22 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
         }
         
+        const sendWithRetry = async (chId, text, files, retries = 2) => {
+          for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+              const ok = await client.sendMessage(chId, text, files);
+              if (ok) { console.log(`[BOT ${configId}] Sent to ${chId}: "${text.slice(0, 60)}"`); return true; }
+              throw new Error(`sendMessage returned false (attempt ${attempt + 1})`);
+            } catch(e) {
+              console.error(`[BOT ${configId}] Send error to ${chId} (attempt ${attempt + 1}/${retries + 1}):`, e.message);
+              if (attempt < retries) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+            }
+          }
+          return false;
+        };
+        
         if (sendAllAtOnce) {
           for (const chId of channelList) {
-            try {
-              const files = targetImages.map(img => {
-                if (img.url.startsWith('/uploads/')) {
-                  const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
-                  return fs.existsSync(p) ? { buffer: fs.readFileSync(p), name: path.basename(p) } : null;
-                }
-                return null;
-              }).filter(Boolean);
-              await client.sendMessage(chId, msg.text, files);
-            } catch(e) { console.error(`[BOT ${configId}] Send error to ${chId}:`, e.message); }
-          }
-        } else {
-          const chId = channelList[currentChIdx % channelList.length];
-          currentChIdx++;
-          try {
             const files = targetImages.map(img => {
               if (img.url.startsWith('/uploads/')) {
                 const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
@@ -898,13 +894,25 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               }
               return null;
             }).filter(Boolean);
-            await client.sendMessage(chId, msg.text, files);
-          } catch(e) { console.error(`[BOT ${configId}] Send error to ${chId}:`, e.message); }
+            await sendWithRetry(chId, msg.text, files);
+          }
+        } else {
+          const chId = channelList[currentChIdx % channelList.length];
+          currentChIdx++;
+          const files = targetImages.map(img => {
+            if (img.url.startsWith('/uploads/')) {
+              const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
+              return fs.existsSync(p) ? { buffer: fs.readFileSync(p), name: path.basename(p) } : null;
+            }
+            return null;
+          }).filter(Boolean);
+          await sendWithRetry(chId, msg.text, files);
         }
         
         currentMsgIdx++;
         await new Promise(r => setTimeout(r, _j(delayMs, 0.15)));
       }
+      console.log(`[BOT ${configId}] Message loop exited.`);
     };
     
     // Auto-reply handler - only replies to NEW people in DMs (not previously chatted)
@@ -914,9 +922,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         const isDM = msg.channel_type === 1 || msg.channel_type === 'DM';
         if (!isDM) return;
         
-        if (dbInstance) {
-          const user = dbInstance.getUser(req.user.id);
-          const trialActive = dbInstance.isTrialActive(req.user.id);
+        if (db) {
+          const user = db.getUser(req.user.id);
+          const trialActive = db.isTrialActive(req.user.id);
           const hasPurchase = user.auto_adv_purchased === 1;
           if (!trialActive && !hasPurchase) return;
         }
