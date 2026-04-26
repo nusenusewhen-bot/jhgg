@@ -1,5 +1,6 @@
 const express = require('express');
-const cookieSession = require('cookie-session');
+const session = require('express-session');
+const cookieParser = require('cookie-parser');
 const passport = require('passport');
 const DiscordStrategy = require('passport-discord').Strategy;
 const path = require('path');
@@ -448,11 +449,15 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(cookieSession({
-  name: 'session',
-  keys: [process.env.SESSION_SECRET || 'secret-key-2026'],
-  maxAge: 30 * 24 * 60 * 60 * 1000,
-  secure: false
+app.use(cookieParser());
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'secret-key-2026',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+    secure: false
+  }
 }));
 
 app.use(passport.initialize());
@@ -661,7 +666,16 @@ setInterval(() => {
 }, 60000);
 
 app.get('/login', passport.authenticate('discord'));
-app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
+app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => {
+  req.session.regenerate((err) => {
+    if (err) return res.redirect('/');
+    req.session.passport = { user: req.user };
+    req.session.save((saveErr) => {
+      if (saveErr) return res.redirect('/');
+      res.redirect('/');
+    });
+  });
+});
 app.get('/logout', (req, res) => { req.logout(() => res.redirect('/')); });
 
 app.get('/api/user', ensureAuthAPI, (req, res) => {
