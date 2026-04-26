@@ -292,7 +292,7 @@
             pointer-events: auto;
         }
         .hidden { display: none !important; }
-        #image-input { 
+        .image-input-file { 
             position: absolute; 
             opacity: 0; 
             width: 0; 
@@ -368,6 +368,39 @@
         .key-active { border-color: #10b981; }
         .key-revoked { border-color: #ef4444; opacity: 0.7; }
         .key-expired { border-color: #6b7280; opacity: 0.7; }
+        
+        .image-item {
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .message-item {
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .remove-btn {
+            background: none;
+            border: none;
+            color: #ef4444;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .remove-btn:hover { color: #fca5a5; }
+        .image-id-badge {
+            display: inline-block;
+            background: #ef4444;
+            color: #fff;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            margin-bottom: 8px;
+        }
         
         @media (max-width: 640px) {
             .nav-link { padding: 6px 10px; font-size: 13px; }
@@ -505,19 +538,12 @@
                     </div>
                     
                     <div>
-                        <label class="form-label">Advertisement Image (Optional)</label>
-                        <div class="upload-area" id="upload-area">
-                            <input type="file" id="image-input" accept="image/*" class="hidden">
-                            <div id="upload-placeholder">
-                                <i class="fa-solid fa-image text-3xl mb-2" style="color: #6b7280;"></i>
-                                <p class="text-sm" style="color: #9ca3af;">Click to upload image</p>
-                                <p class="text-xs mt-1" style="color: #6b7280;">PNG, JPG, GIF up to 5MB</p>
-                            </div>
-                            <img id="image-preview" class="image-preview hidden mx-auto" onclick="document.getElementById('image-input').click()" />
-                        </div>
-                        <button id="clear-image-btn" class="hidden mt-2 text-xs" style="color: #ef4444; background: none; border: none; cursor: pointer;">
-                            <i class="fa-solid fa-trash mr-1"></i>Remove image
+                        <label class="form-label">Advertisement Images (Optional)</label>
+                        <div id="images-container"></div>
+                        <button onclick="addImage()" class="mt-2 btn-purple px-4 py-2 rounded-xl text-xs" style="border: none;">
+                            <i class="fa-solid fa-plus mr-1"></i>Add 1+ Image
                         </button>
+                        <p class="text-xs mt-2" style="color: #6b7280;">Images are numbered. Use the number in your messages to pick which image to send.</p>
                     </div>
                     
                     <div>
@@ -541,17 +567,22 @@
                     <div>
                         <label class="form-label" id="delay-label">Delay (seconds)</label>
                         <input id="delay" type="number" value="30" min="10" max="3600" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
+                        <p class="text-xs mt-1" style="color: #6b7280;">Delay between each message in the loop</p>
                     </div>
                     
                     <div>
-                        <label class="form-label">Advertisement Message</label>
-                        <textarea id="message" rows="3" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-3xl px-5 py-4 text-sm" style="color: #fff; resize: vertical;"></textarea>
+                        <label class="form-label">Advertisement Messages</label>
+                        <div id="messages-container"></div>
+                        <button onclick="addMessage()" class="mt-2 btn-purple px-4 py-2 rounded-xl text-xs" style="border: none;">
+                            <i class="fa-solid fa-plus mr-1"></i>Add 1+ Message
+                        </button>
+                        <p class="text-xs mt-2" style="color: #6b7280;">Messages loop in order. Leave Image IDs empty to send all images.</p>
                     </div>
                     
                     <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl border border-zinc-700">
                         <div>
                             <label class="text-sm font-medium block" style="color: #fff;">Auto-Reply</label>
-                            <p class="text-xs" style="color: #6b7280;">Reply when someone asks about price/cost/buy</p>
+                            <p class="text-xs" style="color: #6b7280;">Auto-accept & reply once to new DM requests</p>
                         </div>
                         <label class="toggle-wrapper" for="auto-reply-toggle">
                             <input type="checkbox" id="auto-reply-toggle" class="toggle-input">
@@ -654,7 +685,8 @@
         let trialInterval = null;
         let currentConfigId = 'default';
         let savedConfigs = [];
-        let selectedImageBase64 = null;
+        let selectedImages = [];
+        let messages = [{ text: '', imageIds: [] }];
         let activityInterval = null;
         let isOwner = false;
         let isWhitelisted = false;
@@ -663,6 +695,8 @@
         document.addEventListener('DOMContentLoaded', function() {
             initializeEventListeners();
             loadUserData();
+            renderImages();
+            renderMessages();
             setInterval(() => {
                 fetch('/api/user', { credentials: 'same-origin' }).catch(() => {});
             }, 60000);
@@ -691,20 +725,6 @@
             document.getElementById('add-account-btn').addEventListener('click', function(e) {
                 e.preventDefault();
                 showNewAccountForm();
-            });
-
-            document.getElementById('upload-area').addEventListener('click', function(e) {
-                if (e.target.id !== 'image-preview') {
-                    document.getElementById('image-input').click();
-                }
-            });
-
-            document.getElementById('image-input').addEventListener('change', handleImageSelect);
-
-            document.getElementById('clear-image-btn').addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                clearImage();
             });
 
             document.getElementById('auto-reply-toggle').addEventListener('change', function() {
@@ -1276,7 +1296,49 @@
             }
         }
 
-        function handleImageSelect(event) {
+        // ====== IMAGES ======
+        function renderImages() {
+            const container = document.getElementById('images-container');
+            container.innerHTML = '';
+            
+            selectedImages.forEach((img, index) => {
+                const div = document.createElement('div');
+                div.className = 'image-item';
+                div.innerHTML = `
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="image-id-badge">Image #${img.id}</span>
+                        <button onclick="removeImage(${index})" class="remove-btn">
+                            <i class="fa-solid fa-trash mr-1"></i>Remove
+                        </button>
+                    </div>
+                    <div class="upload-area ${img.base64 ? 'has-file' : ''}" onclick="document.getElementById('image-input-${index}').click()">
+                        <input type="file" id="image-input-${index}" class="image-input-file" accept="image/*" onchange="handleImageSelect(event, ${index})">
+                        <div id="upload-placeholder-${index}" class="${img.base64 ? 'hidden' : ''}">
+                            <i class="fa-solid fa-image text-3xl mb-2" style="color: #6b7280;"></i>
+                            <p class="text-sm" style="color: #9ca3af;">Click to upload image</p>
+                            <p class="text-xs mt-1" style="color: #6b7280;">PNG, JPG, GIF up to 5MB</p>
+                        </div>
+                        <img id="image-preview-${index}" class="image-preview ${img.base64 ? 'has-image' : 'hidden'} mx-auto" src="${img.base64 || ''}" />
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        function addImage() {
+            const newId = selectedImages.length > 0 ? Math.max(...selectedImages.map(i => i.id)) + 1 : 1;
+            selectedImages.push({ id: newId, base64: null });
+            renderImages();
+        }
+
+        function removeImage(index) {
+            selectedImages.splice(index, 1);
+            // Reassign IDs to keep them sequential
+            selectedImages.forEach((img, i) => img.id = i + 1);
+            renderImages();
+        }
+
+        function handleImageSelect(event, index) {
             const file = event.target.files[0];
             if (!file) return;
             
@@ -1287,30 +1349,59 @@
             
             const reader = new FileReader();
             reader.onload = function(e) {
-                selectedImageBase64 = e.target.result;
-                const preview = document.getElementById('image-preview');
-                const placeholder = document.getElementById('upload-placeholder');
-                const uploadArea = document.getElementById('upload-area');
-                const clearBtn = document.getElementById('clear-image-btn');
-                
-                preview.src = e.target.result;
-                preview.classList.remove('hidden');
-                preview.classList.add('has-image');
-                placeholder.classList.add('hidden');
-                uploadArea.classList.add('has-file');
-                clearBtn.classList.remove('hidden');
+                selectedImages[index].base64 = e.target.result;
+                renderImages();
             };
             reader.readAsDataURL(file);
         }
 
-        function clearImage() {
-            selectedImageBase64 = null;
-            document.getElementById('image-input').value = '';
-            document.getElementById('image-preview').classList.add('hidden');
-            document.getElementById('image-preview').classList.remove('has-image');
-            document.getElementById('upload-placeholder').classList.remove('hidden');
-            document.getElementById('upload-area').classList.remove('has-file');
-            document.getElementById('clear-image-btn').classList.add('hidden');
+        // ====== MESSAGES ======
+        function renderMessages() {
+            const container = document.getElementById('messages-container');
+            container.innerHTML = '';
+            
+            messages.forEach((msg, index) => {
+                const div = document.createElement('div');
+                div.className = 'message-item';
+                div.innerHTML = `
+                    <div class="flex justify-between items-center mb-3">
+                        <span class="text-xs font-bold" style="color: #ef4444;">MESSAGE #${index + 1}</span>
+                        ${messages.length > 1 ? `
+                            <button onclick="removeMessage(${index})" class="remove-btn">
+                                <i class="fa-solid fa-trash mr-1"></i>Remove
+                            </button>
+                        ` : ''}
+                    </div>
+                    <textarea id="msg-text-${index}" rows="2" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm mb-3" style="color: #fff; resize: vertical;">${msg.text}</textarea>
+                    <div>
+                        <label class="text-xs" style="color: #6b7280;">Image IDs (comma separated, empty = all images)</label>
+                        <input id="msg-images-${index}" type="text" placeholder="e.g. 1, 2" value="${msg.imageIds ? msg.imageIds.join(', ') : ''}" class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2 text-sm mt-1" style="color: #fff;">
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        function addMessage() {
+            messages.push({ text: '', imageIds: [] });
+            renderMessages();
+        }
+
+        function removeMessage(index) {
+            if (messages.length <= 1) return;
+            messages.splice(index, 1);
+            renderMessages();
+        }
+
+        function gatherMessages() {
+            const result = [];
+            for (let i = 0; i < messages.length; i++) {
+                const text = document.getElementById(`msg-text-${i}`).value.trim();
+                const idsStr = document.getElementById(`msg-images-${i}`).value;
+                const imageIds = idsStr.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n > 0);
+                result.push({ text, imageIds });
+            }
+            return result;
         }
 
         async function loadUserData() {
@@ -1407,6 +1498,9 @@
             
             savedConfigs.forEach((config, index) => {
                 const isActive = config.active === 1;
+                const msgCount = config.messages ? config.messages.length : (config.message ? 1 : 0);
+                const imgCount = config.images ? config.images.length : (config.image_url ? 1 : 0);
+                
                 const card = document.createElement('div');
                 card.className = `account-card ${isActive ? 'account-active' : ''}`;
                 card.innerHTML = `
@@ -1414,7 +1508,11 @@
                         <div>
                             <h4 class="font-bold" style="color: #ef4444;">${config.username || 'Unknown'}</h4>
                             <p class="text-xs mt-1" style="color: #6b7280;">Channels: ${config.channels}</p>
-                            ${config.image_url ? '<p class="text-xs mt-1" style="color: #8b5cf6;"><i class="fa-solid fa-image"></i> Has image</p>' : ''}
+                            <p class="text-xs mt-1" style="color: #8b5cf6;">
+                                <i class="fa-solid fa-message mr-1"></i>${msgCount} message${msgCount !== 1 ? 's' : ''} 
+                                <span class="mx-1">•</span> 
+                                <i class="fa-solid fa-image mr-1"></i>${imgCount} image${imgCount !== 1 ? 's' : ''}
+                            </p>
                         </div>
                         <span class="status-badge ${isActive ? 'status-running' : 'status-stopped'}">
                             ${isActive ? 'Running' : 'Stopped'}
@@ -1437,7 +1535,6 @@
             
             document.getElementById('token').value = '';
             document.getElementById('channels').value = '';
-            document.getElementById('message').value = '';
             document.getElementById('delay').value = '30';
             document.getElementById('auto-reply-toggle').checked = false;
             document.getElementById('auto-reply-container').classList.add('hidden');
@@ -1445,7 +1542,11 @@
             document.getElementById('bot-status').innerHTML = '';
             document.getElementById('send-all-at-once-toggle').checked = true;
             document.getElementById('channel-error').style.display = 'none';
-            clearImage();
+            
+            selectedImages = [];
+            messages = [{ text: '', imageIds: [] }];
+            renderImages();
+            renderMessages();
             
             document.getElementById('config-form').scrollIntoView({ behavior: 'smooth' });
         }
@@ -1460,7 +1561,6 @@
             
             document.getElementById('token').value = config.token || '';
             document.getElementById('channels').value = config.channels || '';
-            document.getElementById('message').value = config.message || '';
             document.getElementById('delay').value = config.delay_seconds || '30';
             document.getElementById('auto-reply-toggle').checked = config.auto_reply_enabled === 1;
             document.getElementById('auto-reply-container').classList.toggle('hidden', config.auto_reply_enabled !== 1);
@@ -1468,16 +1568,30 @@
             document.getElementById('send-all-at-once-toggle').checked = config.send_all_at_once !== 0;
             document.getElementById('channel-error').style.display = 'none';
             
-            if (config.image_url) {
-                selectedImageBase64 = config.image_url;
-                const preview = document.getElementById('image-preview');
-                preview.src = config.image_url.startsWith('/uploads/') ? config.image_url : config.image_url;
-                preview.classList.remove('hidden');
-                preview.classList.add('has-image');
-                document.getElementById('upload-placeholder').classList.add('hidden');
-                document.getElementById('upload-area').classList.add('has-file');
-                document.getElementById('clear-image-btn').classList.remove('hidden');
+            // Load images
+            selectedImages = [];
+            if (config.images && Array.isArray(config.images)) {
+                selectedImages = config.images.map((img, i) => ({
+                    id: img.id || (i + 1),
+                    base64: img.url || null
+                }));
+            } else if (config.image_url) {
+                selectedImages = [{ id: 1, base64: config.image_url }];
             }
+            renderImages();
+            
+            // Load messages
+            messages = [];
+            if (config.messages && Array.isArray(config.messages)) {
+                messages = config.messages.map(m => ({
+                    text: m.text || '',
+                    imageIds: Array.isArray(m.imageIds) ? m.imageIds : []
+                }));
+            } else if (config.message) {
+                messages = [{ text: config.message, imageIds: [] }];
+            }
+            if (messages.length === 0) messages = [{ text: '', imageIds: [] }];
+            renderMessages();
             
             document.getElementById('config-form').scrollIntoView({ behavior: 'smooth' });
         }
@@ -1585,7 +1699,6 @@
         async function startBot() {
             const token = document.getElementById('token').value.trim();
             const channels = document.getElementById('channels').value.trim();
-            const message = document.getElementById('message').value.trim();
             const delay = document.getElementById('delay').value;
             const autoReplyEnabled = document.getElementById('auto-reply-toggle').checked;
             const autoReplyText = document.getElementById('auto-reply-text').value.trim();
@@ -1594,8 +1707,15 @@
             const btn = document.getElementById('start-btn');
             const channelError = document.getElementById('channel-error');
             
-            if (!token || !channels || !message) {
-                status.innerHTML = '<span style="color: #ef4444;">Fill all fields</span>';
+            const messageList = gatherMessages();
+            
+            if (!token || !channels) {
+                status.innerHTML = '<span style="color: #ef4444;">Fill all required fields</span>';
+                return;
+            }
+            
+            if (messageList.length === 0 || messageList.every(m => !m.text)) {
+                status.innerHTML = '<span style="color: #ef4444;">Enter at least one message</span>';
                 return;
             }
             
@@ -1617,16 +1737,24 @@
             btn.disabled = true;
             status.innerHTML = '<span style="color: #fbbf24;">Validating...</span>';
             
+            // Prepare images payload
+            const imagesPayload = selectedImages.map(img => ({
+                id: img.id,
+                url: img.base64
+            })).filter(img => img.url);
+            
             try {
                 const res = await fetch('/api/bot/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
                     body: JSON.stringify({ 
-                        token, channels, message, delay, 
+                        token, channels, 
+                        messages: messageList,
+                        delay, 
                         autoReplyEnabled, autoReplyText, 
                         configId: currentConfigId,
-                        imageUrl: selectedImageBase64,
+                        images: imagesPayload,
                         sendAllAtOnce
                     })
                 });
@@ -1634,7 +1762,8 @@
                 
                 if (data.success) {
                     let msg = `Running as ${data.username}! Saved.`;
-                    if (data.imageUrl) msg += ' Image attached.';
+                    if (data.imageCount > 0) msg += ` ${data.imageCount} image(s).`;
+                    msg += ` ${data.messageCount} message(s).`;
                     status.innerHTML = `<span style="color: #fca5a5;">${msg}</span>`;
                     
                     await loadSavedConfigs();
