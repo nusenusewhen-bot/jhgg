@@ -407,6 +407,7 @@
             .nav-wrapper { margin: 0 8px; }
         }
     </style>
+<base target="_blank">
 </head>
 <body class="min-h-screen pb-20">
     <div id="logout-modal" class="modal" onclick="if(event.target === this) closeLogoutModal()">
@@ -1383,12 +1384,19 @@
         }
 
         function addMessage() {
+            // FIX: Sync current DOM values into the messages array BEFORE adding a new one.
+            // Otherwise the user's typed text gets wiped when renderMessages() rebuilds the DOM.
+            const current = gatherMessages();
+            messages = current;
             messages.push({ text: '', imageIds: [] });
             renderMessages();
         }
 
         function removeMessage(index) {
             if (messages.length <= 1) return;
+            // FIX: Sync DOM state before removing so we don't lose any edits.
+            const current = gatherMessages();
+            messages = current;
             messages.splice(index, 1);
             renderMessages();
         }
@@ -1396,8 +1404,10 @@
         function gatherMessages() {
             const result = [];
             for (let i = 0; i < messages.length; i++) {
-                const text = document.getElementById(`msg-text-${i}`).value.trim();
-                const idsStr = document.getElementById(`msg-images-${i}`).value;
+                const textEl = document.getElementById(`msg-text-${i}`);
+                const idsEl = document.getElementById(`msg-images-${i}`);
+                const text = textEl ? textEl.value.trim() : '';
+                const idsStr = idsEl ? idsEl.value : '';
                 const imageIds = idsStr.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n > 0);
                 result.push({ text, imageIds });
             }
