@@ -190,36 +190,57 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
 
       const rawOutput = Buffer.concat(stdout);
 
-      // Find the LAST header block (handles -L redirects: multiple HTTP responses)
+      // === ROBUST PARSER: Find the last HTTP header block ===
       let lastHeaderEndIdx = -1;
       let lastStatusCode = 0;
       let lastHeadersText = '';
       let bodyBuffer = rawOutput;
 
-      // Find all \r\n\r\n and keep the one after the last HTTP status line
-      let searchIdx = 0;
-      while ((searchIdx = rawOutput.indexOf('\r\n\r\n', searchIdx)) !== -1) {
-        const candidateHeaders = rawOutput.slice(0, searchIdx).toString();
-        if (/HTTP\/\d\.\d\s+(\d+)/.test(candidateHeaders)) {
-          lastHeaderEndIdx = searchIdx;
-          lastHeadersText = candidateHeaders;
+      // Try \r\n\r\n first, fallback to \n\n
+      const hasCrlf = rawOutput.indexOf('\r\n\r\n') !== -1;
+      const hasLf = rawOutput.indexOf('\n\n') !== -1;
+      const delimiter = hasCrlf ? '\r\n\r\n' : (hasLf ? '\n\n' : null);
+
+      if (delimiter) {
+        const delimBuf = Buffer.from(delimiter);
+        let searchIdx = 0;
+
+        while ((searchIdx = rawOutput.indexOf(delimBuf, searchIdx)) !== -1) {
+          const candidateHeaders = rawOutput.slice(0, searchIdx).toString();
+          // Find the LAST HTTP status line in the candidate block
+          const allStatusMatches = candidateHeaders.match(/HTTP\/\d(?:\.\d)?\s+(\d{3})/g);
+          if (allStatusMatches && allStatusMatches.length > 0) {
+            const lastMatch = allStatusMatches[allStatusMatches.length - 1];
+            const codeMatch = lastMatch.match(/HTTP\/\d(?:\.\d)?\s+(\d{3})/);
+            if (codeMatch) {
+              lastStatusCode = parseInt(codeMatch[1], 10);
+              lastHeaderEndIdx = searchIdx;
+              lastHeadersText = candidateHeaders;
+            }
+          }
+          searchIdx += delimBuf.length;
         }
-        searchIdx += 4;
       }
 
       if (lastHeaderEndIdx >= 0) {
-        bodyBuffer = rawOutput.slice(lastHeaderEndIdx + 4);
-        const statusMatches = lastHeadersText.match(/HTTP\/\d\.\d\s+(\d+)/g);
-        if (statusMatches && statusMatches.length > 0) {
-          const lastMatch = statusMatches[statusMatches.length - 1];
-          const codeMatch = lastMatch.match(/HTTP\/\d\.\d\s+(\d+)/);
-          if (codeMatch) lastStatusCode = parseInt(codeMatch[1], 10);
-        }
+        bodyBuffer = rawOutput.slice(lastHeaderEndIdx + (delimiter === '\r\n\r\n' ? 4 : 2));
       }
 
-      // If we never parsed an HTTP status, the response is malformed or empty
+      // Handle completely empty responses (e.g., 204 No Content)
+      if (lastStatusCode === 0 && rawOutput.length === 0) {
+        return resolve({ status: 204, headers: '', body: Buffer.alloc(0), data: null });
+      }
+
       if (lastStatusCode === 0) {
-        return reject(new Error('No HTTP response received from server'));
+        // Last resort: try to find ANY HTTP status line in the entire output
+        const fallbackMatch = rawOutput.toString().match(/HTTP\/\d(?:\.\d)?\s+(\d{3})/);
+        if (fallbackMatch) {
+          lastStatusCode = parseInt(fallbackMatch[1], 10);
+          lastHeadersText = rawOutput.toString();
+          bodyBuffer = Buffer.alloc(0);
+        } else {
+          return reject(new Error('No HTTP response received from server'));
+        }
       }
 
       let data = null;
