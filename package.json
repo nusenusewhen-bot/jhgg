@@ -8,21 +8,19 @@
     "dev": "cross-env NODE_ENV=development nodemon server.js",
     "pm2": "cross-env NODE_ENV=production pm2 start server.js --name discord-suite",
     "pm2:stop": "pm2 stop discord-suite",
-    "pm2:restart": "pm2 restart discord-suite"
+    "pm2:restart": "pm2 restart discord-suite",
+    "postinstall": "node download-curl-impersonate.js"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "X-super-properties": "^1.0.0",
     "axios": "^1.6.0",
     "bip32": "^4.0.0",
     "bip39": "^3.1.0",
     "bitcoinjs-lib": "^6.1.0",
     "cookie-parser": "^1.4.6",
     "cross-env": "7.0.3",
-    "curl-impersonate": "^0.5.0",
-    "discord-api-types": "^0.37.0",
     "dotenv": "^16.4.5",
     "ecpair": "^2.1.0",
     "express": "4.19.2",
@@ -39,4 +37,3 @@
     "pm2": "5.3.1"
   }
 }
-
