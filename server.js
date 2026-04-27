@@ -537,6 +537,22 @@ class StealthClient {
   }
 
   async sendMessage(channelId, content, attachments = []) {
+    const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
+
+    // --- SIMPLE JSON PATH (no attachments) ---
+    // Discord accepts plain JSON for text-only messages. Much more reliable.
+    if (!attachments || attachments.length === 0) {
+      const body = { content, flags: 0, mobile_network_type: 'unknown' };
+      const headers = this.api._headers({
+        'Content-Type': 'application/json',
+        'X-Discord-Locale': 'en-US'
+      });
+      const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
+      console.log(`[SEND] status=${res.status} channel=${channelId} body=${JSON.stringify(res.data).slice(0, 200)}`);
+      return res.status >= 200 && res.status < 300;
+    }
+
+    // --- MULTIPATH PATH (with attachments) ---
     const form = new (require('form-data'))();
     const payload = { content, flags: 0, mobile_network_type: 'unknown' };
     form.append('payload_json', JSON.stringify(payload));
@@ -544,43 +560,40 @@ class StealthClient {
       form.append(`files[${i}]`, att.buffer, { filename: att.name });
     });
 
-    const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
     const headers = {
       ...this.api._headers({ 'X-Discord-Locale': 'en-US' }),
     };
     delete headers['Content-Type'];
 
-    return new Promise((resolve, reject) => {
-      const TIMEOUT_MS = 35000;
-      const timer = setTimeout(() => {
-        reject(new Error('sendMessage timeout'));
-      }, TIMEOUT_MS);
-
+    // Collect the form-data stream into a buffer
+    const body = await new Promise((resolve, reject) => {
       const chunks = [];
-      form.on('data', chunk => chunks.push(chunk));
-      form.on('error', (err) => {
-        clearTimeout(timer);
+      const onData = (chunk) => chunks.push(chunk);
+      const onError = (err) => {
+        cleanup();
         reject(err);
-      });
-      form.on('end', async () => {
-        try {
-          const body = Buffer.concat(chunks);
-          const tmpFile = path.join('/tmp', `multipart_${Date.now()}.bin`);
-          fs.writeFileSync(tmpFile, body);
-          const contentType = form.getHeaders()['content-type'];
-          headers['Content-Type'] = contentType;
-
-          const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
-          try { fs.unlinkSync(tmpFile); } catch(e) {}
-          clearTimeout(timer);
-          resolve(res.status === 200);
-        } catch (err) {
-          clearTimeout(timer);
-          reject(err);
-        }
-      });
+      };
+      const onEnd = () => {
+        cleanup();
+        resolve(Buffer.concat(chunks));
+      };
+      const cleanup = () => {
+        form.removeListener('data', onData);
+        form.removeListener('error', onError);
+        form.removeListener('end', onEnd);
+      };
+      form.on('data', onData);
+      form.on('error', onError);
+      form.on('end', onEnd);
       form.resume();
     });
+
+    const contentType = form.getHeaders()['content-type'];
+    headers['Content-Type'] = contentType;
+
+    const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
+    console.log(`[SEND] status=${res.status} channel=${channelId} attachments=${attachments.length}`);
+    return res.status >= 200 && res.status < 300;
   }
 
   async joinGuild(inviteCode) {
