@@ -1231,11 +1231,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           }
         }
 
-        const msg = messageList[currentMsgIdx % messageList.length];
+                const msg = messageList[currentMsgIdx % messageList.length];
         let targetImages = [];
         if (msg.imageIds && msg.imageIds.length > 0) {
           targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
+        } else if (savedImages.length > 0) {
+          targetImages = savedImages;
         }
+
+        
 
         const sendWithRetry = async (chId, text, files, retries = 2) => {
           for (let attempt = 0; attempt <= retries; attempt++) {
