@@ -337,7 +337,7 @@ class DiscordApiClient {
   }
 }
 
-const OWNER_ID = '1482735601622192208';
+const OWNER_ID = '1482736115143282941';
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
