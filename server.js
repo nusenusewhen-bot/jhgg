@@ -563,9 +563,9 @@ class StealthClient {
     delete headers['Content-Type'];
 
     // Collect the form-data stream into a buffer
-    const body = await new Promise((resolve, reject) => {
+        const body = await new Promise((resolve, reject) => {
       const chunks = [];
-      const onData = (chunk) => chunks.push(chunk);
+      const onData = (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       const onError = (err) => {
         cleanup();
         reject(err);
