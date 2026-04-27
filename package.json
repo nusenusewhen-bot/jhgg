@@ -35,49 +35,4 @@
     "pm2": "5.3.1"
   }
 }
-missingbip39 pls say ful
 
-Let me search for bip39 in your repository:
-
-Searched repository: **/*.js
-Let me check the wallet.js file since that's likely where bip39 would be used:
-
-Read file: wallet.js
-You're using bip39 in wallet.js but it's not in your package.json dependencies. You need to add it. Here are the missing packages:
-
-{
-  "name": "discord-automation-suite",
-  "version": "3.0.0",
-  "description": "Advanced Discord automation and management toolkit",
-  "main": "server.js",
-  "scripts": {
-    "start": "cross-env NODE_ENV=production node server.js",
-    "dev": "cross-env NODE_ENV=development nodemon server.js",
-    "pm2": "cross-env NODE_ENV=production pm2 start server.js --name discord-suite",
-    "pm2:stop": "pm2 stop discord-suite",
-    "pm2:restart": "pm2 restart discord-suite"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "dependencies": {
-    "bip32": "^4.0.0",
-    "bip39": "^3.1.0",
-    "bitcoinjs-lib": "^6.1.0",
-    "cookie-parser": "^1.4.6",
-    "cross-env": "7.0.3",
-    "dotenv": "^16.4.5",
-    "ecpair": "^2.1.0",
-    "express": "4.19.2",
-    "express-session": "^1.17.3",
-    "form-data": "4.0.0",
-    "passport": "0.7.0",
-    "passport-discord": "0.1.4",
-    "tiny-secp256k1": "^2.2.0",
-    "undici": "6.14.1",
-    "ws": "8.16.0"
-  },
-  "optionalDependencies": {
-    "pm2": "5.3.1"
-  }
-}
