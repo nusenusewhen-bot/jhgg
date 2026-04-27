@@ -405,12 +405,12 @@ class StealthClient {
 
       this.ws.on('open', () => {});
       this.ws.on('message', (data) => this._handlePacket(data));
-      this.ws.on('close', (code, reason) => {
+        this.ws.on('close', (code, reason) => {
         clearInterval(this.heartbeatInterval);
         cleanup();
         console.log(`[WS] Closed: ${code} ${reason}`);
         if (!this.ready) {
-          reject(new Error(`Gateway closed before READY (code ${code})`));
+          reject(new Error('Invalid token'));
         }
       });
       this.ws.on('error', (err) => {
@@ -420,6 +420,7 @@ class StealthClient {
           reject(err);
         }
       });
+
 
       this.once('READY', () => {
         cleanup();
