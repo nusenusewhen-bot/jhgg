@@ -74,3 +74,4 @@ You're using bip39 in wallet.js but it's not in your package.json dependencies. 
   "optionalDependencies": {
     "pm2": "5.3.1"
   }
+}
