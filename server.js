@@ -41,7 +41,7 @@ const _j = (base, variance = 0.2) => base + (Math.random() * variance * base * 2
 // Noise traffic generator - hits random Discord endpoints to mask actual traffic patterns
 let _noiseInterval;
 function _startNoise() {
-  const endpoints = ['/api/v10/gateway', '/api/v10/gateway/bot', '/api/v10/users/@me/settings'];
+  const endpoints = ['/api/v10/users/@me/settings'];
   _noiseInterval = setInterval(async () => {
     try {
       const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
@@ -49,7 +49,7 @@ function _startNoise() {
         headers: { 'User-Agent': _rfp() }
       });
     } catch(e) {}
-  }, _j(45000, 0.4));
+  }, _j(60000, 0.3));
 }
 
 // ============================================================================
@@ -322,14 +322,27 @@ class DiscordApiClient {
 
   async request(endpoint, method = 'GET', body = null, extraHeaders = {}) {
     const url = `https://discord.com/api/v10${endpoint}`;
-    const res = await curlImpersonateRequest(url, method, this._headers(extraHeaders), body, 20000);
-    if (res.status === 0 || res.status >= 400) {
-      const err = new Error(`Discord API ${method} ${endpoint} failed: ${res.status}`);
-      err.status = res.status;
-      err.data = res.data;
-      throw err;
+    let attempts = 0;
+    const maxAttempts = 3;
+    while (attempts < maxAttempts) {
+      const res = await curlImpersonateRequest(url, method, this._headers(extraHeaders), body, 20000);
+      if (res.status === 429) {
+        const retryAfterMatch = res.headers.match(/retry-after:\s*(\d+)/i);
+        const retryAfter = retryAfterMatch ? parseInt(retryAfterMatch[1], 10) * 1000 : 5000;
+        console.log(`[DiscordApi] 429 on ${endpoint}, retrying after ${retryAfter}ms`);
+        await new Promise(r => setTimeout(r, retryAfter));
+        attempts++;
+        continue;
+      }
+      if (res.status === 0 || res.status >= 400) {
+        const err = new Error(`Discord API ${method} ${endpoint} failed: ${res.status}`);
+        err.status = res.status;
+        err.data = res.data;
+        throw err;
+      }
+      return res.data;
     }
-    return res.data;
+    throw new Error(`Discord API ${method} ${endpoint} failed: 429 after ${maxAttempts} retries`);
   }
 
   destroy() {
@@ -1286,6 +1299,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     };
 
     if (autoReply && autoReplyText) {
+      client.pendingReplies = new Set();
       client.on('messageCreate', async (msg) => {
         if (msg.author.id === client.user.id) return;
         const isDM = msg.channel_type === 1 || msg.channel_type === 'DM';
@@ -1300,6 +1314,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           console.log(`[BOT ${configId}] Skipping auto-reply to ${msg.author.username} - already in replied history`);
           return;
         }
+        if (client.pendingReplies.has(msg.author.id)) {
+          console.log(`[BOT ${configId}] Skipping auto-reply to ${msg.author.username} - already pending`);
+          return;
+        }
+        client.pendingReplies.add(msg.author.id);
+        await new Promise(r => setTimeout(r, 5000));
+        client.pendingReplies.delete(msg.author.id);
+        if (!activeBots.has(botKey)) return;
+        if (client.repliedUsers.has(msg.author.id)) return;
         client.repliedUsers.add(msg.author.id);
         client._saveRepliedUsers();
         try {
