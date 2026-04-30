@@ -40,13 +40,14 @@ const _j = (base, variance = 0.2) => base + (Math.random() * variance * base * 2
 
 // Noise traffic generator - hits random Discord endpoints to mask actual traffic patterns
 let _noiseInterval;
+const _noiseUA = _rfp();
 function _startNoise() {
   const endpoints = ['/api/v10/users/@me/settings'];
   _noiseInterval = setInterval(async () => {
     try {
       const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
       await _axiosInstance.get(ep, {
-        headers: { 'User-Agent': _rfp() }
+        headers: { 'User-Agent': _noiseUA }
       });
     } catch(e) {}
   }, _j(60000, 0.3));
@@ -371,6 +372,10 @@ class StealthClient {
     this.repliedUsers = this._loadRepliedUsers();
     this.api = new DiscordApiClient(token);
     this.encryptionKey = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.reconnecting = false;
+    this.resumeGatewayUrl = null;
   }
 
   _loadRepliedUsers() {
@@ -393,8 +398,7 @@ class StealthClient {
     if (!gateway || !gateway.url) {
       throw new Error('Failed to fetch gateway URL: invalid or empty response from Discord API');
     }
-    // FIX: Removed compress=zlib-stream to avoid per-frame decompression crashes.
-    // Discord sends plain JSON text frames without this, which the ws library handles natively.
+    this.resumeGatewayUrl = gateway.url;
     const wsUrl = `${gateway.url}?v=10&encoding=json`;
     this.ws = new (require('ws'))(wsUrl, {
       headers: {
@@ -416,14 +420,24 @@ class StealthClient {
         clearTimeout(timeoutTimer);
       };
 
-      this.ws.on('open', () => {});
+      this.ws.on('open', () => {
+        this.reconnecting = false;
+        if (this.reconnectAttempts > 0) {
+          console.log('[WS] Socket reopened, resuming session...');
+        }
+        if (this.sessionId && this.seq !== null) {
+          this._resume();
+        }
+      });
       this.ws.on('message', (data) => this._handlePacket(data));
-        this.ws.on('close', (code, reason) => {
+      this.ws.on('close', (code, reason) => {
         clearInterval(this.heartbeatInterval);
         cleanup();
-        console.log(`[WS] Closed: ${code} ${reason}`);
+        console.log(`[WS] Closed: ${code} ${reason ? reason.toString() : ''}`);
         if (!this.ready) {
-          reject(new Error('Invalid token'));
+          reject(new Error(`Gateway closed before ready: ${code}`));
+        } else {
+          this._scheduleReconnect();
         }
       });
       this.ws.on('error', (err) => {
@@ -434,13 +448,43 @@ class StealthClient {
         }
       });
 
-
       this.once('READY', () => {
         cleanup();
         this.ready = true;
+        this.reconnectAttempts = 0;
         resolve();
       });
     });
+  }
+
+  _scheduleReconnect() {
+    if (this.reconnecting) return;
+    this.reconnecting = true;
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error('[WS] Max reconnect attempts reached. Giving up.');
+      this.destroy();
+      return;
+    }
+    const delay = Math.min(3000 * Math.pow(2, this.reconnectAttempts), 60000) + Math.random() * 2000;
+    this.reconnectAttempts++;
+    console.log(`[WS] Reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    setTimeout(() => {
+      this.connect().catch(err => {
+        console.error('[WS] Reconnect failed:', err.message);
+      });
+    }, delay);
+  }
+
+  _resume() {
+    console.log('[WS] Sending resume for session', this.sessionId);
+    this.ws.send(JSON.stringify({
+      op: 6,
+      d: {
+        token: this.token,
+        session_id: this.sessionId,
+        seq: this.seq
+      }
+    }));
   }
 
   _handlePacket(rawData) {
@@ -465,7 +509,9 @@ class StealthClient {
     switch(pkt.op) {
       case 10:
         this._startHeartbeat(pkt.d.heartbeat_interval);
-        this._identify();
+        if (!this.sessionId) {
+          setTimeout(() => this._identify(), Math.floor(Math.random() * 500 + 200));
+        }
         break;
       case 1:
         this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
@@ -479,6 +525,10 @@ class StealthClient {
             this.encryptionKey = sessionHash.slice(0, 32);
           }
           this.emit('READY', pkt.d);
+        } else if (pkt.t === 'RESUMED') {
+          console.log('[WS] Session resumed successfully');
+          this.reconnecting = false;
+          this.reconnectAttempts = 0;
         } else if (pkt.t === 'MESSAGE_CREATE') {
           this.emit('messageCreate', pkt.d);
         }
@@ -488,18 +538,24 @@ class StealthClient {
       case 7:
         console.log('[WS] Server requested reconnect');
         this.ws.close();
+        this._scheduleReconnect();
         break;
       case 9:
         console.log('[WS] Invalid session, re-identifying');
-        setTimeout(() => this._identify(), Math.random() * 5000);
+        this.sessionId = null;
+        this.seq = null;
+        setTimeout(() => this._identify(), Math.random() * 3000 + 1000);
         break;
     }
   }
 
   _startHeartbeat(interval) {
+    const jittered = interval * (0.92 + Math.random() * 0.16);
     this.heartbeatInterval = setInterval(() => {
-      this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
-    }, interval * (0.8 + Math.random() * 0.4));
+      if (this.ws && this.ws.readyState === 1) {
+        this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
+      }
+    }, jittered);
   }
 
   _identify() {
@@ -550,61 +606,65 @@ class StealthClient {
   async sendMessage(channelId, content, attachments = []) {
     const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
 
+    // --- HUMAN-LIKE: Typing indicator before sending ---
+    try {
+      await this.api.request(`/channels/${channelId}/typing`, 'POST');
+    } catch(e) {
+      // If typing fails (e.g. no perms), still try to send
+    }
+
+    // Simulate typing delay based on message length (~40-80wpm)
+    const charDelay = 60 + Math.random() * 80; // ms per char
+    const typingDelay = Math.min(6000, Math.max(800, content.length * charDelay));
+    await new Promise(r => setTimeout(r, typingDelay));
+
     // --- SIMPLE JSON PATH (no attachments) ---
-    // Discord accepts plain JSON for text-only messages. Much more reliable.
     if (!attachments || attachments.length === 0) {
       const body = { content, flags: 0, mobile_network_type: 'unknown' };
       const headers = this.api._headers({
         'Content-Type': 'application/json',
         'X-Discord-Locale': 'en-US'
       });
-      const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
-      console.log(`[SEND] status=${res.status} channel=${channelId} body=${JSON.stringify(res.data).slice(0, 200)}`);
-      return res.status >= 200 && res.status < 300;
+      try {
+        const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
+        console.log(`[SEND] status=${res.status} channel=${channelId}`);
+        if (res.status === 401) {
+          console.error(`[SEND] 401 Unauthorized - token may be invalid or flagged by Discord`);
+        }
+        return res.status >= 200 && res.status < 300;
+      } catch (err) {
+        console.error(`[SEND] Curl error for ${channelId}:`, err.message);
+        return false;
+      }
     }
 
-    // --- MULTIPATH PATH (with attachments) ---
-    const form = new (require('form-data'))();
+    // --- MULTIPART PATH (with attachments) ---
+    // Use axios for multipart as it handles form-data more reliably than curl-impersonate
+    const FormData = require('form-data');
+    const form = new FormData();
     const payload = { content, flags: 0, mobile_network_type: 'unknown' };
     form.append('payload_json', JSON.stringify(payload));
     attachments.forEach((att, i) => {
       form.append(`files[${i}]`, att.buffer, { filename: att.name });
     });
 
-    const headers = {
-      ...this.api._headers({ 'X-Discord-Locale': 'en-US' }),
-    };
-    delete headers['Content-Type'];
-
-    // Collect the form-data stream into a buffer
-        const body = await new Promise((resolve, reject) => {
-      const chunks = [];
-      const onData = (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      const onError = (err) => {
-        cleanup();
-        reject(err);
-      };
-      const onEnd = () => {
-        cleanup();
-        resolve(Buffer.concat(chunks));
-      };
-      const cleanup = () => {
-        form.removeListener('data', onData);
-        form.removeListener('error', onError);
-        form.removeListener('end', onEnd);
-      };
-      form.on('data', onData);
-      form.on('error', onError);
-      form.on('end', onEnd);
-      form.resume();
-    });
-
-    const contentType = form.getHeaders()['content-type'];
-    headers['Content-Type'] = contentType;
-
-    const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
-    console.log(`[SEND] status=${res.status} channel=${channelId} attachments=${attachments.length}`);
-    return res.status >= 200 && res.status < 300;
+    const headers = this.api._headers({ 'X-Discord-Locale': 'en-US' });
+    try {
+      const res = await axios.post(url, form, {
+        headers: { ...headers, ...form.getHeaders() },
+        timeout: 30000,
+      });
+      console.log(`[SEND] status=${res.status} channel=${channelId} attachments=${attachments.length}`);
+      return res.status >= 200 && res.status < 300;
+    } catch (err) {
+      const status = err.response?.status || 0;
+      const data = err.response?.data;
+      console.error(`[SEND] status=${status} channel=${channelId} attachments=${attachments.length} error=${JSON.stringify(data).slice(0,200)}`);
+      if (status === 401) {
+        console.error(`[SEND] 401 Unauthorized - token may be invalid or flagged by Discord`);
+      }
+      return false;
+    }
   }
 
   async joinGuild(inviteCode) {
@@ -1244,7 +1304,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           }
         }
 
-                const msg = messageList[currentMsgIdx % messageList.length];
+        const msg = messageList[currentMsgIdx % messageList.length];
         let targetImages = [];
         if (msg.imageIds && msg.imageIds.length > 0) {
           targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
@@ -1252,17 +1312,23 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           targetImages = savedImages;
         }
 
-        
-
-        const sendWithRetry = async (chId, text, files, retries = 2) => {
-          for (let attempt = 0; attempt <= retries; attempt++) {
+        const sendWithRetry = async (chId, text, files) => {
+          const maxAttempts = 2; // 1 try + 1 retry as requested
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
               const ok = await client.sendMessage(chId, text, files);
-              if (ok) { console.log(`[BOT ${configId}] Sent to ${chId}: "${text.slice(0, 60)}"`); return true; }
-              throw new Error(`sendMessage returned false (attempt ${attempt + 1})`);
+              if (ok) {
+                console.log(`[BOT ${configId}] Sent to ${chId}: "${text.slice(0, 60)}"`);
+                return true;
+              }
+              console.warn(`[BOT ${configId}] sendMessage returned false for ${chId} (attempt ${attempt}/${maxAttempts})`);
             } catch(e) {
-              console.error(`[BOT ${configId}] Send error to ${chId} (attempt ${attempt + 1}/${retries + 1}):`, e.message);
-              if (attempt < retries) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+              console.error(`[BOT ${configId}] Send exception to ${chId} (attempt ${attempt}/${maxAttempts}):`, e.message);
+            }
+            if (attempt < maxAttempts) {
+              // Human-like backoff: wait 2-5s before retry
+              const backoff = 2000 + Math.random() * 3000;
+              await new Promise(r => setTimeout(r, backoff));
             }
           }
           return false;
@@ -1293,7 +1359,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         }
 
         currentMsgIdx++;
-        await new Promise(r => setTimeout(r, _j(delayMs, 0.15)));
+        // More human-like delay with natural variance (+0-2s)
+        const humanDelay = delayMs * (0.85 + Math.random() * 0.3) + Math.random() * 2000;
+        await new Promise(r => setTimeout(r, humanDelay));
       }
       console.log(`[BOT ${configId}] Message loop exited.`);
     };
