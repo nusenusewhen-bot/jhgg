@@ -384,22 +384,30 @@ class StealthClient {
   }
 
   async connect() {
-    const gateway = await this.api.request('/gateway', 'GET');
+    let gateway;
+    try {
+      gateway = await this.api.request('/gateway', 'GET');
+    } catch(e) {
+      gateway = { url: 'wss://gateway.discord.gg' };
+    }
     if (!gateway || !gateway.url) {
-      throw new Error('Failed to fetch gateway URL: invalid or empty response from Discord API');
+      gateway = { url: 'wss://gateway.discord.gg' };
     }
     this.resumeGatewayUrl = gateway.url;
-    const wsUrl = `${gateway.url}?v=10&encoding=json&compress=zlib-stream`;
+    
+    // FIX: Removed compress=zlib-stream, added X-Super-Properties to WS headers
+    const wsUrl = `${gateway.url}?v=10&encoding=json`;
     this.ws = new (require('ws'))(wsUrl, {
       headers: {
         'User-Agent': this.api.fp,
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate',
+        'X-Super-Properties': this.api.superProps,
       }
     });
 
     return new Promise((resolve, reject) => {
-      const CONNECT_TIMEOUT = 30000;
+      const CONNECT_TIMEOUT = 60000; // FIX: Increased from 30000 to 60000
       let timeoutTimer = setTimeout(() => {
         this.ws.terminate();
         reject(new Error('Gateway connection timed out'));
@@ -413,8 +421,11 @@ class StealthClient {
         this.reconnecting = false;
         if (this.reconnectAttempts > 0) {
         }
-        if (this.sessionId && this.seq !== null) {
+        // FIX: Force fresh identify on every new connection
+        if (this.sessionId && this.seq !== null && this.reconnectAttempts === 0) {
           this._resume();
+        } else {
+          setTimeout(() => this._identify(), Math.floor(Math.random() * 500 + 200));
         }
       });
       this.ws.on('message', (data) => this._handlePacket(data));
@@ -550,7 +561,8 @@ class StealthClient {
       op: 2,
       d: {
         token: this.token,
-        capabilities: 16381,
+        capabilities: 30717, // FIX: Changed from 16381 to 30717 (desktop stable)
+        intents: 3276799,    // FIX: Added required intents for v10 gateway
         properties: {
           os: p.os,
           browser: p.browser,
@@ -1309,7 +1321,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       client.on('messageCreate', async (msg) => {
         if (msg.author.id === client.user.id) return;
 
-        // Only respond to DMs (no guild_id), ignore guild messages entirely
         const isDM = msg.guild_id === undefined || msg.guild_id === null;
         if (!isDM) return;
 
@@ -1320,7 +1331,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           if (!trialActive && !hasPurchase) return;
         }
 
-        // 25-second cooldown per sender
         const now = Date.now();
         const lastReply = client._dmCooldowns.get(msg.author.id) || 0;
         if (now - lastReply < 25000) return;
