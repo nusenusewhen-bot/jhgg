@@ -366,6 +366,8 @@ class StealthClient {
     this._lastActivity = Date.now();
     this._burstState = 0;
     this._dmCooldowns = new Map();
+    this._channelPermissions = new Map();
+    this._channelRateLimits = new Map();
   }
 
   _loadRepliedUsers() {
@@ -594,7 +596,36 @@ class StealthClient {
     return this.api.request(endpoint, method, body);
   }
 
+  async checkChannelPermission(channelId) {
+    if (this._channelPermissions.has(channelId)) {
+      return this._channelPermissions.get(channelId);
+    }
+    try {
+      await this.api.request(`/channels/${channelId}`, 'GET');
+      this._channelPermissions.set(channelId, true);
+      return true;
+    } catch (err) {
+      if (err.status === 403 || err.status === 404) {
+        this._channelPermissions.set(channelId, false);
+        return false;
+      }
+      return false;
+    }
+  }
+
   async sendMessage(channelId, content, attachments = []) {
+    // Check cached permission
+    if (this._channelPermissions.has(channelId) && !this._channelPermissions.get(channelId)) {
+      return false;
+    }
+
+    // Wait for channel rate limit to clear
+    const now = Date.now();
+    const freeAt = this._channelRateLimits.get(channelId) || 0;
+    if (now < freeAt) {
+      await new Promise(r => setTimeout(r, freeAt - now));
+    }
+
     const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
 
     const shouldType = Math.random() < 0.6;
@@ -618,6 +649,26 @@ class StealthClient {
       });
       try {
         const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
+
+        if (res.status === 403 || res.status === 404) {
+          this._channelPermissions.set(channelId, false);
+          return false;
+        }
+
+        if (res.status === 429) {
+          const retryAfterMatch = res.headers.match(/retry-after:\s*(\d+(?:\.\d+)?)/i);
+          const retryAfter = retryAfterMatch ? parseFloat(retryAfterMatch[1]) * 1000 : 5000;
+          this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
+          return false;
+        }
+
+        const remainingMatch = res.headers.match(/x-ratelimit-remaining:\s*(\d+)/i);
+        const resetAfterMatch = res.headers.match(/x-ratelimit-reset-after:\s*(\d+(?:\.\d+)?)/i);
+        if (remainingMatch && parseInt(remainingMatch[1], 10) <= 1 && resetAfterMatch) {
+          const resetAfter = parseFloat(resetAfterMatch[1]) * 1000;
+          this._channelRateLimits.set(channelId, Date.now() + resetAfter + 500);
+        }
+
         return res.status >= 200 && res.status < 300;
       } catch (err) {
         return false;
@@ -638,8 +689,35 @@ class StealthClient {
         headers: { ...headers, ...form.getHeaders() },
         timeout: 30000,
       });
+
+      if (res.status === 403 || res.status === 404) {
+        this._channelPermissions.set(channelId, false);
+        return false;
+      }
+
+      if (res.status === 429) {
+        const retryAfter = (res.headers['retry-after'] || 5) * 1000;
+        this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
+        return false;
+      }
+
+      const remaining = res.headers['x-ratelimit-remaining'];
+      const resetAfter = res.headers['x-ratelimit-reset-after'];
+      if (remaining !== undefined && parseInt(remaining, 10) <= 1 && resetAfter) {
+        this._channelRateLimits.set(channelId, Date.now() + parseFloat(resetAfter) * 1000 + 500);
+      }
+
       return res.status >= 200 && res.status < 300;
     } catch (err) {
+      if (err.response) {
+        if (err.response.status === 403 || err.response.status === 404) {
+          this._channelPermissions.set(channelId, false);
+        }
+        if (err.response.status === 429) {
+          const retryAfter = (err.response.headers['retry-after'] || 5) * 1000;
+          this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
+        }
+      }
       return false;
     }
   }
@@ -1268,6 +1346,13 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               if (ok) {
                 return true;
               }
+              // If rate limited, wait for channel to be free before retry
+              const freeAt = client._channelRateLimits.get(chId) || 0;
+              const now = Date.now();
+              if (now < freeAt && attempt < maxAttempts) {
+                await new Promise(r => setTimeout(r, freeAt - now + 500));
+                continue;
+              }
             } catch(e) {}
             if (attempt < maxAttempts) {
               const backoff = 2000 + Math.random() * 3000;
@@ -1278,7 +1363,13 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         };
 
         if (sendAllAtOnce) {
-          for (const chId of channelList) {
+          for (let i = 0; i < channelList.length; i++) {
+            const chId = channelList[i];
+
+            // Skip channels where bot has no permission to send
+            const canSend = await client.checkChannelPermission(chId);
+            if (!canSend) continue;
+
             const files = targetImages.map(img => {
               if (img.url.startsWith('/uploads/')) {
                 const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
@@ -1287,10 +1378,22 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               return null;
             }).filter(Boolean);
             await sendWithRetry(chId, msg.text, files);
+
+            // 1.5 second delay between channels (not after last channel)
+            if (i < channelList.length - 1) {
+              await new Promise(r => setTimeout(r, 1500));
+            }
           }
         } else {
           const chId = channelList[currentChIdx % channelList.length];
           currentChIdx++;
+
+          // Skip channels where bot has no permission to send
+          const canSend = await client.checkChannelPermission(chId);
+          if (!canSend) {
+            continue;
+          }
+
           const files = targetImages.map(img => {
             if (img.url.startsWith('/uploads/')) {
               const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
