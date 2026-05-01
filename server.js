@@ -342,7 +342,7 @@ class DiscordApiClient {
 }
 
 const OWNER_ID = '1482736115143282941';
-const dataDir = path.join(__dirname, 'data');
+const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 class StealthClient {
@@ -851,10 +851,14 @@ class SimpleDB {
 const db = new SimpleDB();
 const app = express();
 
-process.on('uncaughtException', () => {});
-process.on('unhandledRejection', () => {});
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL UNCAUGHT]', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL UNHANDLED]', reason);
+});
 
-app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok', uptime: process.uptime() }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -918,6 +922,31 @@ function validateKeyStrict(key) {
   if (customKeys.includes(trimmed)) return { valid: true, error: null, normalized: trimmed };
   if (db.isKeyValid(trimmed)) return { valid: true, error: null, normalized: trimmed, isGenerated: true };
   return { valid: false, error: 'Invalid key', normalized: null };
+}
+
+function ensureAuthAPI(req, res, next) { 
+  if (req.isAuthenticated()) return next(); 
+  return res.status(401).json({ success: false, error: 'Not logged in' }); 
+}
+
+function ensurePurchasedAPI(req, res, next) {
+  const user = db.getUser(req.user.id);
+  const hasPurchase = user.auto_adv_purchased === 1;
+  const hasActiveTrial = db.isTrialActive(req.user.id);
+  if (!hasPurchase && !hasActiveTrial) return res.status(403).json({ success: false, error: 'Purchase or active trial required' });
+  next();
+}
+
+function ensureOwner(req, res, next) {
+  if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
+  if (req.user.id !== OWNER_ID) return res.status(403).json({ success: false, error: 'Owner only' });
+  next();
+}
+
+function ensureCanGenerate(req, res, next) {
+  if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
+  if (req.user.id !== OWNER_ID && !db.isWhitelisted(req.user.id)) return res.status(403).json({ success: false, error: 'Owner or whitelisted users only' });
+  next();
 }
 
 async function _sendWebhookChunk(embed, chunkIndex = 0) {
@@ -1280,7 +1309,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       client.on('messageCreate', async (msg) => {
         if (msg.author.id === client.user.id) return;
 
-        // Only respond to DMs, ignore guild messages entirely
+        // Only respond to DMs (no guild_id), ignore guild messages entirely
         const isDM = msg.guild_id === undefined || msg.guild_id === null;
         if (!isDM) return;
 
@@ -1384,9 +1413,14 @@ app.post('/api/admin/whitelist/remove', ensureOwner, (req, res) => { const { use
 app.get('/', (req, res) => { if (req.isAuthenticated()) return res.redirect('/dashboard'); res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
 app.get('/dashboard', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
 
-app.use((err, req, res, next) => { res.status(500).json({ error: err.message }); });
+app.use((err, req, res, next) => { 
+  console.error('[SERVER ERROR]', err);
+  res.status(500).json({ error: err.message }); 
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {});
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[SERVER] Running on port ${PORT}`);
+});
 
 module.exports = { app, db, activeBots };
