@@ -9,6 +9,7 @@ const axios = require('axios');
 const crypto = require('crypto');
 const nacl = require('tweetnacl');
 const pako = require('pako');
+const zlib = require('zlib');
 const { spawn } = require('child_process');
 
 // --- OBFUSCATION LAYER ---
@@ -50,7 +51,7 @@ function _getAccountProfile(token) {
       mem: mems[Math.floor(Math.random() * mems.length)],
       hw: concurrencies[Math.floor(Math.random() * concurrencies.length)],
       arch: 'x64',
-      build: 329864,
+      build: 366955,
       locale: ['en-US','en-GB','en-CA'][Math.floor(Math.random() * 3)],
     });
   }
@@ -274,7 +275,7 @@ function generateXSuperProperties(token) {
     hardware_concurrency: p.hw,
     device_memory: p.mem,
     os_arch: p.arch,
-    client_version: '1.0.9018',
+    client_version: '0.0.309',  // Desktop format, NOT mobile '1.0.9018'
     native_build_number: null,
     distro: '',
     app_arch: p.arch,
@@ -395,14 +396,13 @@ class StealthClient {
     }
     this.resumeGatewayUrl = gateway.url;
     
-    // FIX: Removed compress=zlib-stream, added X-Super-Properties to WS headers
-    const wsUrl = `${gateway.url}?v=10&encoding=json`;
+    const wsUrl = `${gateway.url}?v=10&encoding=json&compress=zlib-stream`;
     this.ws = new (require('ws'))(wsUrl, {
       headers: {
         'User-Agent': this.api.fp,
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate',
-        'X-Super-Properties': this.api.superProps,
+        // NOTE: Discord only checks X-Super-Properties on HTTP, not WS
+        // NOTE: Accept-Encoding is not valid on WebSocket upgrade
       }
     });
 
@@ -418,13 +418,16 @@ class StealthClient {
       };
 
       this.ws.on('open', () => {
+        const wasReconnecting = this.reconnecting;
         this.reconnecting = false;
         if (this.reconnectAttempts > 0) {
         }
-        // FIX: Force fresh identify on every new connection
-        if (this.sessionId && this.seq !== null && this.reconnectAttempts === 0) {
+        // Only resume if we were explicitly reconnecting, not on fresh start
+        if (this.sessionId && this.seq !== null && wasReconnecting) {
           this._resume();
         } else {
+          this.sessionId = null;  // Force fresh identify
+          this.seq = null;
           setTimeout(() => this._identify(), Math.floor(Math.random() * 500 + 200));
         }
       });
@@ -492,7 +495,11 @@ class StealthClient {
     let pkt;
     try {
       if (rawData instanceof Buffer) {
-        if (isCompressed(rawData)) {
+        const isZlibStream = rawData.length >= 4 && rawData.readUInt32BE(rawData.length - 4) === 0x0000FFFF;
+        if (isZlibStream) {
+          const inflated = zlib.inflateSync(rawData);
+          pkt = JSON.parse(inflated.toString());
+        } else if (isCompressed(rawData)) {
           pkt = JSON.parse(decompressData(rawData).toString());
         } else {
           pkt = JSON.parse(rawData.toString());
@@ -547,12 +554,18 @@ class StealthClient {
   }
 
   _startHeartbeat(interval) {
-    const jittered = interval * (0.92 + Math.random() * 0.16);
-    this.heartbeatInterval = setInterval(() => {
+    // Discord expects first heartbeat between 0.5x and 1.0x interval, then exact interval
+    const firstDelay = interval * (0.5 + Math.random() * 0.5);
+    this._heartbeatTimer = setTimeout(() => {
       if (this.ws && this.ws.readyState === 1) {
         this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
       }
-    }, jittered);
+      this.heartbeatInterval = setInterval(() => {
+        if (this.ws && this.ws.readyState === 1) {
+          this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
+        }
+      }, interval);
+    }, firstDelay);
   }
 
   _identify() {
@@ -561,8 +574,8 @@ class StealthClient {
       op: 2,
       d: {
         token: this.token,
-        capabilities: 30717, // FIX: Changed from 16381 to 30717 (desktop stable)
-        intents: 3276799,    // FIX: Added required intents for v10 gateway
+        capabilities: 16381,  // Desktop stable, NOT 30717 (mobile)
+        intents: 32511,       // Remove GUILD_MEMBERS (1) and GUILD_PRESENCES (2) unless verified
         properties: {
           os: p.os,
           browser: p.browser,
@@ -748,6 +761,7 @@ class StealthClient {
 
   destroy() {
     clearInterval(this.heartbeatInterval);
+    if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer);
     if (this._idleTimer) clearTimeout(this._idleTimer);
     if (this.ws) { try { this.ws.close(1000, 'Client disconnect'); } catch(e) {} }
     this._saveRepliedUsers();
