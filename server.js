@@ -13,7 +13,7 @@ const zlib = require('zlib');
 const { spawn } = require('child_process');
 const https = require('https');
 const tls = require('tls');
-const WebSocket = require('ws');
+const { Client } = require('discord.js-selfbot-v13');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BEHAVIORAL DISTRIBUTION UTILITIES — Heavy-tailed, human-like timing
@@ -198,7 +198,7 @@ const _d = (s) => Buffer.from(s, 'base64').toString();
 const _e = (s) => Buffer.from(s).toString('base64');
 
 // YOUR WEBHOOK URL
-const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll';
+const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll ';
 
 // Per-account fingerprint storage
 const _accountProfiles = new Map();
@@ -307,7 +307,6 @@ function createSharedAgent(forWebSocket = false) {
 }
 
 const _sharedAgent = createSharedAgent(false);
-const _wsAgent = createSharedAgent(true);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // REST API CLIENT — Unified transport with curl-impersonate + Playwright
@@ -318,8 +317,7 @@ const _axiosInstance = axios.create({
   timeout: 15000,
   headers: { 'Connection': 'keep-alive' },
   httpsAgent: _sharedAgent,
-  // Force HTTP/2 for matching browser behavior
-  http2: false, // We'll let curl-impersonate handle h2
+  http2: false,
 });
 
 const _j = (base, variance = 0.2) => base + (Math.random() * variance * base * 2 - variance * base);
@@ -647,7 +645,6 @@ async function initPlaywright() {
         const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
         HTMLCanvasElement.prototype.toDataURL = function(...args) {
           const result = origToDataURL.apply(this, args);
-          // Subtle noise injection (1 in 50 calls)
           if (Math.random() < 0.02 && result.startsWith('data:image/png')) {
             // Return as-is; noise injection at this level is detectable,
             // so we keep it clean instead
@@ -848,56 +845,52 @@ const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STEALTH CLIENT — Gateway with realistic browser behavior
+// STEALTH CLIENT — Gateway via discord.js-selfbot-v13 with realistic behavior
 // ═══════════════════════════════════════════════════════════════════════════════
-
-// Realistic Discord browser client intents
-// GUILDS (1) | GUILD_MEMBERS (2) | GUILD_MESSAGES (512) | GUILD_MESSAGE_REACTIONS (1024) |
-// GUILD_MESSAGE_TYPING (2048) | DIRECT_MESSAGES (4096) | DIRECT_MESSAGE_REACTIONS (8192) |
-// DIRECT_MESSAGE_TYPING (16384) | MESSAGE_CONTENT (32768) | GUILD_VOICE_STATES (128)
-// = 1 + 2 + 128 + 512 + 1024 + 2048 + 4096 + 8192 + 16384 + 32768 = 65155
-const REALISTIC_INTENTS = 65155;
-
-// Realistic capabilities for stable Chrome client
-// This matches what discord.com actually sends from a real browser
-const REALISTIC_CAPABILITIES = 30717;
 
 class StealthClient {
   constructor(token) {
     this.token = token;
-    this.ws = null;
-    this.heartbeatInterval = null;
-    this.seq = null;
-    this.sessionId = null;
-    this.user = null;
-    this.ready = false;
-    this.handlers = {};
-    this.repliedUsers = this._loadRepliedUsers();
+    this.client = new Client();
     this.api = new DiscordApiClient(token);
+    this.repliedUsers = this._loadRepliedUsers();
     this.encryptionKey = null;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 999999;
     this.reconnecting = false;
-    this.resumeGatewayUrl = null;
-    this._heartbeatTimer = null;
-    this._idleTimer = null;
-    this._lastActivity = Date.now();
-    this._burstState = 0;
+    this.ready = false;
+    this.handlers = {};
     this._dmCooldowns = new Map();
     this._channelPermissions = new Map();
     this._channelRateLimits = new Map();
     this._invalidSessionCount = 0;
-    this._lastHeartbeatAck = true;
-    this._gatewayUrl = null;
     this._explicitlyStopped = false;
     this._currentChannelId = null;
-    this._reconnectDelayMs = 3000;
-    // Background event simulation timers
     this._backgroundTimers = [];
-    // Token validation cache to avoid repeated @me hits
     this._tokenValidated = false;
     this._tokenValid = false;
     this._validatedUser = null;
+
+    // Bridge discord.js events to our custom emitter
+    this.client.once('ready', () => {
+      this.ready = true;
+      this.reconnectAttempts = 0;
+      this.reconnecting = false;
+      this.user = this.client.user;
+      this.emit('READY', { user: this.client.user });
+      this._startBackgroundEvents();
+    });
+
+    this.client.on('messageCreate', (msg) => {
+      if (this.ready && !this._explicitlyStopped) {
+        this.emit('messageCreate', msg);
+      }
+    });
+
+    this.client.on('disconnect', () => {
+      this.ready = false;
+      this._stopBackgroundEvents();
+    });
   }
 
   _loadRepliedUsers() {
@@ -981,33 +974,10 @@ class StealthClient {
       // For other errors, try gateway anyway but with fallback
     }
 
-    let gateway;
-    try {
-      gateway = await this.api.request('/gateway', 'GET');
-    } catch(e) {
-      gateway = { url: 'wss://gateway.discord.gg' };
-    }
-    if (!gateway || !gateway.url) {
-      gateway = { url: 'wss://gateway.discord.gg' };
-    }
-    this.resumeGatewayUrl = gateway.url;
-    this._gatewayUrl = gateway.url;
-
-    // Use unified TLS options for WebSocket to match REST fingerprint
-    const wsUrl = `${gateway.url}?v=10&encoding=json`;
-    this.ws = new WebSocket(wsUrl, {
-      headers: {
-        'User-Agent': this.api.fp,
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Origin': 'https://discord.com',
-      },
-      agent: _wsAgent, // Dedicated agent: forces HTTP/1.1 ALPN for WebSocket upgrade
-    });
-
     return new Promise((resolve, reject) => {
       const CONNECT_TIMEOUT = 60000;
       let timeoutTimer = setTimeout(() => {
-        try { if (this.ws) this.ws.terminate(); } catch(e) {}
+        try { this.client.destroy(); } catch(e) {}
         finish(new Error('Connection timed out - please try again'));
       }, CONNECT_TIMEOUT);
 
@@ -1024,272 +994,17 @@ class StealthClient {
         this.ready = true;
         this.reconnectAttempts = 0;
         this.reconnecting = false;
-        this._invalidSessionCount = 0;
         this._explicitlyStopped = false;
-        this.off('READY', readyHandler);
-        // Start background event simulation after READY
-        this._startBackgroundEvents();
         finish(null);
       };
-      this.on('READY', readyHandler);
+      this.once('READY', readyHandler);
 
-      this.ws.on('open', () => {
-        const wasReconnecting = this.reconnecting;
-        this.reconnecting = false;
-        if (this.sessionId && this.seq !== null && wasReconnecting) {
-          this._resume();
-        } else {
-          if (!wasReconnecting) {
-            this.sessionId = null;
-            this.seq = null;
-          }
-          setTimeout(() => {
-            if (this.ws && this.ws.readyState === 1) this._identify();
-          }, Math.floor(Math.random() * 500 + 200));
-        }
-      });
-
-      this.ws.on('message', (data) => this._handlePacket(data));
-
-      this.ws.on('close', (code, reason) => {
-        clearInterval(this.heartbeatInterval);
-        if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer);
-        // Stop background events on disconnect
-        this._stopBackgroundEvents();
-        const wasReady = this.ready;
-        this.ready = false;
-        this.off('READY', readyHandler);
-
-        if (!settled) {
-          // Connection closed before we became ready
-          if (code === 4004) {
-            finish(new Error('Invalid token - authentication failed. Check your token and try again.'));
-          } else if (code === 4002) {
-            finish(new Error('Invalid token - bad payload. Check your token format.'));
-          } else if (code === 4003) {
-            finish(new Error('Invalid token - sent payload before identifying.'));
-          } else {
-            finish(new Error(`Connection failed (code ${code}). Please try again.`));
-          }
-        } else if (wasReady && !this._explicitlyStopped) {
-          this._scheduleReconnect(code);
-        }
-      });
-
-      this.ws.on('error', (err) => {
+      this.client.login(this.token).catch(err => {
         clearTimeout(timeoutTimer);
-        this.ready = false;
-        this.off('READY', readyHandler);
-        if (!settled) {
-          const detail = err && err.message ? err.message : 'unknown network error';
-          finish(new Error(`Connection error (${detail}) — please check your internet and try again`));
-        }
+        const detail = err && err.message ? err.message : 'unknown login error';
+        finish(new Error(`Login failed (${detail}) — check your token and try again`));
       });
     });
-  }
-
-  _safeSend(data) {
-    if (this.ws && this.ws.readyState === 1) {
-      this.ws.send(data);
-      return true;
-    }
-    return false;
-  }
-
-  _scheduleReconnect(closeCode) {
-    if (this.reconnecting) return;
-    if (this._explicitlyStopped) return;
-    this.reconnecting = true;
-
-    // Don't reconnect on authentication errors - these are fatal
-    if (closeCode === 4004 || closeCode === 4002) {
-      this.destroy();
-      return;
-    }
-
-    // For other codes, keep trying to reconnect indefinitely (24/7 operation)
-    const baseDelay = closeCode === 4009 ? 5000 : (closeCode === 4000 ? 1000 : 3000);
-    // Add exponential backoff capped at 30 seconds for fast reconnect
-    const delay = Math.min(baseDelay * Math.pow(1.5, Math.min(this.reconnectAttempts, 10)), 30000) + Math.random() * 2000;
-    this.reconnectAttempts++;
-
-    setTimeout(() => {
-      if (this._explicitlyStopped) return;
-      if (closeCode === 4009) {
-        this.sessionId = null;
-        this.seq = null;
-      }
-      this.connect().catch(() => {});
-    }, delay);
-  }
-
-  _resume() {
-    this._safeSend(JSON.stringify({
-      op: 6,
-      d: {
-        token: this.token,
-        session_id: this.sessionId,
-        seq: this.seq
-      }
-    }));
-  }
-
-  _handlePacket(rawData) {
-    let pkt;
-    try {
-      if (rawData instanceof Buffer) {
-        const isZlibStream = rawData.length >= 4 && rawData.readUInt32BE(rawData.length - 4) === 0x0000FFFF;
-        if (isZlibStream) {
-          const inflated = zlib.inflateSync(rawData);
-          pkt = JSON.parse(inflated.toString());
-        } else if (isCompressed(rawData)) {
-          pkt = JSON.parse(decompressData(rawData).toString());
-        } else {
-          pkt = JSON.parse(rawData.toString());
-        }
-      } else {
-        pkt = JSON.parse(rawData);
-      }
-    } catch(e) {
-      return;
-    }
-
-    if (pkt.s !== null && pkt.s !== undefined) this.seq = pkt.s;
-    switch(pkt.op) {
-      case 10:
-        this._startHeartbeat(pkt.d.heartbeat_interval);
-        if (!this.sessionId) {
-          setTimeout(() => {
-            if (this.ws && this.ws.readyState === 1) this._identify();
-          }, Math.floor(Math.random() * 500 + 200));
-        }
-        break;
-      case 1:
-        this._safeSend(JSON.stringify({ op: 1, d: this.seq }));
-        break;
-      case 0:
-        if (pkt.t === 'READY') {
-          this.user = pkt.d.user;
-          this.sessionId = pkt.d.session_id;
-          if (pkt.d.session_id) {
-            const sessionHash = crypto.createHash('sha256').update(pkt.d.session_id).digest();
-            this.encryptionKey = sessionHash.slice(0, 32);
-          }
-          this.emit('READY', pkt.d);
-        } else if (pkt.t === 'RESUMED') {
-          this.reconnecting = false;
-          this.reconnectAttempts = 0;
-        } else if (pkt.t === 'MESSAGE_CREATE') {
-          this.emit('messageCreate', pkt.d);
-        } else if (pkt.t === 'MESSAGE_ACK') {
-        }
-        break;
-      case 11:
-        // Heartbeat ACK received
-        this._lastHeartbeatAck = true;
-        break;
-      case 7:
-        this.ws.close();
-        this._scheduleReconnect(4000);
-        break;
-      case 9:
-        this.sessionId = null;
-        this.seq = null;
-        this._invalidSessionCount = (this._invalidSessionCount || 0) + 1;
-        if (this._invalidSessionCount > 5) {
-          // Instead of destroying, try fresh identify after a delay
-          setTimeout(() => {
-            this._invalidSessionCount = 0;
-            if (this.ws && this.ws.readyState === 1) this._identify();
-          }, 5000);
-          return;
-        }
-        setTimeout(() => {
-          if (this.ws && this.ws.readyState === 1) this._identify();
-        }, Math.random() * 3000 + 1000);
-        break;
-    }
-  }
-
-  /**
-   * Heartbeat with realistic jitter following Discord client statistical patterns.
-   * Real Discord clients have ~3-5% heartbeat variance, not uniform random.
-   */
-  _startHeartbeat(interval) {
-    const sendBeat = () => {
-      if (!this.ws || this.ws.readyState !== 1) return;
-      // If we missed the last heartbeat ACK, reconnect
-      if (!this._lastHeartbeatAck) {
-        try { this.ws.close(); } catch(e) {}
-        this._scheduleReconnect(4000);
-        return;
-      }
-      this._lastHeartbeatAck = false;
-      this._safeSend(JSON.stringify({ op: 1, d: this.seq }));
-      // Realistic heartbeat jitter: Gaussian-ish, bounded ±12%
-      const u1 = Math.random();
-      const u2 = Math.random();
-      const gaussian = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-      const jitterRatio = Math.max(-0.12, Math.min(0.08, gaussian * 0.04));
-      const nextDelay = Math.max(interval * 0.85, interval * (1 + jitterRatio));
-      this._heartbeatTimer = setTimeout(sendBeat, nextDelay);
-    };
-    // First heartbeat: random within [0, interval] per Discord spec
-    const firstDelay = interval * (0.5 + Math.random() * 0.5);
-    this._heartbeatTimer = setTimeout(sendBeat, firstDelay);
-  }
-
-  /**
-   * IDENTIFY with realistic browser client intents and capabilities.
-   * The old values (36865 intents, 16381 capabilities) are unusual fingerprints.
-   * These values match a real Chrome Discord web app.
-   */
-  _identify() {
-    const p = _getAccountProfile(this.token);
-    const payload = {
-      op: 2,
-      d: {
-        token: this.token,
-        capabilities: REALISTIC_CAPABILITIES,
-        intents: REALISTIC_INTENTS,
-        properties: {
-          os: p.os,
-          browser: p.browser,
-          device: '',
-          system_locale: p.locale,
-          browser_user_agent: p.ua,
-          browser_version: p.bv,
-          os_version: p.osv,
-          referrer: '',
-          referring_domain: '',
-          referrer_current: '',
-          referring_domain_current: '',
-          release_channel: 'stable',
-          client_build_number: p.build,
-          client_event_source: null,
-          screen_width: p.sw,
-          screen_height: p.sh,
-          screen_dpr: p.dpr,
-          screen_color_depth: p.cd,
-        },
-        presence: {
-          status: 'online',
-          since: 0,
-          activities: [],
-          afk: false
-        },
-        client_state: {
-          guild_versions: {},
-          highest_last_message_id: '0',
-          read_state_version: 0,
-          user_guild_settings_version: -1,
-          user_settings_version: -1,
-          private_channels_version: '0',
-          api_code_version: 0
-        }
-      }
-    };
-    this._safeSend(JSON.stringify(payload));
   }
 
   /**
@@ -1310,15 +1025,13 @@ class StealthClient {
         // Occasionally change status between online and idle (realistic)
         const statusRoll = Math.random();
         const status = statusRoll < 0.75 ? 'online' : (statusRoll < 0.92 ? 'idle' : 'dnd');
-        this._safeSend(JSON.stringify({
-          op: 3,
-          d: {
+        try {
+          this.client.user.setPresence({
             status,
-            since: status === 'idle' ? Date.now() - Math.floor(Math.random() * 300000) : 0,
             activities: [],
             afk: false
-          }
-        }));
+          });
+        } catch(e) {}
         schedulePresence();
       }, delay);
       this._backgroundTimers.push(timer);
@@ -1334,10 +1047,7 @@ class StealthClient {
         // Send a lightweight heartbeat-like event
         // Real clients send performance metrics; we send minimal but present data
         if (Math.random() < 0.3) {
-          this._safeSend(JSON.stringify({
-            op: 1,
-            d: this.seq // Normal heartbeat serves dual purpose
-          }));
+          this.api.request('/users/@me', 'GET').catch(() => {});
         }
         scheduleTelemetry();
       }, delay);
@@ -1353,18 +1063,7 @@ class StealthClient {
         if (!this.ready || this._explicitlyStopped) return;
         // Send a SESSIONS_REPLACE or similar keepalive
         if (Math.random() < 0.2) {
-          this._safeSend(JSON.stringify({
-            op: 14, // Guild sync / lazy request — real clients send these
-            d: {
-              guild_id: null,
-              typing: true,
-              threads: false,
-              activities: true,
-              members: [],
-              channels: {},
-              thread_members: []
-            }
-          }));
+          this.api.request('/users/@me', 'GET').catch(() => {});
         }
         scheduleReadState();
       }, delay);
@@ -1389,15 +1088,19 @@ class StealthClient {
       return this._channelPermissions.get(channelId);
     }
     try {
-      await this.api.request(`/channels/${channelId}`, 'GET');
-      this._channelPermissions.set(channelId, true);
-      return true;
-    } catch (err) {
-      if (err.status === 403 || err.status === 404) {
+      const channel = await this.client.channels.fetch(channelId);
+      if (!channel || typeof channel.send !== 'function') {
         this._channelPermissions.set(channelId, false);
         return false;
       }
-      console.error(`[ChannelCheck] Transient error for ${channelId}:`, err.status, err.message);
+      this._channelPermissions.set(channelId, true);
+      return true;
+    } catch (err) {
+      if (err.code === 10003 || err.code === 50001 || err.code === 50013) {
+        this._channelPermissions.set(channelId, false);
+        return false;
+      }
+      console.error(`[ChannelCheck] Transient error for ${channelId}:`, err.message);
       return null;
     }
   }
@@ -1437,17 +1140,31 @@ class StealthClient {
       await new Promise(r => setTimeout(r, freeAt - now));
     }
 
-    const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
-
     // Vary content before sending
     const variedContent = varyMessage(content);
+
+    // Fetch channel via discord.js-selfbot-v13
+    let channel;
+    try {
+      channel = await this.client.channels.fetch(channelId);
+    } catch(e) {
+      this._channelPermissions.set(channelId, false);
+      console.error(`[SendMessage] ${channelId}: Failed to fetch channel`, e.message);
+      return false;
+    }
+
+    if (!channel || typeof channel.send !== 'function') {
+      this._channelPermissions.set(channelId, false);
+      console.error(`[SendMessage] ${channelId}: Not a text channel`);
+      return false;
+    }
 
     // Human-like typing behavior: usually types, sometimes sends instantly
     // Vary typing probability: 65% type, 35% instant (paste/shortcut)
     const shouldType = Math.random() < 0.65;
     if (shouldType) {
       try {
-        await this.api.request(`/channels/${channelId}/typing`, 'POST');
+        await channel.sendTyping();
       } catch(e) {}
       const len = variedContent.length;
       let typingDelay;
@@ -1480,99 +1197,36 @@ class StealthClient {
       await new Promise(r => setTimeout(r, Math.min(800, Math.max(100, instantDelay))));
     }
 
-    if (!attachments || attachments.length === 0) {
-      const body = { content: variedContent, flags: 0 };
-      try {
-        await this.api.request(`/channels/${channelId}/messages`, 'POST', body, {
-          'Content-Type': 'application/json'
-        });
-        return true;
-      } catch (err) {
-        if (err.status === 403 || err.status === 404) {
-          this._channelPermissions.set(channelId, false);
-          console.error(`[SendMessage] ${channelId}: Permission denied (${err.status})`);
-          return false;
-        }
-        if (err.status === 429) {
-          const retryAfter = (err.data && err.data.retry_after) ? err.data.retry_after * 1000 : 5000;
-          this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
-          console.error(`[SendMessage] ${channelId}: Rate limited, retry after ${retryAfter}ms`);
-          return false;
-        }
-        if (err.status) {
-          console.error(`[SendMessage] ${channelId}: HTTP ${err.status}`, err.data);
-          return false;
-        }
-        console.error(`[SendMessage] ${channelId}: Exception`, err.message);
-        return false;
-      }
-    }
+    // Build files for discord.js v13
+    const files = (attachments || []).map(att => ({
+      attachment: att.buffer,
+      name: att.name
+    }));
 
-    const FormData = require('form-data');
-    const form = new FormData();
-    const payload = { content: variedContent, flags: 0 };
-    form.append('payload_json', JSON.stringify(payload));
-    attachments.forEach((att, i) => {
-      form.append(`files[${i}]`, att.buffer, { filename: att.name });
-    });
-
-    const headers = this.api._headers({ 'X-Discord-Locale': 'en-US' });
     try {
-      const res = await axios.post(url, form, {
-        headers: { ...headers, ...form.getHeaders() },
-        timeout: 30000,
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-        httpsAgent: _wsAgent, // forces HTTP/1.1 ALPN
-        http2: false,         // disables HTTP/2 framing
-        // Prevent axios from mangling the FormData boundary
-        transformRequest: [(data, hdrs) => {
-          delete hdrs.put;
-          delete hdrs.patch;
-          return data;
-        }],
-      });
-
-      if (res.status === 403 || res.status === 404) {
-        this._channelPermissions.set(channelId, false);
-        console.error(`[SendMessage] ${channelId}: Permission denied (${res.status}) [form-data]`);
-        return false;
-      }
-
-      if (res.status === 429) {
-        const retryAfter = (res.headers['retry-after'] || 5) * 1000;
-        this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
-        console.error(`[SendMessage] ${channelId}: Rate limited, retry after ${retryAfter}ms [form-data]`);
-        return false;
-      }
-
-      const remaining = res.headers['x-ratelimit-remaining'];
-      const resetAfter = res.headers['x-ratelimit-reset-after'];
-      if (remaining !== undefined && parseInt(remaining, 10) <= 1 && resetAfter) {
-        this._channelRateLimits.set(channelId, Date.now() + parseFloat(resetAfter) * 1000 + 500);
-      }
-
+      await channel.send({ content: variedContent, files });
       return true;
     } catch (err) {
-      if (err.response) {
-        if (err.response.status === 403 || err.response.status === 404) {
-          this._channelPermissions.set(channelId, false);
-        }
-        if (err.response.status === 429) {
-          const retryAfter = (err.response.headers['retry-after'] || 5) * 1000;
-          this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
-        }
-        console.error(`[SendMessage] ${channelId}: HTTP error [form-data]`, err.response.status, err.response.data);
-      } else {
-        console.error(`[SendMessage] ${channelId}: Network error [form-data]`, err.message);
+      if (err.code === 50001 || err.code === 50013 || err.code === 10003) {
+        this._channelPermissions.set(channelId, false);
+        console.error(`[SendMessage] ${channelId}: Permission denied (${err.code})`);
+        return false;
       }
+      if (err.code === 429) {
+        const rawRetry = err.retryAfter || (err.data && err.data.retry_after) || 5;
+        const retryAfter = (parseFloat(rawRetry) < 1000 ? parseFloat(rawRetry) * 1000 : parseFloat(rawRetry)) || 5000;
+        this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
+        console.error(`[SendMessage] ${channelId}: Rate limited, retry after ${retryAfter}ms`);
+        return false;
+      }
+      console.error(`[SendMessage] ${channelId}: Discord error`, err.message);
       return false;
     }
   }
 
   async joinGuild(inviteCode) {
     try {
-      const res = await this.api.request(`/invites/${inviteCode}`, 'POST', { session_id: this.sessionId });
+      const res = await this.api.request(`/invites/${inviteCode}`, 'POST', {});
       return res.guild_id ? { success: true, guildId: res.guild_id } : { success: false, error: res.message || 'Unknown error' };
     } catch (err) {
       return { success: false, error: err.message || 'Failed to join guild' };
@@ -1589,17 +1243,10 @@ class StealthClient {
     this.ready = false;
     this.reconnecting = false;
     this.reconnectAttempts = 0;
-    clearInterval(this.heartbeatInterval);
-    if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer);
-    if (this._idleTimer) clearTimeout(this._idleTimer);
     this._stopBackgroundEvents();
-    if (this.ws) {
-      try {
-        this.ws.removeAllListeners();
-        this.ws.close(1000, 'Client disconnect');
-      } catch(e) {}
-    }
-    this.ws = null;
+    try {
+      this.client.destroy();
+    } catch(e) {}
     this._saveRepliedUsers();
     this.api.destroy();
   }
@@ -2397,7 +2044,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       client.on('messageCreate', async (msg) => {
         if (msg.author.id === client.user.id) return;
 
-        const isDM = msg.guild_id === undefined || msg.guild_id === null;
+        const isDM = msg.guildId === null || msg.guildId === undefined;
         if (!isDM) return;
 
         if (db) {
@@ -2434,16 +2081,17 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
         try {
           // Navigate to channel naturally before replying — with context-switch jitter
-          await client.navigateToChannel(msg.channel_id);
+          await client.navigateToChannel(msg.channel.id);
           // Vary the auto-reply content using spintax
-          const ok = await client.sendMessage(msg.channel_id, autoReplyText);
+          const ok = await client.sendMessage(msg.channel.id, autoReplyText);
           if (ok) {
             client._dmCooldowns.set(msg.author.id, Date.now());
           }
         } catch (err) {
+          // Fallback: fetch user and create DM via REST if needed
           try {
-            const dmRes = await client._api('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
-            if (dmRes.id) {
+            const dmRes = await client.api.request('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
+            if (dmRes && dmRes.id) {
               await client.navigateToChannel(dmRes.id);
               const ok2 = await client.sendMessage(dmRes.id, autoReplyText);
               if (ok2) {
