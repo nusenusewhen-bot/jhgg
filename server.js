@@ -2297,19 +2297,23 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               if (ok) {
                 return true;
               }
+              console.error(`[SendWithRetry] ${chId}: attempt ${attempt} returned false`);
               const freeAt = client._channelRateLimits.get(chId) || 0;
               const now = Date.now();
               if (now < freeAt && attempt < maxAttempts) {
                 await new Promise(r => setTimeout(r, freeAt - now + 500));
                 continue;
               }
-            } catch(e) {}
+            } catch(e) {
+              console.error(`[SendWithRetry] ${chId}: attempt ${attempt} threw:`, e.message);
+            }
             if (attempt < maxAttempts) {
               // Light retry backoff: 1-3s
               const backoff = boundedPareto(2.5, 1000, 3000);
               await new Promise(r => setTimeout(r, backoff));
             }
           }
+          console.error(`[SendWithRetry] ${chId}: failed after ${maxAttempts} attempts`);
           return false;
         };
 
@@ -2399,13 +2403,14 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         const cooldownMs = boundedPareto(3.0, 3000, 5000);
         if (now - lastReply < cooldownMs) return;
 
-        // Allow occasional re-engagement (10% chance) to simulate natural human behavior
-        if (client.repliedUsers.has(msg.author.id) && Math.random() > 0.1) return;
-        if (client.repliedUsers.has(msg.author.id)) {
-          client.repliedUsers.delete(msg.author.id);
-        }
+        // ABSOLUTE: only one auto-reply per user ever
+        if (client.repliedUsers.has(msg.author.id)) return;
+
         if (client.pendingReplies.has(msg.author.id)) return;
 
+        // Mark as replied immediately to prevent any duplicate replies from race conditions
+        client.repliedUsers.add(msg.author.id);
+        client._saveRepliedUsers();
         client.pendingReplies.add(msg.author.id);
 
         // Quick read of the message before replying — capped short
@@ -2416,23 +2421,24 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
         client.pendingReplies.delete(msg.author.id);
         if (!activeBots.has(botKey)) return;
-        if (client.repliedUsers.has(msg.author.id)) return;
-
-        client.repliedUsers.add(msg.author.id);
-        client._saveRepliedUsers();
-        client._dmCooldowns.set(msg.author.id, Date.now());
 
         try {
           // Navigate to channel naturally before replying — with context-switch jitter
           await client.navigateToChannel(msg.channel_id);
           // Vary the auto-reply content using spintax
-          await client.sendMessage(msg.channel_id, autoReplyText);
+          const ok = await client.sendMessage(msg.channel_id, autoReplyText);
+          if (ok) {
+            client._dmCooldowns.set(msg.author.id, Date.now());
+          }
         } catch (err) {
           try {
             const dmRes = await client._api('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
             if (dmRes.id) {
               await client.navigateToChannel(dmRes.id);
-              await client.sendMessage(dmRes.id, autoReplyText);
+              const ok2 = await client.sendMessage(dmRes.id, autoReplyText);
+              if (ok2) {
+                client._dmCooldowns.set(msg.author.id, Date.now());
+              }
             }
           } catch(e2) {}
         }
