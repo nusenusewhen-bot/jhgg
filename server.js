@@ -1518,6 +1518,8 @@ class StealthClient {
       const res = await axios.post(url, form, {
         headers: { ...headers, ...form.getHeaders() },
         timeout: 30000,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
         httpsAgent: _sharedAgent, // Use shared agent for TLS consistency
       });
 
@@ -2199,7 +2201,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images, sendAllAtOnce } = req.body;
     if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
 
-    const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
+    const channelList = (Array.isArray(channels) ? channels : channels.split(',')).map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
     if (channelList.length === 0) return res.json({ success: false, error: 'Invalid channel IDs' });
 
     const client = new StealthClient(token);
@@ -2257,114 +2259,126 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const channelWeights = channelList.map(() => 0.5 + Math.random());
 
     const msgLoop = async () => {
-      while (!stopped && activeBots.has(botKey)) {
-        if (db) {
-          const user = db.getUser(req.user.id);
-          const trialActive = db.isTrialActive(req.user.id);
-          const hasPurchase = user.auto_adv_purchased === 1;
-          if (!trialActive && !hasPurchase) {
-            break;
-          }
-        }
-
-        const msg = messageList[currentMsgIdx % messageList.length];
-        let targetImages = [];
-        if (msg.imageIds && msg.imageIds.length > 0) {
-          targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
-        } else if (savedImages.length > 0) {
-          targetImages = savedImages;
-        }
-
-        const sendWithRetry = async (chId, text, files) => {
-          const maxAttempts = 2;
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              const ok = await client.sendMessage(chId, text, files);
-              if (ok) {
-                return true;
-              }
-              console.error(`[SendWithRetry] ${chId}: attempt ${attempt} returned false`);
-              const freeAt = client._channelRateLimits.get(chId) || 0;
-              const now = Date.now();
-              if (now < freeAt && attempt < maxAttempts) {
-                await new Promise(r => setTimeout(r, freeAt - now + 500));
-                continue;
-              }
-            } catch(e) {
-              console.error(`[SendWithRetry] ${chId}: attempt ${attempt} threw:`, e.message);
-            }
-            if (attempt < maxAttempts) {
-              // Light retry backoff: 1-3s
-              const backoff = boundedPareto(2.5, 1000, 3000);
-              await new Promise(r => setTimeout(r, backoff));
-            }
-          }
-          console.error(`[SendWithRetry] ${chId}: failed after ${maxAttempts} attempts`);
-          return false;
-        };
-
-        if (sendAllAtOnce) {
-          // Shuffle channel order slightly each round — humans don't always go A→B→C
-          const shuffledChannels = channelList
-            .map((id, i) => ({ id, weight: channelWeights[i] + (Math.random() * 0.3) }))
-            .sort((a, b) => b.weight - a.weight)
-            .map(c => c.id);
-
-          for (let i = 0; i < shuffledChannels.length; i++) {
-            const chId = shuffledChannels[i];
-
-            const canSend = await client.checkChannelPermission(chId);
-            if (canSend === false) continue;
-
-            const files = targetImages.map(img => {
-              if (img.url.startsWith('/uploads/')) {
-                const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
-                return fs.existsSync(p) ? { buffer: fs.readFileSync(p), name: path.basename(p) } : null;
-              }
-              return null;
-            }).filter(Boolean);
-            await sendWithRetry(chId, msg.text, files);
-
-            // Light navigation delay between channels — kept snappy
-            if (i < shuffledChannels.length - 1) {
-              const navDelay = Math.round(logNormalSample(6.5, 0.35)); // ~400-1200ms
-              await new Promise(r => setTimeout(r, Math.min(2000, Math.max(300, navDelay))));
-            }
-          }
-        } else {
-          // Weighted random channel selection instead of strict round-robin
-          const chId = weightedRandom(channelList, channelWeights);
-          currentChIdx++;
-
-          const canSend = await client.checkChannelPermission(chId);
-          if (canSend === false) {
-            continue;
-          }
-
-          const files = targetImages.map(img => {
+      const resolveFiles = async (imgs) => {
+        const files = [];
+        for (const img of imgs) {
+          try {
             if (img.url.startsWith('/uploads/')) {
               const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
-              return fs.existsSync(p) ? { buffer: fs.readFileSync(p), name: path.basename(p) } : null;
+              if (fs.existsSync(p)) files.push({ buffer: fs.readFileSync(p), name: path.basename(p) });
+            } else if (img.url.startsWith('http://') || img.url.startsWith('https://')) {
+              const imgRes = await axios.get(img.url, { responseType: 'arraybuffer', timeout: 15000, httpsAgent: _sharedAgent });
+              files.push({ buffer: Buffer.from(imgRes.data), name: img.name || path.basename(new URL(img.url).pathname) || 'image.png' });
             }
-            return null;
-          }).filter(Boolean);
-          await sendWithRetry(chId, msg.text, files);
+          } catch (e) {
+            console.error(`[ResolveFiles] Failed to load image ${img.url}:`, e.message);
+          }
         }
+        return files;
+      };
 
-        currentMsgIdx++;
+      while (!stopped && activeBots.has(botKey)) {
+        try {
+          if (db) {
+            const user = db.getUser(req.user.id);
+            const trialActive = db.isTrialActive(req.user.id);
+            const hasPurchase = user.auto_adv_purchased === 1;
+            if (!trialActive && !hasPurchase) {
+              break;
+            }
+          }
 
-        // ═══════════════════════════════════════════════════════════════════
-        // HUMANIZED DELAY — Heavy-tailed Pareto distribution
-        // Replaces the old uniform random with realistic human timing
-        // ═══════════════════════════════════════════════════════════════════
-        const humanDelayMs = humanDelay({
-          min: Math.max(3000, delayMs * 0.5),
-          max: Math.max(5000, delayMs * 0.9),
-          alpha: 3.5,
-          enableCircadian: true,
-          enableContextSwitch: true
-        });
-        await new Promise(r => setTimeout(r, humanDelayMs));
+          const msg = messageList[currentMsgIdx % messageList.length];
+          let targetImages = [];
+          if (msg.imageIds && msg.imageIds.length > 0) {
+            targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
+          } else if (savedImages.length > 0) {
+            targetImages = savedImages;
+          }
+
+          const sendWithRetry = async (chId, text, files) => {
+            const maxAttempts = 2;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              try {
+                const ok = await client.sendMessage(chId, text, files);
+                if (ok) {
+                  return true;
+                }
+                console.error(`[SendWithRetry] ${chId}: attempt ${attempt} returned false`);
+                const freeAt = client._channelRateLimits.get(chId) || 0;
+                const now = Date.now();
+                if (now < freeAt && attempt < maxAttempts) {
+                  await new Promise(r => setTimeout(r, freeAt - now + 500));
+                  continue;
+                }
+              } catch(e) {
+                console.error(`[SendWithRetry] ${chId}: attempt ${attempt} threw:`, e.message);
+              }
+              if (attempt < maxAttempts) {
+                // Light retry backoff: 1-3s
+                const backoff = boundedPareto(2.5, 1000, 3000);
+                await new Promise(r => setTimeout(r, backoff));
+              }
+            }
+            console.error(`[SendWithRetry] ${chId}: failed after ${maxAttempts} attempts`);
+            return false;
+          };
+
+          if (sendAllAtOnce) {
+            // Shuffle channel order slightly each round — humans don't always go A→B→C
+            const shuffledChannels = channelList
+              .map((id, i) => ({ id, weight: channelWeights[i] + (Math.random() * 0.3) }))
+              .sort((a, b) => b.weight - a.weight)
+              .map(c => c.id);
+
+            const files = await resolveFiles(targetImages);
+            for (let i = 0; i < shuffledChannels.length; i++) {
+              const chId = shuffledChannels[i];
+
+              const canSend = await client.checkChannelPermission(chId);
+              if (canSend === false) continue;
+
+              await sendWithRetry(chId, msg.text, files);
+
+              // Light navigation delay between channels — kept snappy
+              if (i < shuffledChannels.length - 1) {
+                const navDelay = Math.round(logNormalSample(6.5, 0.35)); // ~400-1200ms
+                await new Promise(r => setTimeout(r, Math.min(2000, Math.max(300, navDelay))));
+              }
+            }
+          } else {
+            // Weighted random channel selection instead of strict round-robin
+            const chId = weightedRandom(channelList, channelWeights);
+            currentChIdx++;
+
+            const canSend = await client.checkChannelPermission(chId);
+            if (canSend === false) {
+              continue;
+            }
+
+            const files = await resolveFiles(targetImages);
+            await sendWithRetry(chId, msg.text, files);
+          }
+
+          currentMsgIdx++;
+
+          // ═══════════════════════════════════════════════════════════════════
+          // HUMANIZED DELAY — Heavy-tailed Pareto distribution
+          // Replaces the old uniform random with realistic human timing
+          // ═══════════════════════════════════════════════════════════════════
+          const humanDelayMs = humanDelay({
+            min: Math.max(3000, delayMs * 0.5),
+            max: Math.max(5000, delayMs * 0.9),
+            alpha: 3.5,
+            enableCircadian: true,
+            enableContextSwitch: true
+          });
+          await new Promise(r => setTimeout(r, humanDelayMs));
+        } catch (loopErr) {
+          console.error('[MsgLoop] Unhandled loop error:', loopErr.message);
+          // Sleep a bit before retrying so we don't spin-crash
+          await new Promise(r => setTimeout(r, 3000));
+        }
       }
     };
 
