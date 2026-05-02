@@ -256,7 +256,7 @@ const _rfp = (token) => token ? _getAccountProfile(token).ua : _fp[Math.floor(Ma
  * NOTE: Removed X25519KYBER768Draft00 — Node.js OpenSSL does not support this
  * post-quantum hybrid curve, causing "Failed to set ECDH curve" errors.
  */
-function getChromeTLSOptions() {
+function getChromeTLSOptions(forWebSocket = false) {
   return {
     // Chrome's cipher suites (in order)
     ciphers: [
@@ -279,8 +279,8 @@ function getChromeTLSOptions() {
     // Chrome uses TLS 1.3 with 1.2 fallback
     minVersion: 'TLSv1.2',
     maxVersion: 'TLSv1.3',
-    // ALPN protocols (h2 = HTTP/2, http/1.1 fallback)
-    ALPNProtocols: ['h2', 'http/1.1'],
+    // WebSocket upgrade requires HTTP/1.1 — force it to avoid h2 negotiation issues
+    ALPNProtocols: forWebSocket ? ['http/1.1'] : ['h2', 'http/1.1'],
     // Chrome's signature algorithms
     sigalgs: 'ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512',
     // Node.js-compatible ECDH curves (X25519KYBER768Draft00 removed — unsupported)
@@ -294,9 +294,9 @@ function getChromeTLSOptions() {
  * Shared HTTPS agent with Chrome TLS fingerprint.
  * Used by both REST API (axios) and WebSocket connections.
  */
-function createSharedAgent() {
+function createSharedAgent(forWebSocket = false) {
   return new https.Agent({
-    ...getChromeTLSOptions(),
+    ...getChromeTLSOptions(forWebSocket),
     keepAlive: true,
     keepAliveMsecs: 30000,
     maxSockets: 6,
@@ -306,7 +306,8 @@ function createSharedAgent() {
   });
 }
 
-const _sharedAgent = createSharedAgent();
+const _sharedAgent = createSharedAgent(false);
+const _wsAgent = createSharedAgent(true);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // REST API CLIENT — Unified transport with curl-impersonate + Playwright
@@ -995,8 +996,9 @@ class StealthClient {
       headers: {
         'User-Agent': this.api.fp,
         'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://discord.com',
       },
-      agent: _sharedAgent, // Critical: same TLS stack as REST requests
+      agent: _wsAgent, // Dedicated agent: forces HTTP/1.1 ALPN for WebSocket upgrade
     });
 
     return new Promise((resolve, reject) => {
@@ -1076,7 +1078,8 @@ class StealthClient {
         this.ready = false;
         this.off('READY', readyHandler);
         if (!settled) {
-          finish(new Error('Connection error - please check your internet and try again'));
+          const detail = err && err.message ? err.message : 'unknown network error';
+          finish(new Error(`Connection error (${detail}) — please check your internet and try again`));
         }
       });
     });
