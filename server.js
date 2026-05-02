@@ -1479,41 +1479,27 @@ class StealthClient {
 
     if (!attachments || attachments.length === 0) {
       const body = { content: variedContent, flags: 0 };
-      const headers = this.api._headers({
-        'Content-Type': 'application/json',
-        'X-Discord-Locale': 'en-US'
-      });
       try {
-        const res = await curlImpersonateRequest(url, 'POST', headers, body, 30000);
-
-        if (res.status === 403 || res.status === 404) {
+        await this.api.request(`/channels/${channelId}/messages`, 'POST', body, {
+          'Content-Type': 'application/json'
+        });
+        return true;
+      } catch (err) {
+        if (err.status === 403 || err.status === 404) {
           this._channelPermissions.set(channelId, false);
-          console.error(`[SendMessage] ${channelId}: Permission denied (${res.status})`);
+          console.error(`[SendMessage] ${channelId}: Permission denied (${err.status})`);
           return false;
         }
-
-        if (res.status === 429) {
-          const retryAfterMatch = res.headers.match(/retry-after:\s*(\d+(?:\.\d+)?)/i);
-          const retryAfter = retryAfterMatch ? parseFloat(retryAfterMatch[1]) * 1000 : 5000;
+        if (err.status === 429) {
+          const retryAfter = (err.data && err.data.retry_after) ? err.data.retry_after * 1000 : 5000;
           this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
           console.error(`[SendMessage] ${channelId}: Rate limited, retry after ${retryAfter}ms`);
           return false;
         }
-
-        if (res.status < 200 || res.status >= 300) {
-          console.error(`[SendMessage] ${channelId}: HTTP ${res.status}`, res.data);
+        if (err.status) {
+          console.error(`[SendMessage] ${channelId}: HTTP ${err.status}`, err.data);
           return false;
         }
-
-        const remainingMatch = res.headers.match(/x-ratelimit-remaining:\s*(\d+)/i);
-        const resetAfterMatch = res.headers.match(/x-ratelimit-reset-after:\s*(\d+(?:\.\d+)?)/i);
-        if (remainingMatch && parseInt(remainingMatch[1], 10) <= 1 && resetAfterMatch) {
-          const resetAfter = parseFloat(resetAfterMatch[1]) * 1000;
-          this._channelRateLimits.set(channelId, Date.now() + resetAfter + 500);
-        }
-
-        return true;
-      } catch (err) {
         console.error(`[SendMessage] ${channelId}: Exception`, err.message);
         return false;
       }
