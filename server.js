@@ -693,6 +693,9 @@ async function playwrightRequest(url, method = 'GET', headers = {}, body = null,
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
+        if (body !== null && !headers['Content-Type']) {
+          headers['Content-Type'] = 'application/json';
+        }
         const opts = { method, headers, signal: controller.signal };
         if (body !== null) opts.body = body;
         const res = await fetch(url, opts);
