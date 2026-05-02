@@ -1523,7 +1523,14 @@ class StealthClient {
         timeout: 30000,
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
-        httpsAgent: _sharedAgent, // Use shared agent for TLS consistency
+        httpsAgent: _wsAgent, // forces HTTP/1.1 ALPN
+        http2: false,         // disables HTTP/2 framing
+        // Prevent axios from mangling the FormData boundary
+        transformRequest: [(data, hdrs) => {
+          delete hdrs.put;
+          delete hdrs.patch;
+          return data;
+        }],
       });
 
       if (res.status === 403 || res.status === 404) {
