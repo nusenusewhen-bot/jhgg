@@ -1197,7 +1197,43 @@ class StealthClient {
       await new Promise(r => setTimeout(r, Math.min(800, Math.max(100, instantDelay))));
     }
 
-    // Build files for discord.js v13
+    return this._rawSend(channel, variedContent, attachments);
+  }
+
+  /**
+   * Fast send — no navigation, no typing simulation. Just rate-limit check + raw send.
+   * Used for concurrent mass-sending (sendAllAtOnce) where inter-message delay is handled externally.
+   */
+  async sendMessageFast(channelId, content, attachments = []) {
+    if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) {
+      return false;
+    }
+
+    const now = Date.now();
+    const freeAt = this._channelRateLimits.get(channelId) || 0;
+    if (now < freeAt) {
+      await new Promise(r => setTimeout(r, freeAt - now));
+    }
+
+    const variedContent = varyMessage(content);
+
+    let channel;
+    try {
+      channel = await this.client.channels.fetch(channelId);
+    } catch(e) {
+      this._channelPermissions.set(channelId, false);
+      return false;
+    }
+
+    if (!channel || typeof channel.send !== 'function') {
+      this._channelPermissions.set(channelId, false);
+      return false;
+    }
+
+    return this._rawSend(channel, variedContent, attachments);
+  }
+
+  async _rawSend(channel, variedContent, attachments = []) {
     const files = (attachments || []).map(att => ({
       attachment: att.buffer,
       name: att.name
@@ -1208,18 +1244,18 @@ class StealthClient {
       return true;
     } catch (err) {
       if (err.code === 50001 || err.code === 50013 || err.code === 10003) {
-        this._channelPermissions.set(channelId, false);
-        console.error(`[SendMessage] ${channelId}: Permission denied (${err.code})`);
+        this._channelPermissions.set(channel.id, false);
+        console.error(`[SendMessage] ${channel.id}: Permission denied (${err.code})`);
         return false;
       }
       if (err.code === 429) {
         const rawRetry = err.retryAfter || (err.data && err.data.retry_after) || 5;
         const retryAfter = (parseFloat(rawRetry) < 1000 ? parseFloat(rawRetry) * 1000 : parseFloat(rawRetry)) || 5000;
-        this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
-        console.error(`[SendMessage] ${channelId}: Rate limited, retry after ${retryAfter}ms`);
+        this._channelRateLimits.set(channel.id, Date.now() + retryAfter + 500);
+        console.error(`[SendMessage] ${channel.id}: Rate limited, retry after ${retryAfter}ms`);
         return false;
       }
-      console.error(`[SendMessage] ${channelId}: Discord error`, err.message);
+      console.error(`[SendMessage] ${channel.id}: Discord error`, err.message);
       return false;
     }
   }
@@ -1989,20 +2025,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               .map(c => c.id);
 
             const files = await resolveFiles(targetImages);
-            for (let i = 0; i < shuffledChannels.length; i++) {
-              const chId = shuffledChannels[i];
 
+            // Concurrent send to all channels — no sequential heavywait
+            // Only the humanDelayMs at the bottom of the loop matters
+            const sendPromises = shuffledChannels.map(async (chId) => {
               const canSend = await client.checkChannelPermission(chId);
-              if (canSend === false) continue;
-
-              await sendWithRetry(chId, msg.text, files);
-
-              // Light navigation delay between channels — kept snappy
-              if (i < shuffledChannels.length - 1) {
-                const navDelay = Math.round(logNormalSample(6.5, 0.35)); // ~400-1200ms
-                await new Promise(r => setTimeout(r, Math.min(2000, Math.max(300, navDelay))));
-              }
-            }
+              if (canSend === false) return false;
+              return client.sendMessageFast(chId, msg.text, files);
+            });
+            await Promise.all(sendPromises);
           } else {
             // Weighted random channel selection instead of strict round-robin
             const chId = weightedRandom(channelList, channelWeights);
