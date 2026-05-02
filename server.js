@@ -1611,8 +1611,8 @@ app.get('/api/admin/whitelist', ensureOwner, (req, res) => { res.json({ success:
 app.post('/api/admin/whitelist/add', ensureOwner, (req, res) => { const { userId } = req.body; if (!userId) return res.status(400).json({ success: false, error: 'No user ID provided' }); db.addToWhitelist(userId); res.json({ success: true }); });
 app.post('/api/admin/whitelist/remove', ensureOwner, (req, res) => { const { userId } = req.body; if (!userId) return res.status(400).json({ success: false, error: 'No user ID provided' }); db.removeFromWhitelist(userId); res.json({ success: true }); });
 
-app.get('/', (req, res) => { if (req.isAuthenticated()) return res.redirect('/dashboard'); res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
-app.get('/dashboard', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
+app.get('/', (req, res) => { if (req.isAuthenticated()) return res.redirect('/dashboard'); res.redirect('/login'); });
+app.get('/dashboard', (req, res) => { if (!req.isAuthenticated()) return res.redirect('/login'); res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
 
 app.use((err, req, res, next) => { 
   console.error('[SERVER ERROR]', err);
