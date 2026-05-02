@@ -545,18 +545,23 @@ class StealthClient {
 
       this.ws.on('message', (data) => this._handlePacket(data));
 
-      this.ws.on('close', (code, reason) => {
+            this.ws.on('close', (code, reason) => {
         clearInterval(this.heartbeatInterval);
         if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer);
         const wasReady = this.ready;
         this.ready = false;
         this.off('READY', readyHandler);
         if (!settled) {
-          finish(new Error(`Gateway closed before ready: ${code}`));
+          if (code === 4002 || code === 4003 || code === 4004) {
+            finish(new Error('Invalid Token'));
+          } else {
+            finish(new Error(`Gateway closed before ready: ${code}`));
+          }
         } else if (wasReady) {
           this._scheduleReconnect(code);
         }
       });
+
 
       this.ws.on('error', (err) => {
         clearTimeout(timeoutTimer);
@@ -584,7 +589,8 @@ class StealthClient {
       this.destroy();
       return;
     }
-    if (closeCode === 4014 || closeCode === 4004) {
+        if (closeCode === 4014 || closeCode === 4004 || closeCode === 4002 || closeCode === 4003) {
+
       this.destroy();
       return;
     }
