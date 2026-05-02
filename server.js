@@ -58,14 +58,14 @@ function boundedPareto(alpha = 2.5, min = 1000, max = 60000) {
  */
 function circadianMultiplier() {
   const hour = new Date().getHours();
-  // Night hours: slower (higher delays)
-  if (hour >= 1 && hour <= 6) return 1.4 + Math.random() * 0.3;
-  // Early morning: groggy
-  if (hour >= 7 && hour <= 9) return 1.1 + Math.random() * 0.2;
+  // Night hours: slightly slower
+  if (hour >= 1 && hour <= 6) return 1.05 + Math.random() * 0.1;
+  // Early morning: slightly groggy
+  if (hour >= 7 && hour <= 9) return 0.95 + Math.random() * 0.1;
   // Peak hours: responsive
-  if (hour >= 10 && hour <= 22) return 0.8 + Math.random() * 0.25;
+  if (hour >= 10 && hour <= 22) return 0.9 + Math.random() * 0.1;
   // Late night: winding down
-  return 1.15 + Math.random() * 0.2;
+  return 0.95 + Math.random() * 0.1;
 }
 
 /**
@@ -73,9 +73,9 @@ function circadianMultiplier() {
  * ~8% chance of a long pause (reading another tab, notification, etc).
  */
 function contextSwitchJitter(baseMs) {
-  if (Math.random() < 0.08) {
-    // Long context switch: 8-45 seconds
-    const switchMs = 8000 + boundedPareto(2.0, 8000, 45000);
+  if (Math.random() < 0.05) {
+    // Small context switch: 0.5-1.5 seconds
+    const switchMs = 500 + boundedPareto(2.0, 500, 1500);
     return baseMs + switchMs;
   }
   return baseMs;
@@ -87,8 +87,8 @@ function contextSwitchJitter(baseMs) {
  */
 function humanDelay(opts = {}) {
   const {
-    min = 20000,
-    max = 45000,
+    min = 3000,
+    max = 5000,
     alpha = 3.0,
     enableCircadian = true,
     enableContextSwitch = true
@@ -107,10 +107,10 @@ function humanDelay(opts = {}) {
     delay = contextSwitchJitter(delay);
   }
 
-  // Add micro-jitter (TCP/network noise simulation)
-  delay += (Math.random() - 0.5) * 200;
+  // Micro-jitter (TCP/network noise simulation)
+  delay += (Math.random() - 0.5) * 100;
 
-  return Math.round(Math.min(max * 2, Math.max(min * 0.5, delay)));
+  return Math.round(Math.min(max * 1.2, Math.max(min * 0.8, delay)));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -253,6 +253,8 @@ const _rfp = (token) => token ? _getAccountProfile(token).ua : _fp[Math.floor(Ma
 /**
  * Chrome TLS settings that match curl-impersonate's chrome profile.
  * Critical: WebSocket and REST must share identical TLS behavior.
+ * NOTE: Removed X25519KYBER768Draft00 — Node.js OpenSSL does not support this
+ * post-quantum hybrid curve, causing "Failed to set ECDH curve" errors.
  */
 function getChromeTLSOptions() {
   return {
@@ -281,8 +283,8 @@ function getChromeTLSOptions() {
     ALPNProtocols: ['h2', 'http/1.1'],
     // Chrome's signature algorithms
     sigalgs: 'ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512',
-    // Enable ECDH key exchange with Chrome's curves
-    ecdhCurve: 'X25519KYBER768Draft00:X25519:P-256:P-384',
+    // Node.js-compatible ECDH curves (X25519KYBER768Draft00 removed — unsupported)
+    ecdhCurve: 'X25519:P-256:P-384',
     // Honor server cipher order like Chrome does
     honorCipherOrder: false,
   };
@@ -920,7 +922,7 @@ class StealthClient {
 
     // Add realistic delay between validation and connection
     // Humans don't: validate → 0ms → connect. There's UI rendering time.
-    const realisticGap = 800 + Math.floor(Math.random() * 1500);
+    const realisticGap = 300 + Math.floor(Math.random() * 700);
     await new Promise(r => setTimeout(r, realisticGap));
 
     try {
@@ -939,7 +941,7 @@ class StealthClient {
       }
     }
     // For transient errors, try once more
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 1000));
     try {
       const meRes = await this.api.request('/users/@me', 'GET');
       if (meRes && meRes.id) {
@@ -1398,19 +1400,18 @@ class StealthClient {
   async navigateToChannel(channelId) {
     // If we're already in this channel, minimal delay
     if (this._currentChannelId === channelId) {
-      await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
+      await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
       return;
     }
 
     // Simulate switching channels: clicking the channel in sidebar, loading messages
-    // This takes time - like a human navigating the Discord UI
-    // Use log-normal for realistic channel-switch times (most fast, some slow)
-    const switchDelay = Math.round(logNormalSample(7.0, 0.4)); // ~800-3000ms
-    await new Promise(r => setTimeout(r, Math.min(5000, Math.max(400, switchDelay))));
+    // Light 200-800ms switch + 150-500ms read — kept snappy for 3-5s total budget
+    const switchDelay = Math.round(logNormalSample(6.0, 0.4)); // ~200-800ms
+    await new Promise(r => setTimeout(r, Math.min(1200, Math.max(200, switchDelay))));
 
     // Simulate "reading" channel history before doing anything
-    const readDelay = Math.round(logNormalSample(6.8, 0.5)); // ~600-2500ms
-    await new Promise(r => setTimeout(r, Math.min(4000, Math.max(300, readDelay))));
+    const readDelay = Math.round(logNormalSample(5.5, 0.4)); // ~150-500ms
+    await new Promise(r => setTimeout(r, Math.min(1000, Math.max(150, readDelay))));
 
     this._currentChannelId = channelId;
   }
@@ -1451,27 +1452,26 @@ class StealthClient {
       const baseTypingMs = (len / (cpm / 60)) * 1000;
 
       if (len < 20) {
-        // Short messages: 0.4-1.2 seconds
-        typingDelay = 400 + Math.round(logNormalSample(6.2, 0.3));
+        // Short messages: 0.2-0.8 seconds
+        typingDelay = 200 + Math.round(logNormalSample(6.0, 0.3));
       } else if (len < 100) {
-        typingDelay = Math.min(4000, baseTypingMs * (0.7 + Math.random() * 0.5));
+        typingDelay = Math.min(2000, baseTypingMs * (0.7 + Math.random() * 0.5));
       } else {
-        typingDelay = Math.min(8000, baseTypingMs * (0.7 + Math.random() * 0.5));
+        typingDelay = Math.min(3000, baseTypingMs * (0.7 + Math.random() * 0.5));
       }
-      // Add occasional "thinking pauses" during typing
-      const thinkPauses = Math.floor(len / 80); // 1 pause per ~80 chars
+      // Occasional "thinking pauses" during typing — kept very light
+      const thinkPauses = Math.floor(len / 120); // 1 pause per ~120 chars
       let totalTypingDelay = typingDelay;
       for (let i = 0; i < thinkPauses; i++) {
-        if (Math.random() < 0.4) {
-          totalTypingDelay += 300 + Math.floor(Math.random() * 700);
+        if (Math.random() < 0.3) {
+          totalTypingDelay += 150 + Math.floor(Math.random() * 350);
         }
       }
-      await new Promise(r => setTimeout(r, Math.min(10000, Math.max(300, totalTypingDelay))));
+      await new Promise(r => setTimeout(r, Math.min(3500, Math.max(200, totalTypingDelay))));
     } else {
       // Small delay even when not typing (copy-paste or short message)
-      // Log-normal for realistic "instant" send times
-      const instantDelay = Math.round(logNormalSample(5.8, 0.35));
-      await new Promise(r => setTimeout(r, Math.min(1200, Math.max(150, instantDelay))));
+      const instantDelay = Math.round(logNormalSample(5.2, 0.35));
+      await new Promise(r => setTimeout(r, Math.min(800, Math.max(100, instantDelay))));
     }
 
     if (!attachments || attachments.length === 0) {
@@ -2302,7 +2302,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               }
             } catch(e) {}
             if (attempt < maxAttempts) {
-              const backoff = boundedPareto(2.5, 1500, 5000);
+              // Light retry backoff: 1-3s
+              const backoff = boundedPareto(2.5, 1000, 3000);
               await new Promise(r => setTimeout(r, backoff));
             }
           }
@@ -2331,10 +2332,10 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             }).filter(Boolean);
             await sendWithRetry(chId, msg.text, files);
 
-            // Natural navigation delay between channels — log-normal distributed
+            // Light navigation delay between channels — kept snappy
             if (i < shuffledChannels.length - 1) {
-              const navDelay = Math.round(logNormalSample(7.8, 0.35)); // ~1800-4000ms
-              await new Promise(r => setTimeout(r, Math.min(6000, Math.max(1000, navDelay))));
+              const navDelay = Math.round(logNormalSample(6.5, 0.35)); // ~400-1200ms
+              await new Promise(r => setTimeout(r, Math.min(2000, Math.max(300, navDelay))));
             }
           }
         } else {
@@ -2364,8 +2365,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         // Replaces the old uniform random with realistic human timing
         // ═══════════════════════════════════════════════════════════════════
         const humanDelayMs = humanDelay({
-          min: delayMs * 0.6,
-          max: delayMs * 1.6,
+          min: Math.max(3000, delayMs * 0.5),
+          max: Math.max(5000, delayMs * 0.9),
           alpha: 3.5,
           enableCircadian: true,
           enableContextSwitch: true
@@ -2391,8 +2392,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
         const now = Date.now();
         const lastReply = client._dmCooldowns.get(msg.author.id) || 0;
-        // Heavy-tailed DM cooldown using Pareto distribution
-        const cooldownMs = boundedPareto(3.0, 15000, 60000);
+        // Light DM cooldown: 3-5s using Pareto distribution
+        const cooldownMs = boundedPareto(3.0, 3000, 5000);
         if (now - lastReply < cooldownMs) return;
 
         // Allow occasional re-engagement (10% chance) to simulate natural human behavior
@@ -2404,12 +2405,11 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
         client.pendingReplies.add(msg.author.id);
 
-        // Humanized: read the message first, then think, then type
-        // Log-normal reading time based on message length
+        // Quick read of the message before replying — capped short
         const msgLen = msg.content ? msg.content.length : 0;
-        const readTimeBase = 1500 + (msgLen * 40); // ~40ms per character
+        const readTimeBase = 500 + (msgLen * 20); // ~20ms per character
         const readTime = Math.round(logNormalSample(Math.log(readTimeBase), 0.35));
-        await new Promise(r => setTimeout(r, Math.min(8000, Math.max(1000, readTime))));
+        await new Promise(r => setTimeout(r, Math.min(2500, Math.max(300, readTime))));
 
         client.pendingReplies.delete(msg.author.id);
         if (!activeBots.has(botKey)) return;
