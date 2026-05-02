@@ -184,7 +184,12 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
     child.stdout.on('data', chunk => stdout.push(chunk));
     child.stderr.on('data', chunk => stderr.push(chunk));
 
+    const killTimer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch(e) {}
+    }, timeoutMs + 8000);
+
     const cleanupTmp = () => {
+      clearTimeout(killTimer);
       if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch(e) {} }
     };
 
@@ -410,7 +415,7 @@ class StealthClient {
     }
     this.resumeGatewayUrl = gateway.url;
 
-    const wsUrl = `${gateway.url}?v=10&encoding=json&compress=zlib-stream`;
+    const wsUrl = `${gateway.url}?v=10&encoding=json`;
     this.ws = new (require('ws'))(wsUrl, {
       headers: {
         'User-Agent': this.api.fp,
@@ -421,7 +426,7 @@ class StealthClient {
     return new Promise((resolve, reject) => {
       const CONNECT_TIMEOUT = 60000;
       let timeoutTimer = setTimeout(() => {
-        if (this.ws) this.ws.terminate();
+        try { if (this.ws) this.ws.terminate(); } catch(e) {}
         finish(new Error('Gateway connection timed out'));
       }, CONNECT_TIMEOUT);
 
@@ -439,9 +444,10 @@ class StealthClient {
         this.reconnectAttempts = 0;
         this.reconnecting = false;
         this._invalidSessionCount = 0;
+        this.off('READY', readyHandler);
         finish(null);
       };
-      this.once('READY', readyHandler);
+      this.on('READY', readyHandler);
 
       this.ws.on('open', () => {
         const wasReconnecting = this.reconnecting;
