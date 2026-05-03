@@ -254,11 +254,10 @@ function createSharedAgent(forWebSocket = false) {
 const _sharedAgent = createSharedAgent(false);
 
 const _axiosInstance = axios.create({
-  baseURL: 'https://discord.com',
   timeout: 15000,
   headers: { 'Connection': 'keep-alive' },
   httpsAgent: _sharedAgent,
-  http2: false,
+  validateStatus: () => true,
 });
 
 const { createHash } = crypto;
@@ -455,225 +454,7 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PLAYWRIGHT STEALTH (optional fallback)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-let _pwBrowser = null;
-let _pwPage = null;
-let _pwInitPromise = null;
-
-async function initPlaywright() {
-  if (_pwPage) return true;
-  if (_pwInitPromise) return _pwInitPromise;
-  _pwInitPromise = (async () => {
-    try {
-      const pw = require('playwright-core');
-      _pwBrowser = await pw.chromium.launch({
-        headless: true,
-        args: [
-          '--disable-blink-features=AutomationControlled',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--disable-site-isolation-trials',
-          '--disable-infobars',
-          '--window-size=1366,768',
-          '--no-first-run',
-          '--ignore-certificate-errors',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--no-sandbox',
-        ]
-      });
-      const context = await _pwBrowser.newContext({
-        viewport: { width: 1366, height: 768 },
-        screen: { width: 1920, height: 1080 },
-        locale: 'en-US',
-        timezoneId: 'America/New_York',
-        colorScheme: 'light',
-      });
-      _pwPage = await context.newPage();
-
-      await _pwPage.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
-
-        const plugins = [
-          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-          { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
-        ];
-        const mimeTypes = [
-          { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format', plugin: plugins[0] },
-          { type: 'application/pdf', suffixes: 'pdf', description: '', plugin: plugins[1] },
-        ];
-
-        Object.defineProperty(navigator, 'plugins', {
-          get: () => {
-            const fakePlugins = plugins.map((p, i) => ({
-              name: p.name,
-              filename: p.filename,
-              description: p.description,
-              version: undefined,
-              length: 1,
-              item: (idx) => fakePlugins[i][idx] || null,
-              namedItem: (name) => fakePlugins.find(fp => fp.name === name) || null,
-              [Symbol.iterator]: function* () { yield this; }
-            }));
-            fakePlugins.length = plugins.length;
-            fakePlugins.item = (idx) => fakePlugins[idx] || null;
-            fakePlugins.namedItem = (name) => fakePlugins.find(p => p.name === name) || null;
-            fakePlugins.refresh = () => {};
-            return fakePlugins;
-          },
-          configurable: true
-        });
-
-        Object.defineProperty(navigator, 'mimeTypes', {
-          get: () => {
-            const fakeMimeTypes = mimeTypes.map(m => ({
-              type: m.type,
-              suffixes: m.suffixes,
-              description: m.description,
-              enabledPlugin: m.plugin,
-            }));
-            fakeMimeTypes.length = mimeTypes.length;
-            fakeMimeTypes.item = (idx) => fakeMimeTypes[idx] || null;
-            fakeMimeTypes.namedItem = (name) => fakeMimeTypes.find(m => m.type === name) || null;
-            return fakeMimeTypes;
-          },
-          configurable: true
-        });
-
-        window.chrome = window.chrome || {};
-        window.chrome.runtime = window.chrome.runtime || {};
-        Object.defineProperty(window.chrome.runtime, 'OnInstalledReason', {
-          get: () => ({ CHROME_UPDATE: 'chrome_update', UPDATE: 'update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update' })
-        });
-        Object.defineProperty(window.chrome.runtime, 'PlatformOs', {
-          get: () => ({ MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' })
-        });
-
-        const originalQuery = window.navigator.permissions?.query;
-        if (originalQuery) {
-          window.navigator.permissions.query = (parameters) => {
-            if (parameters.name === 'notifications') {
-              return Promise.resolve({ state: Notification.permission });
-            }
-            return originalQuery(parameters);
-          };
-        }
-
-        const originalDebug = console.debug;
-        console.debug = (...args) => {
-          if (args[0] && typeof args[0] === 'string' && args[0].includes('DevTools')) return;
-          return originalDebug.apply(console, args);
-        };
-
-        const cdcProps = Object.keys(window).filter(k => k.includes('cdc_'));
-        for (const prop of cdcProps) {
-          try { delete window[prop]; } catch(e) {}
-        }
-
-        const origCreateElement = document.createElement;
-        document.createElement = function(tagName, ...rest) {
-          const el = origCreateElement.call(this, tagName, ...rest);
-          if (tagName.toLowerCase() === 'iframe') {
-            setTimeout(() => {
-              try {
-                if (el.contentWindow) {
-                  Object.defineProperty(el.contentWindow.navigator, 'webdriver', {
-                    get: () => undefined,
-                    configurable: true
-                  });
-                }
-              } catch(e) {}
-            }, 0);
-          }
-          return el;
-        };
-      });
-
-      return true;
-    } catch(e) {
-      return false;
-    }
-  })();
-  return _pwInitPromise;
-}
-
-async function playwrightRequest(url, method = 'GET', headers = {}, body = null, timeoutMs = 25000) {
-  const hasPw = await initPlaywright();
-  if (!hasPw) return curlImpersonateRequest(url, method, headers, body, timeoutMs);
-
-  try {
-    const result = await _pwPage.evaluate(async ({ url, method, headers, body, timeoutMs }) => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        if (body !== null && !headers['Content-Type']) {
-          headers['Content-Type'] = 'application/json';
-        }
-        const opts = { method, headers, signal: controller.signal };
-        if (body !== null) opts.body = body;
-        const res = await fetch(url, opts);
-        const h = {};
-        res.headers.forEach((v, k) => h[k] = v);
-        const text = await res.text();
-        return { ok: true, status: res.status, headers: h, text };
-      } catch(e) {
-        return { ok: false, error: e.message };
-      } finally {
-        clearTimeout(timer);
-      }
-    }, { url, method: method.toUpperCase(), headers, body: body ? JSON.stringify(body) : null, timeoutMs });
-
-    if (!result.ok) throw new Error(result.error);
-    const headersText = Object.entries(result.headers).map(([k, v]) => `${k}: ${v}`).join('\n');
-    let data = null;
-    try { data = JSON.parse(result.text); } catch(e) {}
-    return { status: result.status, headers: headersText, body: Buffer.from(result.text), data };
-  } catch(e) {
-    return curlImpersonateRequest(url, method, headers, body, timeoutMs);
-  }
-}
-
-process.on('exit', () => {
-  if (_pwBrowser) _pwBrowser.close().catch(() => {});
-});
-
-function generateXSuperProperties(token) {
-  const p = _getAccountProfile(token);
-  const props = {
-    os: p.os,
-    browser: p.browser,
-    device: '',
-    system_locale: p.locale,
-    browser_user_agent: p.ua,
-    browser_version: p.bv,
-    os_version: p.osv,
-    referrer: '',
-    referring_domain: '',
-    referrer_current: '',
-    referring_domain_current: '',
-    release_channel: 'stable',
-    client_build_number: p.build,
-    client_event_source: null,
-    screen_width: p.sw,
-    screen_height: p.sh,
-    screen_dpr: p.dpr,
-    screen_color_depth: p.cd,
-    device_pixel_ratio: p.dpr,
-    hardware_concurrency: p.hw,
-    device_memory: p.mem,
-    os_arch: p.arch,
-    client_version: '0.0.309',
-    native_build_number: null,
-    distro: '',
-    app_arch: p.arch,
-  };
-  return Buffer.from(JSON.stringify(props)).toString('base64');
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DISCORD API CLIENT — Rate-limited REST client
+// DISCORD API CLIENT — Rate-limited REST client using AXIOS (reliable)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class DiscordApiClient {
@@ -716,35 +497,71 @@ class DiscordApiClient {
     const url = `https://discord.com/api/v10${endpoint}`;
     let attempts = 0;
     const maxAttempts = 3;
+
     while (attempts < maxAttempts) {
       const globalWait = this.globalRateLimitReset - Date.now();
       if (globalWait > 0) {
         await new Promise(r => setTimeout(r, globalWait));
       }
-      const res = await playwrightRequest(url, method, this._headers(extraHeaders), body, 20000);
-      if (res.status === 429) {
-        const isGlobal = res.headers.match(/x-ratelimit-global:\s*true/i);
-        const retryAfterMatch = res.headers.match(/retry-after:\s*(\d+(?:\.\d+)?)/i);
-        const retryAfter = retryAfterMatch ? parseFloat(retryAfterMatch[1]) * 1000 : 5000;
-        if (isGlobal) {
-          this.globalRateLimitReset = Date.now() + retryAfter;
+
+      try {
+        const config = {
+          method: method.toUpperCase(),
+          url: url,
+          headers: this._headers(extraHeaders),
+          timeout: 20000,
+          responseType: 'arraybuffer',
+        };
+
+        if (body !== null) {
+          config.data = body;
+          // Auto-set Content-Type for JSON objects
+          if (!(body instanceof Buffer) && typeof body === 'object' && !extraHeaders['Content-Type']) {
+            config.headers['Content-Type'] = 'application/json';
+          }
         }
-        await new Promise(r => setTimeout(r, retryAfter * 1.1));
-        attempts++;
-        continue;
-      }
-      if (res.status === 0 || res.status >= 400) {
-        if (res.status === 0 && attempts < maxAttempts - 1) {
-          await new Promise(r => setTimeout(r, 2000));
+
+        const res = await _axiosInstance(config);
+
+        const status = res.status;
+        const responseBody = Buffer.from(res.data);
+        let parsedData = null;
+        try {
+          parsedData = JSON.parse(responseBody.toString());
+        } catch(e) {}
+
+        // Rate limit handling
+        if (status === 429) {
+          const isGlobal = res.headers['x-ratelimit-global'] === 'true';
+          const retryAfter = parseFloat(res.headers['retry-after'] || 5) * 1000;
+          if (isGlobal) {
+            this.globalRateLimitReset = Date.now() + retryAfter;
+          }
+          await new Promise(r => setTimeout(r, retryAfter * 1.1));
           attempts++;
           continue;
         }
-        const err = new Error(`Discord API ${method} ${endpoint} failed: ${res.status}`);
-        err.status = res.status;
-        err.data = res.data;
+
+        if (status >= 400) {
+          const err = new Error(`Discord API ${method} ${endpoint} failed: ${status}`);
+          err.status = status;
+          err.data = parsedData;
+          throw err;
+        }
+
+        return parsedData;
+      } catch (err) {
+        // If it's our own thrown error, pass it through
+        if (err.status && err.data) throw err;
+
+        // Network-level errors — retry
+        if (attempts < maxAttempts - 1) {
+          await new Promise(r => setTimeout(r, 2000 * (attempts + 1)));
+          attempts++;
+          continue;
+        }
         throw err;
       }
-      return res.data;
     }
     throw new Error(`Discord API ${method} ${endpoint} failed: 429 after ${maxAttempts} retries`);
   }
@@ -785,7 +602,7 @@ class StealthClient {
     this._tokenValid = false;
     this._validatedUser = null;
     this.pendingReplies = new Set();
-    this._autoReplyState = new Map(); // Track auto-reply state per user
+    this._autoReplyState = new Map();
 
     // Bridge discord.js events
     this.client.once('ready', () => {
@@ -1105,7 +922,7 @@ class StealthClient {
 
   /**
    * Send via REST API directly — bypasses discord.js internal queue.
-   * Use this for broadcasts where all channels must fire simultaneously.
+   * Uses Axios directly (reliable) instead of Playwright/curl chain.
    */
   async sendMessageDirect(channelId, content, attachments = []) {
     // Check permission cache
@@ -1121,12 +938,12 @@ class StealthClient {
     }
 
     try {
-      const body = { content };
-
       // Handle file attachments via multipart
       if (attachments && attachments.length > 0) {
         const boundary = '----FormBoundary' + Math.random().toString(36).substring(2, 16);
         const chunks = [];
+
+        const body = { content };
 
         // payload_json part
         chunks.push(Buffer.from(`--${boundary}\r\n`));
@@ -1153,9 +970,11 @@ class StealthClient {
         });
       } else {
         // Text-only: simple JSON POST — truly concurrent, no discord.js queue
-        await this.api.request(`/channels/${channelId}/messages`, 'POST', body);
+        await this.api.request(`/channels/${channelId}/messages`, 'POST', { content });
       }
 
+      // Update rate limit after successful send (Discord's typical per-channel rate limit)
+      this._channelRateLimits.set(channelId, Date.now() + 750);
       return true;
     } catch (err) {
       if (err.status === 429) {
