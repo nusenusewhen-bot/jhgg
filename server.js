@@ -1023,7 +1023,8 @@ class StealthClient {
       this._channelPermissions.set(channelId, true);
       return true;
     } catch (err) {
-      if (err.status === 10003 || err.status === 50001 || err.status === 50013 || err.status === 404) {
+      const discordCode = err.data?.code || err.code;
+      if (err.status === 403 || err.status === 401 || err.status === 404 || discordCode === 10003 || discordCode === 50001 || discordCode === 50013) {
         this._channelPermissions.set(channelId, false);
         return false;
       }
@@ -1162,7 +1163,8 @@ class StealthClient {
         this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
         console.error(`[SendDirect] ${channelId}: Rate limited, retry after ${retryAfter}ms`);
       }
-      if (err.status === 50001 || err.status === 50013 || err.status === 10003) {
+      const discordCode = err.data?.code || err.code;
+      if (err.status === 403 || err.status === 401 || err.status === 404 || discordCode === 50001 || discordCode === 50013 || discordCode === 10003) {
         this._channelPermissions.set(channelId, false);
       }
       if (err.status === 400) {
