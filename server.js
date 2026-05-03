@@ -1458,7 +1458,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     activeBots.set(botKey, client);
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // FIXED MESSAGE LOOP — Sequential sending, 24/7 until stopped
+    // FIXED MESSAGE LOOP — Parallel burst to all channels, exact delay between rounds
     // ═══════════════════════════════════════════════════════════════════════════
     const msgLoop = async () => {
       // Helper: resolve image files
@@ -1480,14 +1480,12 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         return files;
       };
 
-      console.log(`[MsgLoop] ${botKey}: Starting 24/7 loop — ${messageList.length} messages x ${channelList.length} channels, ${delayMs}ms delay`);
+      console.log(`[MsgLoop] ${botKey}: Starting PARALLEL burst loop — ${messageList.length} messages x ${channelList.length} channels, ${delayMs}ms exact delay`);
 
-      // Outer loop: runs forever until bot is stopped
       while (activeBots.has(botKey)) {
         const roundStart = Date.now();
 
         try {
-          // Check subscription status
           const user = db.getUser(req.user.id);
           const trialActive = db.isTrialActive(req.user.id);
           const hasPurchase = user.auto_adv_purchased === 1;
@@ -1496,18 +1494,12 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             break;
           }
 
-          // ── PHASE 1: Send each message to ALL channels SEQUENTIALLY ──
-          // We send Message 1 -> Channel 1, Channel 2, Channel 3...
-          // Then Message 2 -> Channel 1, Channel 2, Channel 3...
-          // This avoids rate limits while still being fast
-
           let totalSends = 0;
           let successSends = 0;
 
           for (let msgIdx = 0; msgIdx < messageList.length; msgIdx++) {
             const msg = messageList[msgIdx];
 
-            // Resolve images for this message
             let targetImages = [];
             if (msg.imageIds && msg.imageIds.length > 0) {
               targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
@@ -1517,84 +1509,58 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             const files = await resolveFiles(targetImages);
             const variedText = varyMessage(msg.text);
 
-            // Send this message to each channel ONE AT A TIME with jittered delays
-            for (let chIdx = 0; chIdx < channelList.length; chIdx++) {
-              const chId = channelList[chIdx];
-
-              // Check bot still active
-              if (!activeBots.has(botKey)) {
-                console.log(`[MsgLoop] ${botKey}: Stopped mid-round`);
-                return;
-              }
+            // ── FIRE ALL CHANNELS AT ONCE (PARALLEL) ──
+            const sendPromises = channelList.map(async (chId) => {
+              if (!activeBots.has(botKey)) return { chId, ok: false, skipped: true };
 
               try {
-                // Check permission before sending
                 const canSend = await client.checkChannelPermission(chId);
                 if (canSend === false) {
                   console.log(`[Broadcast] ${botKey}: Skipping channel ${chId} (no permission)`);
-                  totalSends++;
-                  continue;
+                  return { chId, ok: false, skipped: true };
                 }
 
-                // Send the message
                 const ok = await client.sendMessageDirect(chId, variedText, files);
-                totalSends++;
                 if (ok) {
-                  successSends++;
-                  console.log(`[Broadcast] ${botKey}: msg${msgIdx + 1}/${messageList.length} -> channel ${chIdx + 1}/${channelList.length} (${chId}) OK`);
+                  console.log(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} OK`);
                 } else {
-                  console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> channel ${chId} FAILED`);
+                  console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} FAILED`);
                 }
+                return { chId, ok, skipped: false };
 
               } catch (err) {
-                totalSends++;
-                console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> channel ${chId} ERROR:`, err.message);
-                // Don't stop the loop — continue to next channel
+                console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} ERROR:`, err.message);
+                return { chId, ok: false, skipped: false };
               }
+            });
 
-              // ── INTER-CHANNEL DELAY: jittered 800ms-2000ms between channels ──
-              // This prevents rate limits while keeping speed reasonable
-              // Skip delay if this was the last channel for this message
-              if (chIdx < channelList.length - 1) {
-                const interChannelDelay = 800 + Math.floor(Math.random() * 1200);
-                await new Promise(r => setTimeout(r, interChannelDelay));
-              }
-            }
+            const results = await Promise.all(sendPromises);
+            totalSends += results.length;
+            successSends += results.filter(r => r.ok).length;
 
-            // ── INTER-MESSAGE DELAY: 1-3 seconds between different messages ──
-            // This gives breathing room between message variations
+            // tiny 500ms gap between DIFFERENT messages only
             if (msgIdx < messageList.length - 1) {
-              const interMessageDelay = 1000 + Math.floor(Math.random() * 2000);
-              await new Promise(r => setTimeout(r, interMessageDelay));
+              await new Promise(r => setTimeout(r, 500));
             }
           }
 
           const roundDuration = Date.now() - roundStart;
           console.log(`[MsgLoop] ${botKey}: Round complete — ${successSends}/${totalSends} OK in ${roundDuration}ms`);
 
-          // ── PHASE 2: Wait the FULL user-configured delay ──
-          // Calculate how much time is left after the round completed
-          const elapsedThisRound = Date.now() - roundStart;
-          const remainingWait = Math.max(5000, delayMs - elapsedThisRound);
-
-          console.log(`[MsgLoop] ${botKey}: Waiting ${remainingWait}ms until next round (delay=${delayMs}ms, round took ${elapsedThisRound}ms)`);
-
-          // Sleep in chunks so we can check for stop signal periodically
-          const checkInterval = 1000; // Check every second if bot was stopped
+          // ── EXACT DELAY: wait the FULL user delay, no adjustments ──
+          const checkInterval = 500;
           let waited = 0;
-          while (waited < remainingWait) {
+          while (waited < delayMs) {
             if (!activeBots.has(botKey)) {
               console.log(`[MsgLoop] ${botKey}: Stopped during delay`);
               return;
             }
-            await new Promise(r => setTimeout(r, Math.min(checkInterval, remainingWait - waited)));
+            await new Promise(r => setTimeout(r, Math.min(checkInterval, delayMs - waited)));
             waited += checkInterval;
           }
 
         } catch (loopErr) {
-          // Catch any unexpected error so the loop NEVER dies
           console.error(`[MsgLoop] ${botKey}: CRITICAL LOOP ERROR (recovering):`, loopErr.message);
-          // Wait a bit before retrying to avoid spam
           await new Promise(r => setTimeout(r, 5000));
         }
       }
