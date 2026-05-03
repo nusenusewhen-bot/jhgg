@@ -133,7 +133,7 @@ function calculateDelay(baseDelayMs) {
 }
 
 function autoReplyDelay() {
-  const min = 10000;
+  const min = 20000;
   const max = 25000;
   let delay = boundedPareto(2.5, min, max);
   delay *= circadianMultiplier();
@@ -492,14 +492,12 @@ class StealthClient {
 
   async _validateTokenWithCache() {
     if (this._tokenValidated) return { valid: this._tokenValid, user: this._validatedUser };
-    await new Promise(r => setTimeout(r, 300 + Math.floor(Math.random() * 700)));
     const result = await validateTokenFormat(this.token);
     if (result.valid) {
       this._tokenValid = true; this._validatedUser = result.user;
       this.tokenType = result.type; this.authPrefix = result.prefix; this._tokenValidated = true;
       return { valid: true, user: result.user, type: result.type };
     }
-    await new Promise(r => setTimeout(r, 1000));
     const retry = await validateTokenFormat(this.token);
     if (retry.valid) {
       this._tokenValid = true; this._validatedUser = retry.user;
@@ -627,41 +625,7 @@ class StealthClient {
 
   _startBackgroundEvents() {
     this._stopBackgroundEvents();
-
-    if (this.tokenType === 'user') {
-      const schedulePresence = () => {
-        const delay = boundedPareto(2.5, 3 * 60 * 1000, 7 * 60 * 1000);
-        const timer = setTimeout(() => {
-          if (!this.ready || this._explicitlyStopped) return;
-          // selfbot-v13 handles presence via client.user.setActivity etc.
-          schedulePresence();
-        }, delay);
-        this._backgroundTimers.push(timer);
-      };
-      schedulePresence();
-    }
-
-    const scheduleTelemetry = () => {
-      const delay = boundedPareto(2.0, 8 * 60 * 1000, 15 * 60 * 1000);
-      const timer = setTimeout(() => {
-        if (!this.ready || this._explicitlyStopped) return;
-        if (Math.random() < 0.3) this.api.request('/users/@me', 'GET').catch(() => {});
-        scheduleTelemetry();
-      }, delay);
-      this._backgroundTimers.push(timer);
-    };
-    scheduleTelemetry();
-
-    const scheduleReadState = () => {
-      const delay = boundedPareto(2.5, 2 * 60 * 1000, 5 * 60 * 1000);
-      const timer = setTimeout(() => {
-        if (!this.ready || this._explicitlyStopped) return;
-        if (Math.random() < 0.2) this.api.request('/users/@me', 'GET').catch(() => {});
-        scheduleReadState();
-      }, delay);
-      this._backgroundTimers.push(timer);
-    };
-    scheduleReadState();
+    // Background events stripped to avoid rate-limit consumption and blocking
   }
 
   _stopBackgroundEvents() {
@@ -743,7 +707,15 @@ class StealthClient {
     if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) return false;
     const now = Date.now();
     const freeAt = this._channelRateLimits.get(channelId) || 0;
-    if (now < freeAt) await new Promise(r => setTimeout(r, freeAt - now));
+    if (now < freeAt) {
+      const wait = freeAt - now;
+      // Don't let local rate-limit waits block for more than 1s; skip instead
+      if (wait > 1000) {
+        console.log(`[SendDirect] ${channelId}: Local rate limit wait ${wait}ms too long, skipping`);
+        return false;
+      }
+      await new Promise(r => setTimeout(r, wait));
+    }
     try {
       if (attachments && attachments.length > 0) {
         const boundary = '----FormBoundary' + Math.random().toString(36).substring(2, 16);
@@ -1502,9 +1474,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         })
       );
 
-      // Pre-check permissions so the burst itself is purely sends
-      await Promise.all(channelList.map(chId => client.checkChannelPermission(chId)));
-
       console.log(`[MsgLoop] ${botKey}: Starting CONCURRENT sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ${delayMs}ms between rounds`);
 
       while (activeBots.has(botKey)) {
@@ -1545,28 +1514,30 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             }
           }
 
-          const results = await Promise.allSettled(jobs);
-          let total = 0;
-          let success = 0;
-          const failsPerChannel = {};
+          // Fire and forget — don't let slow sends block the round delay
+          Promise.allSettled(jobs).then(results => {
+            let total = 0;
+            let success = 0;
+            const failsPerChannel = {};
 
-          for (const r of results) {
-            total++;
-            if (r.status === 'fulfilled') {
-              if (r.value.ok) success++;
-              if (!r.value.ok && !r.value.skipped) {
-                failsPerChannel[r.value.chId] = (failsPerChannel[r.value.chId] || 0) + 1;
+            for (const r of results) {
+              total++;
+              if (r.status === 'fulfilled') {
+                if (r.value.ok) success++;
+                if (!r.value.ok && !r.value.skipped) {
+                  failsPerChannel[r.value.chId] = (failsPerChannel[r.value.chId] || 0) + 1;
+                }
+              } else {
+                failsPerChannel['unknown'] = (failsPerChannel['unknown'] || 0) + 1;
               }
-            } else {
-              failsPerChannel['unknown'] = (failsPerChannel['unknown'] || 0) + 1;
             }
-          }
 
-          const roundDuration = Date.now() - roundStart;
-          console.log(`[MsgLoop] ${botKey}: Round complete — ${success}/${total} OK in ${roundDuration}ms`);
-          if (Object.keys(failsPerChannel).length > 0) {
-            console.error(`[MsgLoop] ${botKey}: Failures per channel:`, failsPerChannel);
-          }
+            const roundDuration = Date.now() - roundStart;
+            console.log(`[MsgLoop] ${botKey}: Round complete — ${success}/${total} OK in ${roundDuration}ms`);
+            if (Object.keys(failsPerChannel).length > 0) {
+              console.error(`[MsgLoop] ${botKey}: Failures per channel:`, failsPerChannel);
+            }
+          });
 
           // ── EXACT DELAY: wait the FULL user delay ──
           if (!activeBots.has(botKey)) {
@@ -1577,7 +1548,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
         } catch (loopErr) {
           console.error(`[MsgLoop] ${botKey}: CRITICAL LOOP ERROR (recovering):`, loopErr.message);
-          await new Promise(r => setTimeout(r, 5000));
+          await new Promise(r => setTimeout(r, 1000));
         }
       }
 
@@ -1607,12 +1578,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           client.pendingReplies.add(msg.author.id);
 
           console.log(`[AutoReply] ${botKey}: New DM from ${msg.author.username}`);
-
-          // Read delay
-          const msgLen = msg.content ? msg.content.length : 0;
-          const readTimeBase = 500 + (msgLen * 15);
-          const readTime = Math.min(3000, Math.max(300, Math.round(logNormalSample(Math.log(readTimeBase), 0.35))));
-          await new Promise(r => setTimeout(r, readTime));
 
           if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
 
