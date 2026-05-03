@@ -1919,9 +1919,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const botKey = `${req.user.id}_${configId}`;
     activeBots.set(botKey, client);
 
-    // ── MESSAGE LOOP: BROADCAST TO ALL CHANNELS SIMULTANEOUSLY ──
-    let currentMsgIdx = 0;
-
+    // ── MESSAGE LOOP: BROADCAST ALL MESSAGES SIMULTANEOUSLY EVERY DELAY ──
     const msgLoop = async () => {
       const resolveFiles = async (imgs) => {
         const files = [];
@@ -1941,7 +1939,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         return files;
       };
 
-      // Anchor to precise intervals — if broadcast takes 500ms, we only wait 29.5s
+      // Anchor to precise intervals
       let nextTick = Date.now();
 
       while (activeBots.has(botKey)) {
@@ -1956,40 +1954,42 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             break;
           }
 
-          const msg = messageList[currentMsgIdx % messageList.length];
-          let targetImages = [];
-          if (msg.imageIds && msg.imageIds.length > 0) {
-            targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
-          } else if (savedImages.length > 0) {
-            targetImages = savedImages;
-          }
-
-          const files = await resolveFiles(targetImages);
-
-          // ── PRE-VARY: one variation per broadcast round (all channels get identical text) ──
-          const variedText = varyMessage(msg.text);
-
-          // ── BROADCAST: Fire ALL channels simultaneously via REST (bypasses discord.js queue) ──
-          const sendPromises = channelList.map(async (chId) => {
-            try {
-              const canSend = await client.checkChannelPermission(chId);
-              if (canSend === false) return { channel: chId, success: false, reason: 'no_permission' };
-
-              // Use sendMessageDirect for true concurrency (no discord.js internal serialization)
-              const ok = await client.sendMessageDirect(chId, variedText, files);
-              return { channel: chId, success: ok };
-            } catch (err) {
-              console.error(`[Broadcast] ${botKey} channel ${chId}:`, err.message);
-              return { channel: chId, success: false, reason: err.message };
+          // ── FIRE ALL MESSAGES AT ONCE via Promise.all() ──
+          const allMessagePromises = messageList.map(async (msg, msgIdx) => {
+            let targetImages = [];
+            if (msg.imageIds && msg.imageIds.length > 0) {
+              targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
+            } else if (savedImages.length > 0) {
+              targetImages = savedImages;
             }
+
+            const files = await resolveFiles(targetImages);
+            const variedText = varyMessage(msg.text);
+
+            // Fire this message to ALL channels simultaneously
+            const channelPromises = channelList.map(async (chId) => {
+              try {
+                const canSend = await client.checkChannelPermission(chId);
+                if (canSend === false) return { channel: chId, success: false, reason: 'no_permission' };
+
+                const ok = await client.sendMessageDirect(chId, variedText, files);
+                return { channel: chId, success: ok };
+              } catch (err) {
+                console.error(`[Broadcast] ${botKey} msg${msgIdx + 1} channel ${chId}:`, err.message);
+                return { channel: chId, success: false, reason: err.message };
+              }
+            });
+
+            return Promise.all(channelPromises);
           });
 
-          const results = await Promise.all(sendPromises);
-          const successCount = results.filter(r => r.success === true).length;
+          const allResults = await Promise.all(allMessagePromises);
+          const flatResults = allResults.flat();
+          const successCount = flatResults.filter(r => r.success === true).length;
+          const totalSends = flatResults.length;
           const broadcastDuration = Date.now() - loopStart;
-          console.log(`[MsgLoop] ${botKey}: Broadcast message ${(currentMsgIdx % messageList.length) + 1}/${messageList.length} to ${successCount}/${channelList.length} channels in ${broadcastDuration}ms`);
 
-          currentMsgIdx++;
+          console.log(`[MsgLoop] ${botKey}: Fired ALL ${messageList.length} messages to ${channelList.length} channels (${successCount}/${totalSends} ok) in ${broadcastDuration}ms`);
 
           // ── PRECISE INTERVAL: account for broadcast duration so we hit exactly every N seconds ──
           nextTick += delayMs;
