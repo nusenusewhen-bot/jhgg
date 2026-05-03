@@ -1413,7 +1413,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       console.error('[BotStart] Validation warning:', grabResult?.error || 'Token validation failed');
     }
 
-    const delayMs = (parseInt(delay) || 30) * 1000;
+    const parsedDelay = parseFloat(delay);
+    const delaySec = parsedDelay >= 1 ? parsedDelay : 30;
+    const delayMs = delaySec * 1000;
     const autoReply = autoReplyEnabled ? 1 : 0;
 
     let joinStatus = null;
@@ -1447,7 +1449,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     if (messageList.length === 0) return res.status(400).json({ success: false, error: 'At least one non-empty message required' });
 
     db.setConfig(req.user.id, {
-      token, channels, messages: messageList, delay_seconds: parseInt(delay) || 30,
+      token, channels, messages: messageList, delay_seconds: delaySec,
       auto_reply_enabled: autoReply, auto_reply_text: autoReplyText || '',
       active: 1, username: client.user.username, server_joined: joinStatus?.success || false,
       images: savedImages
@@ -1480,7 +1482,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         return files;
       };
 
-      console.log(`[MsgLoop] ${botKey}: Starting FULL PARALLEL burst — ${messageList.length} messages x ${channelList.length} channels, ${delayMs}ms delay between rounds`);
+      console.log(`[MsgLoop] ${botKey}: Starting SEQUENTIAL sends — ${messageList.length} messages x ${channelList.length} channels, ${delayMs}ms delay between rounds, 200ms gaps`);
 
       while (activeBots.has(botKey)) {
         const roundStart = Date.now();
@@ -1494,52 +1496,71 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             break;
           }
 
-          // Build all send promises: every message to every channel, ALL AT ONCE
-          const allSendPromises = [];
-          for (let msgIdx = 0; msgIdx < messageList.length; msgIdx++) {
-            const msg = messageList[msgIdx];
+          // Sequential sends: one channel at a time, one message at a time
+          let totalSends = 0;
+          let successSends = 0;
 
-            let targetImages = [];
-            if (msg.imageIds && msg.imageIds.length > 0) {
-              targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
-            } else if (savedImages.length > 0) {
-              targetImages = savedImages;
+          for (let chIdx = 0; chIdx < channelList.length; chIdx++) {
+            const chId = channelList[chIdx];
+
+            if (!activeBots.has(botKey)) {
+              console.log(`[MsgLoop] ${botKey}: Stopped between channels`);
+              return;
             }
-            const files = await resolveFiles(targetImages);
-            const variedText = varyMessage(msg.text);
 
-            for (const chId of channelList) {
-              allSendPromises.push(
-                (async () => {
-                  if (!activeBots.has(botKey)) return { chId, msgIdx, ok: false, skipped: true };
+            try {
+              const canSend = await client.checkChannelPermission(chId);
+              if (canSend === false) {
+                console.log(`[Broadcast] ${botKey}: Skipping channel ${chId} (no permission)`);
+                continue;
+              }
+            } catch (err) {
+              console.error(`[Broadcast] ${botKey}: channel ${chId} permission check error:`, err.message);
+              continue;
+            }
 
-                  try {
-                    const canSend = await client.checkChannelPermission(chId);
-                    if (canSend === false) {
-                      console.log(`[Broadcast] ${botKey}: Skipping channel ${chId} (no permission)`);
-                      return { chId, msgIdx, ok: false, skipped: true };
-                    }
+            for (let msgIdx = 0; msgIdx < messageList.length; msgIdx++) {
+              const msg = messageList[msgIdx];
 
-                    const ok = await client.sendMessageDirect(chId, variedText, files);
-                    if (ok) {
-                      console.log(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} OK`);
-                    } else {
-                      console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} FAILED`);
-                    }
-                    return { chId, msgIdx, ok, skipped: false };
-                  } catch (err) {
-                    console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} ERROR:`, err.message);
-                    return { chId, msgIdx, ok: false, skipped: false };
-                  }
-                })()
-              );
+              let targetImages = [];
+              if (msg.imageIds && msg.imageIds.length > 0) {
+                targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
+              } else if (savedImages.length > 0) {
+                targetImages = savedImages;
+              }
+              const files = await resolveFiles(targetImages);
+              const variedText = varyMessage(msg.text);
+
+              if (!activeBots.has(botKey)) {
+                console.log(`[MsgLoop] ${botKey}: Stopped mid-channel`);
+                return;
+              }
+
+              try {
+                const ok = await client.sendMessageDirect(chId, variedText, files);
+                totalSends++;
+                if (ok) {
+                  successSends++;
+                  console.log(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} OK`);
+                } else {
+                  console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} FAILED`);
+                }
+              } catch (err) {
+                totalSends++;
+                console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} ERROR:`, err.message);
+              }
+
+              // 200ms gap between messages in the same channel
+              if (msgIdx < messageList.length - 1) {
+                await new Promise(r => setTimeout(r, 200));
+              }
+            }
+
+            // 200ms gap between channels
+            if (chIdx < channelList.length - 1) {
+              await new Promise(r => setTimeout(r, 200));
             }
           }
-
-          // FIRE EVERYTHING SIMULTANEOUSLY
-          const results = await Promise.all(allSendPromises);
-          const totalSends = results.length;
-          const successSends = results.filter(r => r.ok).length;
 
           const roundDuration = Date.now() - roundStart;
           console.log(`[MsgLoop] ${botKey}: Round complete — ${successSends}/${totalSends} OK in ${roundDuration}ms`);
