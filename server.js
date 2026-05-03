@@ -1103,6 +1103,77 @@ class StealthClient {
     return this._rawSend(channel, variedContent, attachments);
   }
 
+  /**
+   * Send via REST API directly — bypasses discord.js internal queue.
+   * Use this for broadcasts where all channels must fire simultaneously.
+   */
+  async sendMessageDirect(channelId, content, attachments = []) {
+    // Check permission cache
+    if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) {
+      return false;
+    }
+
+    // Check rate limit cache
+    const now = Date.now();
+    const freeAt = this._channelRateLimits.get(channelId) || 0;
+    if (now < freeAt) {
+      await new Promise(r => setTimeout(r, freeAt - now));
+    }
+
+    try {
+      const body = { content };
+
+      // Handle file attachments via multipart
+      if (attachments && attachments.length > 0) {
+        const boundary = '----FormBoundary' + Math.random().toString(36).substring(2, 16);
+        const chunks = [];
+
+        // payload_json part
+        chunks.push(Buffer.from(`--${boundary}\r\n`));
+        chunks.push(Buffer.from(`Content-Disposition: form-data; name="payload_json"\r\n`));
+        chunks.push(Buffer.from(`Content-Type: application/json\r\n\r\n`));
+        chunks.push(Buffer.from(JSON.stringify(body)));
+        chunks.push(Buffer.from(`\r\n`));
+
+        // File parts
+        for (let i = 0; i < attachments.length; i++) {
+          const att = attachments[i];
+          chunks.push(Buffer.from(`--${boundary}\r\n`));
+          chunks.push(Buffer.from(`Content-Disposition: form-data; name="files[${i}]"; filename="${att.name}"\r\n`));
+          chunks.push(Buffer.from(`Content-Type: application/octet-stream\r\n\r\n`));
+          chunks.push(att.buffer);
+          chunks.push(Buffer.from(`\r\n`));
+        }
+
+        chunks.push(Buffer.from(`--${boundary}--\r\n`));
+
+        const multipartBody = Buffer.concat(chunks);
+        await this.api.request(`/channels/${channelId}/messages`, 'POST', multipartBody, {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`
+        });
+      } else {
+        // Text-only: simple JSON POST — truly concurrent, no discord.js queue
+        await this.api.request(`/channels/${channelId}/messages`, 'POST', body);
+      }
+
+      return true;
+    } catch (err) {
+      if (err.status === 429) {
+        const rawRetry = err.data?.retry_after || (err.data && err.data.retryAfter) || 5;
+        const retryAfter = parseFloat(rawRetry) < 1000 ? parseFloat(rawRetry) * 1000 : parseFloat(rawRetry);
+        this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
+        console.error(`[SendDirect] ${channelId}: Rate limited, retry after ${retryAfter}ms`);
+      }
+      if (err.status === 50001 || err.status === 50013 || err.status === 10003) {
+        this._channelPermissions.set(channelId, false);
+      }
+      if (err.status === 400) {
+        console.error(`[SendDirect] ${channelId}: Bad request — ${JSON.stringify(err.data)}`);
+      }
+      return false;
+    }
+  }
+
   async _rawSend(channel, variedContent, attachments = []) {
     const files = (attachments || []).map(att => ({
       attachment: att.buffer,
@@ -1870,7 +1941,11 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         return files;
       };
 
+      // Anchor to precise intervals — if broadcast takes 500ms, we only wait 29.5s
+      let nextTick = Date.now();
+
       while (activeBots.has(botKey)) {
+        const loopStart = Date.now();
         try {
           // Check subscription status
           const user = db.getUser(req.user.id);
@@ -1891,13 +1966,17 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
           const files = await resolveFiles(targetImages);
 
-          // ── BROADCAST: Send to ALL channels at the SAME TIME ──
+          // ── PRE-VARY: one variation per broadcast round (all channels get identical text) ──
+          const variedText = varyMessage(msg.text);
+
+          // ── BROADCAST: Fire ALL channels simultaneously via REST (bypasses discord.js queue) ──
           const sendPromises = channelList.map(async (chId) => {
             try {
               const canSend = await client.checkChannelPermission(chId);
               if (canSend === false) return { channel: chId, success: false, reason: 'no_permission' };
 
-              const ok = await client.sendMessageFast(chId, msg.text, files);
+              // Use sendMessageDirect for true concurrency (no discord.js internal serialization)
+              const ok = await client.sendMessageDirect(chId, variedText, files);
               return { channel: chId, success: ok };
             } catch (err) {
               console.error(`[Broadcast] ${botKey} channel ${chId}:`, err.message);
@@ -1907,16 +1986,21 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
           const results = await Promise.all(sendPromises);
           const successCount = results.filter(r => r.success === true).length;
-          console.log(`[MsgLoop] ${botKey}: Broadcast message ${(currentMsgIdx % messageList.length) + 1}/${messageList.length} to ${successCount}/${channelList.length} channels (delay: ${delayMs}ms)`);
+          const broadcastDuration = Date.now() - loopStart;
+          console.log(`[MsgLoop] ${botKey}: Broadcast message ${(currentMsgIdx % messageList.length) + 1}/${messageList.length} to ${successCount}/${channelList.length} channels in ${broadcastDuration}ms`);
 
           currentMsgIdx++;
 
-          // ── ACCURATE DELAY: wait exactly the user-specified delay before next broadcast ──
-          await new Promise(r => setTimeout(r, delayMs));
+          // ── PRECISE INTERVAL: account for broadcast duration so we hit exactly every N seconds ──
+          nextTick += delayMs;
+          const waitTime = Math.max(100, nextTick - Date.now());
+          await new Promise(r => setTimeout(r, waitTime));
 
         } catch (loopErr) {
           console.error('[MsgLoop] Unhandled loop error:', loopErr.message);
-          await new Promise(r => setTimeout(r, 3000));
+          nextTick += delayMs;
+          const waitTime = Math.max(100, nextTick - Date.now());
+          await new Promise(r => setTimeout(r, waitTime));
         }
       }
 
