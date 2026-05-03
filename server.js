@@ -207,6 +207,28 @@ const _fp = [
 ];
 const _rfp = (token) => token ? _getAccountProfile(token).ua : _fp[Math.floor(Math.random() * _fp.length)];
 
+function generateXSuperProperties(token) {
+  const p = _getAccountProfile(token);
+  const props = {
+    os: p.os,
+    browser: p.browser,
+    device: '',
+    system_locale: p.locale,
+    browser_user_agent: p.ua,
+    browser_version: p.bv,
+    os_version: p.osv,
+    referrer: '',
+    referring_domain: '',
+    referrer_current: '',
+    referring_domain_current: '',
+    release_channel: 'stable',
+    client_build_number: p.build,
+    client_event_source: null,
+    design_id: 0,
+  };
+  return Buffer.from(JSON.stringify(props)).toString('base64');
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TLS & NETWORK CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
