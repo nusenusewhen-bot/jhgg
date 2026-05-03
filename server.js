@@ -673,6 +673,11 @@ class StealthClient {
     if (this._channelPermissions.has(channelId)) return this._channelPermissions.get(channelId);
     try {
       if (this.tokenType === 'bot' && this.client && this.client.channels) {
+        const cached = this.client.channels.cache.get(channelId);
+        if (cached && typeof cached.send === 'function') {
+          this._channelPermissions.set(channelId, true);
+          return true;
+        }
         const channel = await this.client.channels.fetch(channelId);
         if (!channel || typeof channel.send !== 'function') {
           this._channelPermissions.set(channelId, false);
@@ -700,14 +705,6 @@ class StealthClient {
   }
 
   async navigateToChannel(channelId) {
-    if (this._currentChannelId === channelId) {
-      await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
-      return;
-    }
-    const switchDelay = Math.round(logNormalSample(6.0, 0.4));
-    await new Promise(r => setTimeout(r, Math.min(1200, Math.max(200, switchDelay))));
-    const readDelay = Math.round(logNormalSample(5.5, 0.4));
-    await new Promise(r => setTimeout(r, Math.min(1000, Math.max(150, readDelay))));
     this._currentChannelId = channelId;
   }
 
@@ -716,7 +713,6 @@ class StealthClient {
       console.error(`[SendMessage] Blocked: channel ${channelId} cached as no permission`);
       return false;
     }
-    await this.navigateToChannel(channelId);
     const now = Date.now();
     const freeAt = this._channelRateLimits.get(channelId) || 0;
     if (now < freeAt) await new Promise(r => setTimeout(r, freeAt - now));
@@ -774,13 +770,13 @@ class StealthClient {
       } else {
         await this.api.request(`/channels/${channelId}/messages`, 'POST', { content });
       }
-      this._channelRateLimits.set(channelId, Date.now() + 750);
+      this._channelRateLimits.set(channelId, Date.now() + 100);
       return true;
     } catch (err) {
       if (err.status === 429) {
         const rawRetry = err.data?.retry_after || (err.data && err.data.retryAfter) || 5;
         const retryAfter = parseFloat(rawRetry) < 1000 ? parseFloat(rawRetry) * 1000 : parseFloat(rawRetry);
-        this._channelRateLimits.set(channelId, Date.now() + retryAfter + 500);
+        this._channelRateLimits.set(channelId, Date.now() + retryAfter + 250);
         console.error(`[SendDirect] ${channelId}: Rate limited, retry after ${retryAfter}ms`);
       }
       const discordCode = err.data?.code || err.code;
@@ -1413,9 +1409,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       console.error('[BotStart] Validation warning:', grabResult?.error || 'Token validation failed');
     }
 
-    const parsedDelay = parseFloat(delay);
+    let parsedDelay = parseFloat(delay);
+    // Heuristic: if delay looks like milliseconds (large whole number), convert to seconds
+    if (parsedDelay > 300 && Number.isInteger(parsedDelay)) {
+      console.log(`[BotStart] Delay looks like milliseconds (${parsedDelay}), converting to seconds`);
+      parsedDelay = parsedDelay / 1000;
+    }
     const delaySec = parsedDelay >= 1 ? parsedDelay : 30;
     const delayMs = delaySec * 1000;
+    console.log(`[BotStart] User delay: ${delay} | parsed: ${parsedDelay}s | delayMs: ${delayMs}ms (${(delayMs/1000).toFixed(1)}s)`);
     const autoReply = autoReplyEnabled ? 1 : 0;
 
     let joinStatus = null;
@@ -1566,17 +1568,12 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             console.error(`[MsgLoop] ${botKey}: Failures per channel:`, failsPerChannel);
           }
 
-          // ── EXACT DELAY: wait the FULL user delay, no adjustments ──
-          const checkInterval = 500;
-          let waited = 0;
-          while (waited < delayMs) {
-            if (!activeBots.has(botKey)) {
-              console.log(`[MsgLoop] ${botKey}: Stopped during delay`);
-              return;
-            }
-            await new Promise(r => setTimeout(r, Math.min(checkInterval, delayMs - waited)));
-            waited += checkInterval;
+          // ── EXACT DELAY: wait the FULL user delay ──
+          if (!activeBots.has(botKey)) {
+            console.log(`[MsgLoop] ${botKey}: Stopped before delay`);
+            return;
           }
+          await new Promise(r => setTimeout(r, delayMs));
 
         } catch (loopErr) {
           console.error(`[MsgLoop] ${botKey}: CRITICAL LOOP ERROR (recovering):`, loopErr.message);
