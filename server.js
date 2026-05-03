@@ -1458,7 +1458,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     activeBots.set(botKey, client);
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // FIXED MESSAGE LOOP — Parallel burst to all channels, exact delay between rounds
+    // FIXED MESSAGE LOOP — Fire EVERYTHING at once, exact user delay between rounds
     // ═══════════════════════════════════════════════════════════════════════════
     const msgLoop = async () => {
       // Helper: resolve image files
@@ -1480,7 +1480,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         return files;
       };
 
-      console.log(`[MsgLoop] ${botKey}: Starting PARALLEL burst loop — ${messageList.length} messages x ${channelList.length} channels, ${delayMs}ms exact delay`);
+      console.log(`[MsgLoop] ${botKey}: Starting FULL PARALLEL burst — ${messageList.length} messages x ${channelList.length} channels, ${delayMs}ms delay between rounds`);
 
       while (activeBots.has(botKey)) {
         const roundStart = Date.now();
@@ -1494,9 +1494,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             break;
           }
 
-          let totalSends = 0;
-          let successSends = 0;
-
+          // Build all send promises: every message to every channel, ALL AT ONCE
+          const allSendPromises = [];
           for (let msgIdx = 0; msgIdx < messageList.length; msgIdx++) {
             const msg = messageList[msgIdx];
 
@@ -1509,40 +1508,38 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             const files = await resolveFiles(targetImages);
             const variedText = varyMessage(msg.text);
 
-            // ── FIRE ALL CHANNELS AT ONCE (PARALLEL) ──
-            const sendPromises = channelList.map(async (chId) => {
-              if (!activeBots.has(botKey)) return { chId, ok: false, skipped: true };
+            for (const chId of channelList) {
+              allSendPromises.push(
+                (async () => {
+                  if (!activeBots.has(botKey)) return { chId, msgIdx, ok: false, skipped: true };
 
-              try {
-                const canSend = await client.checkChannelPermission(chId);
-                if (canSend === false) {
-                  console.log(`[Broadcast] ${botKey}: Skipping channel ${chId} (no permission)`);
-                  return { chId, ok: false, skipped: true };
-                }
+                  try {
+                    const canSend = await client.checkChannelPermission(chId);
+                    if (canSend === false) {
+                      console.log(`[Broadcast] ${botKey}: Skipping channel ${chId} (no permission)`);
+                      return { chId, msgIdx, ok: false, skipped: true };
+                    }
 
-                const ok = await client.sendMessageDirect(chId, variedText, files);
-                if (ok) {
-                  console.log(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} OK`);
-                } else {
-                  console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} FAILED`);
-                }
-                return { chId, ok, skipped: false };
-
-              } catch (err) {
-                console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} ERROR:`, err.message);
-                return { chId, ok: false, skipped: false };
-              }
-            });
-
-            const results = await Promise.all(sendPromises);
-            totalSends += results.length;
-            successSends += results.filter(r => r.ok).length;
-
-            // tiny 500ms gap between DIFFERENT messages only
-            if (msgIdx < messageList.length - 1) {
-              await new Promise(r => setTimeout(r, 500));
+                    const ok = await client.sendMessageDirect(chId, variedText, files);
+                    if (ok) {
+                      console.log(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} OK`);
+                    } else {
+                      console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} FAILED`);
+                    }
+                    return { chId, msgIdx, ok, skipped: false };
+                  } catch (err) {
+                    console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> ${chId} ERROR:`, err.message);
+                    return { chId, msgIdx, ok: false, skipped: false };
+                  }
+                })()
+              );
             }
           }
+
+          // FIRE EVERYTHING SIMULTANEOUSLY
+          const results = await Promise.all(allSendPromises);
+          const totalSends = results.length;
+          const successSends = results.filter(r => r.ok).length;
 
           const roundDuration = Date.now() - roundStart;
           console.log(`[MsgLoop] ${botKey}: Round complete — ${successSends}/${totalSends} OK in ${roundDuration}ms`);
