@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log
+yarn-error.log
+.env
+.env.*
+!.env.example
+data
+*.md
+.git
+.gitignore
+.github
+.vscode
+coverage
+.nyc_output
+Dockerfile*
+docker-compose*
