@@ -319,7 +319,7 @@ function getChromeTLSOptions(forWebSocket = false) {
     ].join(':'),
     minVersion: 'TLSv1.2',
     maxVersion: 'TLSv1.3',
-    ALPNProtocols: forWebSocket ? ['http/1.1'] : ['h2', 'http/1.1'],
+    ALPNProtocols: ['http/1.1'],
     sigalgs: 'ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512',
     ecdhCurve: 'X25519:P-256:P-384',
     honorCipherOrder: false,
