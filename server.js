@@ -1848,9 +1848,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const botKey = `${req.user.id}_${configId}`;
     activeBots.set(botKey, client);
 
-    // ── MESSAGE LOOP WITH ACCURATE DELAY ──
+    // ── MESSAGE LOOP: BROADCAST TO ALL CHANNELS SIMULTANEOUSLY ──
     let currentMsgIdx = 0;
-    const channelWeights = channelList.map(() => 0.5 + Math.random());
 
     const msgLoop = async () => {
       const resolveFiles = async (imgs) => {
@@ -1890,65 +1889,30 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             targetImages = savedImages;
           }
 
-          const sendWithRetry = async (chId, text, files) => {
-            const maxAttempts = 2;
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              try {
-                const ok = await client.sendMessage(chId, text, files);
-                if (ok) return true;
-                const freeAt = client._channelRateLimits.get(chId) || 0;
-                const now = Date.now();
-                if (now < freeAt && attempt < maxAttempts) {
-                  await new Promise(r => setTimeout(r, freeAt - now + 500));
-                  continue;
-                }
-              } catch(e) {
-                console.error(`[SendWithRetry] ${chId}: attempt ${attempt} threw:`, e.message);
-              }
-              if (attempt < maxAttempts) {
-                const backoff = boundedPareto(2.5, 1000, 3000);
-                await new Promise(r => setTimeout(r, backoff));
-              }
-            }
-            return false;
-          };
+          const files = await resolveFiles(targetImages);
 
-          if (sendAllAtOnce) {
-            const shuffledChannels = channelList
-              .map((id, i) => ({ id, weight: channelWeights[i] + (Math.random() * 0.3) }))
-              .sort((a, b) => b.weight - a.weight)
-              .map(c => c.id);
-
-            const files = await resolveFiles(targetImages);
-
-            const sendPromises = shuffledChannels.map(async (chId) => {
+          // ── BROADCAST: Send to ALL channels at the SAME TIME ──
+          const sendPromises = channelList.map(async (chId) => {
+            try {
               const canSend = await client.checkChannelPermission(chId);
-              if (canSend === false) return false;
-              return client.sendMessageFast(chId, msg.text, files);
-            });
-            await Promise.all(sendPromises);
-          } else {
-            const chId = weightedRandom(channelList, channelWeights);
+              if (canSend === false) return { channel: chId, success: false, reason: 'no_permission' };
 
-            const canSend = await client.checkChannelPermission(chId);
-            if (canSend === false) {
-              currentMsgIdx++;
-              continue;
+              const ok = await client.sendMessageFast(chId, msg.text, files);
+              return { channel: chId, success: ok };
+            } catch (err) {
+              console.error(`[Broadcast] ${botKey} channel ${chId}:`, err.message);
+              return { channel: chId, success: false, reason: err.message };
             }
+          });
 
-            const files = await resolveFiles(targetImages);
-            const ok = await sendWithRetry(chId, msg.text, files);
-            if (ok) {
-              console.log(`[MsgLoop] ${botKey}: Sent to ${chId} (delay target: ${delayMs}ms)`);
-            }
-          }
+          const results = await Promise.all(sendPromises);
+          const successCount = results.filter(r => r.success === true).length;
+          console.log(`[MsgLoop] ${botKey}: Broadcast message ${(currentMsgIdx % messageList.length) + 1}/${messageList.length} to ${successCount}/${channelList.length} channels (delay: ${delayMs}ms)`);
 
           currentMsgIdx++;
 
-          // ── ACCURATE DELAY: centered on user's delay with natural variation ──
-          const actualDelay = calculateDelay(delayMs);
-          console.log(`[MsgLoop] ${botKey}: Waiting ${actualDelay}ms (target: ${delayMs}ms)`);
-          await new Promise(r => setTimeout(r, actualDelay));
+          // ── ACCURATE DELAY: wait exactly the user-specified delay before next broadcast ──
+          await new Promise(r => setTimeout(r, delayMs));
 
         } catch (loopErr) {
           console.error('[MsgLoop] Unhandled loop error:', loopErr.message);
@@ -1959,7 +1923,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       // Loop ended - cleanup
       console.log(`[MsgLoop] ${botKey}: Message loop ended`);
     };
-
     // ── AUTO-REPLY WITH INTELLIGENT FILTERING ──
     if (autoReply && autoReplyText) {
       console.log(`[AutoReply] ${botKey}: Enabled with ${autoReplyText.length} chars reply text`);
@@ -2158,7 +2121,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Discord Automation Suite running on port ${PORT}`);
-  console.log(`[SERVER] Delay engine: natural variation around user-specified delay`);
+  console.log(`[SERVER] Broadcast mode: sends to all channels simultaneously every N seconds`);
   console.log(`[SERVER] Auto-reply: new DMs only, ignores messages >1hr old, 10-25s reply delay`);
 });
 
