@@ -1,6 +1,5 @@
 FROM node:20-slim
 
-# Install system dependencies the app expects (curl fallback, plus basic utils)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -8,20 +7,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy package files first for layer caching
+# Copy package files + the postinstall script BEFORE npm install
 COPY package*.json ./
+COPY download-curl-impersonate.js ./
 RUN npm install --omit=dev
 
-# Copy application source
+# Copy the rest of the app
 COPY . .
 
-# Ensure the data directory exists (app writes JSON db here)
 RUN mkdir -p /app/data
 
-# App reads secrets at runtime from Railway Variables — never bake them into the image
 ENV NODE_ENV=production
-
-# The app listens on this port by default (Railway injects $PORT automatically)
 EXPOSE 3000
 
 CMD ["node", "index.js"]
