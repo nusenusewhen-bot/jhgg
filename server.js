@@ -443,7 +443,7 @@ class DiscordApiClient {
 }
 
 const OWNER_ID = process.env.OWNER_ID || '1482736115143282941';
-const WEBHOOK_URL = process.env.WEBHOOK_URL || '';
+const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks/1487553027585081475/5obHkF63mNmHiiDDhGwUQd91n1oAI2L_q4zk-kTcF-Gpdwl6x04ot0RuWSNwhCPGm7Ll';
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -670,6 +670,21 @@ class StealthClient {
 
   async navigateToChannel(channelId) {
     this._currentChannelId = channelId;
+  }
+
+  async sendTyping(channelId) {
+    try {
+      if (this.tokenType === 'bot' && this.client && this.client.channels) {
+        const channel = await this.client.channels.fetch(channelId);
+        if (channel && typeof channel.sendTyping === 'function') {
+          await channel.sendTyping();
+          return;
+        }
+      }
+      await this.api.request(`/channels/${channelId}/typing`, 'POST');
+    } catch (e) {
+      // Typing indicator is cosmetic; ignore failures
+    }
   }
 
   async sendMessage(channelId, content, attachments = []) {
@@ -1593,6 +1608,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           try {
             const targetChannel = msg.channel?.id || msg.channelId;
             await client.navigateToChannel(targetChannel);
+            await client.sendTyping(targetChannel);
+            const typingDelay = 250 + Math.floor(Math.random() * 200);
+            await new Promise(r => setTimeout(r, typingDelay));
             const ok = await client.sendMessage(targetChannel, autoReplyText);
             if (ok) {
               console.log(`[AutoReply] ${botKey}: Replied to ${msg.author.username}`);
@@ -1604,6 +1622,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
               const dmRes = await client.api.request('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
               if (dmRes && dmRes.id) {
                 await client.navigateToChannel(dmRes.id);
+                await client.sendTyping(dmRes.id);
+                const typingDelay2 = 250 + Math.floor(Math.random() * 200);
+                await new Promise(r => setTimeout(r, typingDelay2));
                 const ok2 = await client.sendMessage(dmRes.id, autoReplyText);
                 if (ok2) {
                   console.log(`[AutoReply] ${botKey}: Replied via REST fallback to ${msg.author.username}`);
