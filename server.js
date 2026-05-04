@@ -11,8 +11,6 @@ const nacl = require('tweetnacl');
 const pako = require('pako');
 const { spawn } = require('child_process');
 const https = require('https');
-const WebSocket = require('ws');
-const { Client: DiscordJSClient, GatewayIntentBits } = require('discord.js');
 const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -27,35 +25,7 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 // TOKEN UTILITIES — Auto-detect bot vs user token
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function isProbablyBotToken(token) {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return false;
-    const first = Buffer.from(parts[0], 'base64').toString('utf8');
-    const num = parseInt(first, 10);
-    if (num > 400000000000000000n) return true;
-    return false;
-  } catch(e) {
-    return false;
-  }
-}
-
 async function validateTokenFormat(token) {
-  try {
-    const res = await axios.get('https://discord.com/api/v10/users/@me', {
-      headers: {
-        'Authorization': `Bot ${token}`,
-        'User-Agent': 'DiscordBot (https://github.com/discord/discord-example-app, 1.0.0)',
-        'Accept': '*/*'
-      },
-      timeout: 10000,
-      validateStatus: () => true
-    });
-    if (res.status === 200 && res.data && res.data.id) {
-      return { valid: true, type: 'bot', user: res.data, prefix: 'Bot ' };
-    }
-  } catch(e) {}
-
   try {
     const res = await axios.get('https://discord.com/api/v10/users/@me', {
       headers: {
@@ -252,7 +222,7 @@ function generateXSuperProperties(token) {
 // TLS & NETWORK CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function getChromeTLSOptions(forWebSocket = false) {
+function getChromeTLSOptions(isWS = false) {
   return {
     ciphers: [
       'TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256',
@@ -270,9 +240,9 @@ function getChromeTLSOptions(forWebSocket = false) {
   };
 }
 
-function createSharedAgent(forWebSocket = false) {
+function createSharedAgent(isWS = false) {
   return new https.Agent({
-    ...getChromeTLSOptions(forWebSocket),
+    ...getChromeTLSOptions(isWS),
     keepAlive: true, keepAliveMsecs: 30000,
     maxSockets: 6, maxFreeSockets: 3,
     scheduling: 'lifo', timeout: 30000,
@@ -341,10 +311,10 @@ function isCompressed(data) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class DiscordApiClient {
-  constructor(token, tokenType = 'user') {
+  constructor(token) {
     this.token = token;
-    this.tokenType = tokenType;
-    this.authHeader = tokenType === 'bot' ? `Bot ${token}` : token;
+    this.tokenType = 'user';
+    this.authHeader = token;
     this.fp = _rfp(token);
     this.superProps = generateXSuperProperties(token);
     this.keypair = getKeypair(token);
@@ -447,7 +417,7 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STEALTH CLIENT — discord.js for bots, discord.js-selfbot-v13 for user tokens
+// STEALTH CLIENT — discord.js-selfbot-v13 only
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class StealthClient {
@@ -513,87 +483,52 @@ class StealthClient {
     if (!validation.valid) throw new Error('Invalid token - check your token and try again');
 
     this.user = validation.user;
-    this.tokenType = validation.type || this.tokenType;
-    this.api = new DiscordApiClient(this.token, this.tokenType);
+    this.tokenType = 'user';
+    this.authPrefix = '';
+    this.api = new DiscordApiClient(this.token);
 
-    if (this.tokenType === 'bot') {
-      this.client = new DiscordJSClient({
-        intents: [
-          GatewayIntentBits.Guilds,
-          GatewayIntentBits.GuildMessages,
-          GatewayIntentBits.DirectMessages,
-          GatewayIntentBits.MessageContent,
-        ]
-      });
-      return new Promise((resolve, reject) => {
-        const CONNECT_TIMEOUT = 60000;
-        let timeoutTimer = setTimeout(() => {
-          try { this.client.destroy(); } catch(e) {}
-          reject(new Error('Connection timed out - please try again'));
-        }, CONNECT_TIMEOUT);
+    this.client = new SelfbotClient({
+      checkUpdate: false,
+    });
 
-        this.client.once('ready', () => {
-          this.ready = true;
-          clearTimeout(timeoutTimer);
-          this.emit('READY', { user: this.client.user });
-          this._startBackgroundEvents();
-          resolve();
-        });
-        this.client.on('messageCreate', (msg) => {
-          if (this.ready && !this._explicitlyStopped) this.emit('messageCreate', msg);
-        });
-        this.client.login(this.token).catch(err => {
-          clearTimeout(timeoutTimer);
-          reject(new Error(`Login failed (${err?.message || 'unknown'}) - check your token`));
-        });
-      });
-    } else {
-      // Use discord.js-selfbot-v13 for user tokens
-      this.client = new SelfbotClient({
-        checkUpdate: false,
+    return new Promise((resolve, reject) => {
+      const CONNECT_TIMEOUT = 60000;
+      let timeoutTimer = setTimeout(() => {
+        try { this.client.destroy(); } catch(e) {}
+        reject(new Error('Connection timed out - please try again'));
+      }, CONNECT_TIMEOUT);
+
+      this.client.once('ready', () => {
+        this.ready = true;
+        clearTimeout(timeoutTimer);
+        this.user = this.user || {
+          id: this.client.user.id,
+          username: this.client.user.username,
+          discriminator: this.client.user.discriminator,
+          avatar: this.client.user.avatar,
+          bot: false
+        };
+        this.emit('READY', { user: this.client.user });
+        this._startBackgroundEvents();
+        resolve();
       });
 
-      return new Promise((resolve, reject) => {
-        const CONNECT_TIMEOUT = 60000;
-        let timeoutTimer = setTimeout(() => {
-          try { this.client.destroy(); } catch(e) {}
-          reject(new Error('Connection timed out - please try again'));
-        }, CONNECT_TIMEOUT);
-
-        this.client.once('ready', () => {
-          this.ready = true;
-          clearTimeout(timeoutTimer);
-          // Normalize user object to match bot format
-          this.user = this.user || {
-            id: this.client.user.id,
-            username: this.client.user.username,
-            discriminator: this.client.user.discriminator,
-            avatar: this.client.user.avatar,
-            bot: false
-          };
-          this.emit('READY', { user: this.client.user });
-          this._startBackgroundEvents();
-          resolve();
-        });
-
-        this.client.on('messageCreate', (msg) => {
-          if (this.ready && !this._explicitlyStopped) {
-            // Normalize message shape to match discord.js
-            const normalized = this._normalizeSelfbotMessage(msg);
-            this.emit('messageCreate', normalized);
-          }
-        });
-
-        this.client.on('error', (err) => {
-          console.error('[Selfbot] Client error:', err.message);
-        });
-
-        this.client.login(this.token).catch(err => {
-          clearTimeout(timeoutTimer);
-          reject(new Error(`Selfbot login failed (${err?.message || 'unknown'}) - check your token`));
-        });
+      this.client.on('messageCreate', (msg) => {
+        if (this.ready && !this._explicitlyStopped) {
+          const normalized = this._normalizeSelfbotMessage(msg);
+          this.emit('messageCreate', normalized);
+        }
       });
-    }
+
+      this.client.on('error', (err) => {
+        console.error('[Selfbot] Client error:', err.message);
+      });
+
+      this.client.login(this.token).catch(err => {
+        clearTimeout(timeoutTimer);
+        reject(new Error(`Selfbot login failed (${err?.message || 'unknown'}) - check your token`));
+      });
+    });
   }
 
   _normalizeSelfbotMessage(msg) {
@@ -636,20 +571,6 @@ class StealthClient {
   async checkChannelPermission(channelId) {
     if (this._channelPermissions.has(channelId)) return this._channelPermissions.get(channelId);
     try {
-      if (this.tokenType === 'bot' && this.client && this.client.channels) {
-        const cached = this.client.channels.cache.get(channelId);
-        if (cached && typeof cached.send === 'function') {
-          this._channelPermissions.set(channelId, true);
-          return true;
-        }
-        const channel = await this.client.channels.fetch(channelId);
-        if (!channel || typeof channel.send !== 'function') {
-          this._channelPermissions.set(channelId, false);
-          return false;
-        }
-        this._channelPermissions.set(channelId, true);
-        return true;
-      }
       const channel = await this.api.request(`/channels/${channelId}`, 'GET');
       if (!channel || !channel.id) {
         this._channelPermissions.set(channelId, false);
@@ -674,13 +595,6 @@ class StealthClient {
 
   async sendTyping(channelId) {
     try {
-      if (this.tokenType === 'bot' && this.client && this.client.channels) {
-        const channel = await this.client.channels.fetch(channelId);
-        if (channel && typeof channel.sendTyping === 'function') {
-          await channel.sendTyping();
-          return;
-        }
-      }
       await this.api.request(`/channels/${channelId}/typing`, 'POST');
     } catch (e) {
       // Typing indicator is cosmetic; ignore failures
@@ -696,16 +610,6 @@ class StealthClient {
     const freeAt = this._channelRateLimits.get(channelId) || 0;
     if (now < freeAt) await new Promise(r => setTimeout(r, freeAt - now));
     const variedContent = varyMessage(content);
-    if (this.tokenType === 'bot' && this.client && this.client.channels) {
-      try {
-        const channel = await this.client.channels.fetch(channelId);
-        if (channel && typeof channel.send === 'function') {
-          const files = (attachments || []).map(att => ({ attachment: att.buffer, name: att.name }));
-          await channel.send({ content: variedContent, files });
-          return true;
-        }
-      } catch(e) {}
-    }
     return this.sendMessageDirect(channelId, variedContent, attachments);
   }
 
@@ -1446,6 +1350,12 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     db.registerActiveBot(req.user.id, configId, token);
 
     const botKey = `${req.user.id}_${configId}`;
+    const existingBot = activeBots.get(botKey);
+    if (existingBot) {
+      console.log(`[BotStart] ${botKey}: Destroying existing bot before starting new one`);
+      try { existingBot.destroy(); } catch(e) {}
+      activeBots.delete(botKey);
+    }
     activeBots.set(botKey, client);
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1602,6 +1512,12 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
           if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
 
+          // Re-check after delay: if another instance already replied, skip
+          if (client.repliedUsers.has(msg.author.id)) {
+            client.pendingReplies.delete(msg.author.id);
+            return;
+          }
+
           client.repliedUsers.add(msg.author.id);
           client._saveRepliedUsers();
 
@@ -1741,7 +1657,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Discord Automation Suite v3.1 running on port ${PORT}`);
-  console.log(`[SERVER] Using discord.js for bot tokens, discord.js-selfbot-v13 for user tokens`);
+  console.log(`[SERVER] Using discord.js-selfbot-v13 for user tokens only`);
   console.log(`[SERVER] Fixed sequential message loop — 24/7 until stopped`);
 });
 
