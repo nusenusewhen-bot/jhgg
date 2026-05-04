@@ -20,22 +20,18 @@
     "bitcoinjs-lib": "^6.1.7",
     "cookie-parser": "^1.4.7",
     "cross-env": "^7.0.3",
-    "discord.js": "^14.18.0",
     "discord.js-selfbot-v13": "^3.7.0",
     "dotenv": "^16.4.7",
     "ecpair": "^2.1.0",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
-    "form-data": "^4.0.2",
     "pako": "^2.1.0",
     "passport": "^0.7.0",
     "passport-discord": "^0.1.4",
     "tiny-secp256k1": "^2.2.3",
-    "tweetnacl": "^1.0.3",
-    "ws": "^8.18.0"
+    "tweetnacl": "^1.0.3"
   },
   "optionalDependencies": {
-    "pm2": "^6.0.5",
-    "playwright-core": "^1.51.0"
+    "pm2": "^6.0.5"
   }
 }
