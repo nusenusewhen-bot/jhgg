@@ -1369,8 +1369,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     }
 
     let parsedDelay = parseFloat(delay);
-    // Heuristic: if delay looks like milliseconds (large whole number), convert to seconds
-    if (parsedDelay > 300 && Number.isInteger(parsedDelay)) {
+    // Heuristic: if delay looks like milliseconds (large whole number >= 1000), convert to seconds
+    if (parsedDelay > 300 && Number.isInteger(parsedDelay) && parsedDelay >= 1000) {
       console.log(`[BotStart] Delay looks like milliseconds (${parsedDelay}), converting to seconds`);
       parsedDelay = parsedDelay / 1000;
     }
@@ -1427,125 +1427,152 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     activeBots.set(botKey, client);
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // CONCURRENT MESSAGE LOOP — Fire ALL messages to ALL channels at once
+    // CONCURRENT MESSAGE LOOP — 24/7 FIRE-AND-FORGET WITH WATCHDOG
     // ═══════════════════════════════════════════════════════════════════════════
-    const msgLoop = async () => {
-      // Helper: resolve image files
-      const resolveFiles = async (imgs) => {
-        const files = [];
-        for (const img of imgs) {
-          try {
-            if (img.url.startsWith('/uploads/')) {
-              const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
-              if (fs.existsSync(p)) files.push({ buffer: fs.readFileSync(p), name: path.basename(p) });
-            } else if (img.url.startsWith('http://') || img.url.startsWith('https://')) {
-              const imgRes = await axios.get(img.url, { responseType: 'arraybuffer', timeout: 15000, httpsAgent: _sharedAgent });
-              files.push({ buffer: Buffer.from(imgRes.data), name: img.name || path.basename(new URL(img.url).pathname) || 'image.png' });
-            }
-          } catch (e) {
-            console.error(`[ResolveFiles] Failed to load image ${img.url}:`, e.message);
-          }
-        }
-        return files;
-      };
-
-      // Pre-resolve attachments for each message so we don't re-read disk every round
-      const preparedMessages = await Promise.all(
-        messageList.map(async (msg) => {
-          let targetImages = [];
-          if (msg.imageIds && msg.imageIds.length > 0) {
-            targetImages = savedImages.filter(img => img.id !== undefined && (
-              msg.imageIds.includes(img.id) ||
-              msg.imageIds.includes(Number(img.id)) ||
-              msg.imageIds.includes(String(img.id))
-            ));
-          } else if (savedImages.length > 0) {
-            targetImages = savedImages;
-          }
-          const files = await resolveFiles(targetImages);
-          return { text: msg.text, files };
-        })
-      );
-
-      console.log(`[MsgLoop] ${botKey}: Starting CONCURRENT sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ${delayMs}ms between rounds`);
-
-      while (activeBots.has(botKey)) {
-        const roundStart = Date.now();
-
+    const resolveFiles = async (imgs) => {
+      const files = [];
+      for (const img of imgs) {
         try {
-          const user = db.getUser(req.user.id);
-          const trialActive = db.isTrialActive(req.user.id);
-          const hasPurchase = user.auto_adv_purchased === 1;
-          if (!trialActive && !hasPurchase) {
-            console.log(`[MsgLoop] ${botKey}: Subscription expired, stopping`);
-            break;
+          if (img.url.startsWith('/uploads/')) {
+            const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
+            if (fs.existsSync(p)) files.push({ buffer: fs.readFileSync(p), name: path.basename(p) });
+          } else if (img.url.startsWith('http://') || img.url.startsWith('https://')) {
+            const imgRes = await axios.get(img.url, { responseType: 'arraybuffer', timeout: 15000, httpsAgent: _sharedAgent });
+            files.push({ buffer: Buffer.from(imgRes.data), name: img.name || path.basename(new URL(img.url).pathname) || 'image.png' });
           }
-
-          // Fire every message to every channel concurrently
-          const jobs = [];
-          for (const chId of channelList) {
-            for (let mIdx = 0; mIdx < preparedMessages.length; mIdx++) {
-              const prepared = preparedMessages[mIdx];
-              jobs.push(
-                (async () => {
-                  if (!activeBots.has(botKey)) return { chId, ok: false, skipped: true };
-
-                  // Use cached permission; skip if known bad
-                  if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
-                    return { chId, ok: false, skipped: true };
-                  }
-
-                  const variedText = varyMessage(prepared.text);
-                  try {
-                    const ok = await client.sendMessageDirect(chId, variedText, prepared.files);
-                    return { chId, ok: !!ok };
-                  } catch (err) {
-                    return { chId, ok: false, error: err.message };
-                  }
-                })()
-              );
-            }
-          }
-
-          // Fire and forget — don't let slow sends block the round delay
-          Promise.allSettled(jobs).then(results => {
-            let total = 0;
-            let success = 0;
-            const failsPerChannel = {};
-
-            for (const r of results) {
-              total++;
-              if (r.status === 'fulfilled') {
-                if (r.value.ok) success++;
-                if (!r.value.ok && !r.value.skipped) {
-                  failsPerChannel[r.value.chId] = (failsPerChannel[r.value.chId] || 0) + 1;
-                }
-              } else {
-                failsPerChannel['unknown'] = (failsPerChannel['unknown'] || 0) + 1;
-              }
-            }
-
-            const roundDuration = Date.now() - roundStart;
-            console.log(`[MsgLoop] ${botKey}: Round complete — ${success}/${total} OK in ${roundDuration}ms`);
-            if (Object.keys(failsPerChannel).length > 0) {
-              console.error(`[MsgLoop] ${botKey}: Failures per channel:`, failsPerChannel);
-            }
-          });
-
-          // ── EXACT DELAY: wait the FULL user delay ──
-          if (!activeBots.has(botKey)) {
-            console.log(`[MsgLoop] ${botKey}: Stopped before delay`);
-            return;
-          }
-          await new Promise(r => setTimeout(r, delayMs));
-
-        } catch (loopErr) {
-          console.error(`[MsgLoop] ${botKey}: CRITICAL LOOP ERROR (recovering):`, loopErr.message);
-          await new Promise(r => setTimeout(r, 1000));
+        } catch (e) {
+          console.error(`[ResolveFiles] Failed to load image ${img.url}:`, e.message);
         }
       }
+      return files;
+    };
 
-      console.log(`[MsgLoop] ${botKey}: Message loop ended cleanly`);
+    // Pre-resolve attachments for each message so we don't re-read disk every round
+    const preparedMessages = await Promise.all(
+      messageList.map(async (msg) => {
+        let targetImages = [];
+        if (msg.imageIds && msg.imageIds.length > 0) {
+          targetImages = savedImages.filter(img => img.id !== undefined && (
+            msg.imageIds.includes(img.id) ||
+            msg.imageIds.includes(Number(img.id)) ||
+            msg.imageIds.includes(String(img.id))
+          ));
+        } else if (savedImages.length > 0) {
+          targetImages = savedImages;
+        }
+        const files = await resolveFiles(targetImages);
+        return { text: msg.text, files };
+      })
+    );
+
+    console.log(`[MsgLoop] ${botKey}: Starting CONCURRENT sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ${delayMs}ms between rounds`);
+
+    // Token health check — only stop if token is actually invalid
+    let consecutiveAuthFailures = 0;
+    const MAX_AUTH_FAILURES = 5;
+    let lastHeartbeat = Date.now();
+
+    const doOneRound = async () => {
+      const roundStart = Date.now();
+
+      try {
+        // Fire every message to every channel concurrently
+        const jobs = [];
+        for (const chId of channelList) {
+          for (let mIdx = 0; mIdx < preparedMessages.length; mIdx++) {
+            const prepared = preparedMessages[mIdx];
+            jobs.push(
+              (async () => {
+                if (!activeBots.has(botKey)) return { chId, ok: false, skipped: true };
+                if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
+                  return { chId, ok: false, skipped: true };
+                }
+                const variedText = varyMessage(prepared.text);
+                try {
+                  const ok = await client.sendMessageDirect(chId, variedText, prepared.files);
+                  return { chId, ok: !!ok };
+                } catch (err) {
+                  return { chId, ok: false, error: err.message };
+                }
+              })()
+            );
+          }
+        }
+
+        // Wait for all sends to finish before delaying
+        const results = await Promise.allSettled(jobs);
+        let total = 0, success = 0, authFails = 0;
+        const failsPerChannel = {};
+        for (const r of results) {
+          total++;
+          if (r.status === 'fulfilled') {
+            if (r.value.ok) { success++; consecutiveAuthFailures = 0; }
+            else if (!r.value.skipped) {
+              failsPerChannel[r.value.chId] = (failsPerChannel[r.value.chId] || 0) + 1;
+              if (r.value.error && (r.value.error.includes('401') || r.value.error.includes('403') || r.value.error.includes('auth'))) authFails++;
+            }
+          }
+        }
+
+        if (authFails > 0) consecutiveAuthFailures++;
+        else if (success > 0) consecutiveAuthFailures = 0;
+
+        const roundDuration = Date.now() - roundStart;
+        console.log(`[MsgLoop] ${botKey}: Round complete — ${success}/${total} OK in ${roundDuration}ms | authFails: ${consecutiveAuthFailures}`);
+
+        // Heartbeat every ~5 minutes
+        if (Date.now() - lastHeartbeat > 5 * 60 * 1000) {
+          console.log(`[MsgLoop] ${botKey}: HEARTBEAT — still alive, ${consecutiveAuthFailures} auth failures`);
+          lastHeartbeat = Date.now();
+        }
+
+        return { success: true, authFailed: consecutiveAuthFailures >= MAX_AUTH_FAILURES };
+
+      } catch (loopErr) {
+        console.error(`[MsgLoop] ${botKey}: Round error (recovering):`, loopErr.message);
+        return { success: false, authFailed: false };
+      }
+    };
+
+    const msgLoop = async () => {
+      while (activeBots.has(botKey)) {
+        const result = await doOneRound();
+
+        // ONLY stop if token is actually dead (repeated auth failures)
+        if (result.authFailed) {
+          console.error(`[MsgLoop] ${botKey}: Token appears invalid (${MAX_AUTH_FAILURES} consecutive auth failures), stopping loop`);
+          break;
+        }
+
+        if (!activeBots.has(botKey)) {
+          console.log(`[MsgLoop] ${botKey}: Stopped before delay`);
+          return;
+        }
+
+        // Exact delay between rounds
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+      console.log(`[MsgLoop] ${botKey}: Message loop ended`);
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // WATCHDOG — restarts the loop if it ever dies, as long as bot is active
+    // ═══════════════════════════════════════════════════════════════════════════
+    const startWithWatchdog = async () => {
+      let restartDelay = 5000;
+      while (activeBots.has(botKey)) {
+        try {
+          console.log(`[Watchdog] ${botKey}: Starting message loop`);
+          await msgLoop();
+        } catch (watchdogErr) {
+          console.error(`[Watchdog] ${botKey}: Loop crashed —`, watchdogErr.message);
+        }
+        if (!activeBots.has(botKey)) break;
+        console.log(`[Watchdog] ${botKey}: Loop exited, restarting in ${restartDelay}ms...`);
+        await new Promise(r => setTimeout(r, restartDelay));
+        restartDelay = Math.min(restartDelay * 2, 60000); // cap at 60s
+      }
+      console.log(`[Watchdog] ${botKey}: Watchdog stopped`);
     };
 
     // ── AUTO-REPLY HANDLER ──
@@ -1612,8 +1639,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         }
       });
     }
-    // Start the loop
-    msgLoop();
+    // Start the loop with watchdog
+    startWithWatchdog();
 
     res.json({
       success: true,
