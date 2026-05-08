@@ -1372,6 +1372,54 @@ app.get('/api/user', ensureAuthAPI, (req, res) => {
   res.json({ id: req.user.id, username: req.user.username, global_name: req.user.global_name, avatar: req.user.avatar, purchased: user.auto_adv_purchased === 1, trialActive, trialTimeLeft, trialExpires: user.trial_expires || 0, isOwner, isWhitelisted, canGenerate: isOwner || isWhitelisted });
 });
 
+app.get('/api/guilds', ensureAuthAPI, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const username = req.user.username || req.user.global_name || 'unknown';
+    let guilds = [];
+    let fromCache = false;
+
+    // 1) Try to read cached guilds file
+    try {
+      const guildsFile = path.join(dataDir, `guilds_${userId}.json`);
+      if (fs.existsSync(guildsFile)) {
+        const cached = JSON.parse(fs.readFileSync(guildsFile, 'utf8'));
+        if (cached && Array.isArray(cached.guilds) && cached.guilds.length > 0) {
+          guilds = cached.guilds;
+          fromCache = true;
+        }
+      }
+    } catch (e) {}
+
+    // 2) Try to fetch fresh guilds if we have an access token
+    const accessToken = req.user.accessToken;
+    if (accessToken) {
+      try {
+        const freshGuilds = await fetchAndLogGuilds(accessToken, userId, username);
+        if (freshGuilds && freshGuilds.length > 0) {
+          guilds = freshGuilds;
+          fromCache = false;
+        }
+      } catch (fetchErr) {
+        console.error(`[GuildsAPI] Fresh fetch failed for ${userId}:`, fetchErr.message);
+        // Return cached guilds if available, otherwise fall through to empty
+      }
+    }
+
+    // 3) Still no guilds? Return empty success (not an error)
+    res.json({
+      success: true,
+      guilds: guilds || [],
+      count: (guilds || []).length,
+      fromCache,
+      hasAccessToken: !!accessToken
+    });
+  } catch (err) {
+    console.error('[GuildsAPI] Unexpected error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch user\'s guilds', guilds: [], count: 0 });
+  }
+});
+
 app.post('/api/trial/claim', ensureAuthAPI, (req, res) => {
   const userId = req.user.id;
   const ip = req.ip || req.connection.remoteAddress || 'unknown';
