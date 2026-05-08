@@ -118,6 +118,9 @@ function weightedRandom(items, weights) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const _accountProfiles = new Map();
+const _sharedChannelRateLimits = new Map();   // tokenHash -> Map(channelId -> freeAt)
+const _sharedChannelPermissions = new Map();  // tokenHash -> Map(channelId -> boolean)
+const _sharedGlobalRateLimits = new Map();    // tokenHash -> resetTimestamp
 
 function _getAccountProfile(token) {
   const hash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
@@ -265,7 +268,8 @@ class DiscordApiClient {
     this.fp = _rfp(token);
     this.superProps = generateXSuperProperties(token);
     this.keypair = getKeypair(token);
-    this.globalRateLimitReset = 0;
+    this._tokenHash = crypto.createHash('sha256').update(this.token).digest('hex').slice(0, 16);
+    if (!_sharedGlobalRateLimits.has(this._tokenHash)) _sharedGlobalRateLimits.set(this._tokenHash, 0);
     this._rotationTimer = setInterval(() => this.rotateFingerprint(), (20 * 60 * 1000) + Math.floor(Math.random() * 10 * 60 * 1000));
   }
 
@@ -301,7 +305,7 @@ class DiscordApiClient {
     const maxAttempts = 3;
 
     while (attempts < maxAttempts) {
-      const globalWait = this.globalRateLimitReset - Date.now();
+      const globalWait = (_sharedGlobalRateLimits.get(this._tokenHash) || 0) - Date.now();
       if (globalWait > 0) {
         await new Promise(r => setTimeout(r, globalWait));
       }
@@ -329,7 +333,7 @@ class DiscordApiClient {
         if (status === 429) {
           const isGlobal = res.headers['x-ratelimit-global'] === 'true';
           const retryAfter = parseFloat(res.headers['retry-after'] || 5) * 1000;
-          if (isGlobal) this.globalRateLimitReset = Date.now() + retryAfter;
+          if (isGlobal) _sharedGlobalRateLimits.set(this._tokenHash, Date.now() + retryAfter);
           await new Promise(r => setTimeout(r, retryAfter * 1.1));
           attempts++;
           continue;
@@ -380,8 +384,11 @@ class StealthClient {
     this.ready = false;
     this.handlers = {};
     this._dmCooldowns = new Map();
-    this._channelPermissions = new Map();
-    this._channelRateLimits = new Map();
+    const tokenHash = crypto.createHash('sha256').update(this.token).digest('hex').slice(0, 16);
+    if (!_sharedChannelPermissions.has(tokenHash)) _sharedChannelPermissions.set(tokenHash, new Map());
+    if (!_sharedChannelRateLimits.has(tokenHash)) _sharedChannelRateLimits.set(tokenHash, new Map());
+    this._channelPermissions = _sharedChannelPermissions.get(tokenHash);
+    this._channelRateLimits = _sharedChannelRateLimits.get(tokenHash);
     this._explicitlyStopped = false;
     this._currentChannelId = null;
     this._backgroundTimers = [];
