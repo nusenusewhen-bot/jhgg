@@ -11,7 +11,7 @@ const nacl = require('tweetnacl');
 const pako = require('pako');
 const { spawn } = require('child_process');
 const https = require('https');
-const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
+const WebSocket = require('ws');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT SETUP
@@ -51,64 +51,11 @@ async function validateTokenFormat(token) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HUMANIZED DELAY ENGINE
+// SIMPLE DELAY UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function paretoSample(alpha = 1.5, xm = 1.0) {
-  const u = Math.random();
-  return xm / Math.pow(u, 1.0 / alpha);
-}
-
-function logNormalSample(mu = 0, sigma = 1.0) {
-  const u1 = Math.random();
-  const u2 = Math.random();
-  const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
-  return Math.exp(mu + sigma * z0);
-}
-
-function boundedPareto(alpha = 2.5, min = 1000, max = 60000) {
-  const u = Math.random();
-  const minPow = Math.pow(min, alpha);
-  const maxPow = Math.pow(max, alpha);
-  const x = Math.pow(minPow + u * (maxPow - minPow), 1.0 / alpha);
-  return Math.round(Math.min(max, Math.max(min, x)));
-}
-
-function circadianMultiplier() {
-  const hour = new Date().getHours();
-  if (hour >= 1 && hour <= 6) return 1.05 + Math.random() * 0.1;
-  if (hour >= 7 && hour <= 9) return 0.95 + Math.random() * 0.1;
-  if (hour >= 10 && hour <= 22) return 0.9 + Math.random() * 0.1;
-  return 0.95 + Math.random() * 0.1;
-}
-
-function contextSwitchJitter(baseMs) {
-  if (Math.random() < 0.05) {
-    const switchMs = 500 + boundedPareto(2.0, 500, 1500);
-    return baseMs + switchMs;
-  }
-  return baseMs;
-}
-
-function calculateDelay(baseDelayMs) {
-  if (!baseDelayMs || baseDelayMs < 1000) baseDelayMs = 5000;
-  const variation = baseDelayMs * 0.2;
-  const min = baseDelayMs - variation;
-  const max = baseDelayMs + variation;
-  let delay = boundedPareto(3.0, min, max);
-  delay *= circadianMultiplier();
-  delay = contextSwitchJitter(delay);
-  delay += (Math.random() - 0.5) * 80;
-  return Math.round(Math.min(max * 1.15, Math.max(min * 0.85, delay)));
-}
-
-function autoReplyDelay() {
-  const min = 20000;
-  const max = 25000;
-  let delay = boundedPareto(2.5, min, max);
-  delay *= circadianMultiplier();
-  delay = contextSwitchJitter(delay);
-  return Math.round(Math.min(max, Math.max(min, delay)));
+function randomBetween(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -417,7 +364,7 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STEALTH CLIENT — discord.js-selfbot-v13 only
+// STEALTH CLIENT — Raw WebSocket gateway connection
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class StealthClient {
@@ -425,7 +372,8 @@ class StealthClient {
     this.token = token;
     this.tokenType = null;
     this.authPrefix = '';
-    this.client = null;
+    this.ws = null;
+    this._heartbeatInterval = null;
     this.api = null;
     this.repliedUsers = this._loadRepliedUsers();
     this.encryptionKey = null;
@@ -478,7 +426,22 @@ class StealthClient {
     return { valid: false, user: null };
   }
 
+  _cleanupWS() {
+    try {
+      if (this.ws) {
+        this.ws.removeAllListeners();
+        this.ws.terminate();
+        this.ws = null;
+      }
+    } catch(e) {}
+    if (this._heartbeatInterval) {
+      clearInterval(this._heartbeatInterval);
+      this._heartbeatInterval = null;
+    }
+  }
+
   async connect() {
+    this._explicitlyStopped = false;
     const validation = await this._validateTokenWithCache();
     if (!validation.valid) throw new Error('Invalid token - check your token and try again');
 
@@ -487,73 +450,179 @@ class StealthClient {
     this.authPrefix = '';
     this.api = new DiscordApiClient(this.token);
 
-    this.client = new SelfbotClient({
-      checkUpdate: false,
-    });
-
     return new Promise((resolve, reject) => {
       const CONNECT_TIMEOUT = 60000;
+      let resolved = false;
       let timeoutTimer = setTimeout(() => {
-        try { this.client.destroy(); } catch(e) {}
+        this._explicitlyStopped = true;
+        this._cleanupWS();
         reject(new Error('Connection timed out - please try again'));
       }, CONNECT_TIMEOUT);
 
-      this.client.once('ready', () => {
-        this.ready = true;
-        clearTimeout(timeoutTimer);
-        this.user = this.user || {
-          id: this.client.user.id,
-          username: this.client.user.username,
-          discriminator: this.client.user.discriminator,
-          avatar: this.client.user.avatar,
-          bot: false
+      const connectGateway = () => {
+        try {
+          if (this.ws) { this.ws.terminate(); this.ws = null; }
+        } catch(e) {}
+
+        const wsUrl = 'wss://gateway.discord.gg/?v=10&encoding=json';
+        const wsOptions = {
+          headers: {
+            'User-Agent': this.api ? this.api.fp : _rfp(this.token),
+            'Accept-Language': 'en-US,en;q=0.9',
+            'X-Discord-Locale': 'en-US'
+          },
+          agent: createSharedAgent(true)
         };
-        this.emit('READY', { user: this.client.user });
-        this._startBackgroundEvents();
-        resolve();
-      });
 
-      this.client.on('messageCreate', (msg) => {
-        if (this.ready && !this._explicitlyStopped) {
-          const normalized = this._normalizeSelfbotMessage(msg);
-          this.emit('messageCreate', normalized);
-        }
-      });
+        this.ws = new WebSocket(wsUrl, wsOptions);
 
-      this.client.on('error', (err) => {
-        console.error('[Selfbot] Client error:', err.message);
-      });
+        this.ws.on('message', (data) => {
+          try {
+            const payload = JSON.parse(data.toString());
 
-      this.client.login(this.token).catch(err => {
-        clearTimeout(timeoutTimer);
-        reject(new Error(`Selfbot login failed (${err?.message || 'unknown'}) - check your token`));
-      });
+            if (payload.op === 10) { // Hello
+              const interval = payload.d.heartbeat_interval;
+
+              let props = {};
+              try {
+                if (this.api && this.api.superProps) {
+                  props = JSON.parse(Buffer.from(this.api.superProps, 'base64').toString());
+                }
+              } catch(e) {
+                props = {
+                  os: 'Windows', browser: 'Chrome', device: '', system_locale: 'en-US',
+                  browser_user_agent: _rfp(this.token), browser_version: '135.0.0.0',
+                  os_version: '10', referrer: '', referring_domain: '',
+                  referrer_current: '', referring_domain_current: '',
+                  release_channel: 'stable', client_build_number: 438286,
+                  client_event_source: null, design_id: 0
+                };
+              }
+
+              this.ws.send(JSON.stringify({
+                op: 2,
+                d: {
+                  token: this.token,
+                  capabilities: 30717,
+                  properties: props,
+                  presence: {
+                    status: 'online',
+                    since: 0,
+                    activities: [],
+                    afk: false,
+                    broadcast: null
+                  },
+                  compress: false,
+                  client_state: {
+                    guild_versions: {},
+                    highest_last_message_id: '0',
+                    read_state_version: 0,
+                    user_guild_settings_version: -1,
+                    user_settings_version: -1,
+                    private_channels_version: '0',
+                    api_code_version: 0
+                  }
+                }
+              }));
+
+              if (this._heartbeatInterval) {
+                clearInterval(this._heartbeatInterval);
+                this._heartbeatInterval = null;
+              }
+
+              this._heartbeatInterval = setInterval(() => {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                  this.ws.send(JSON.stringify({ op: 1, d: this.sequence || null }));
+                }
+              }, interval);
+            }
+
+            if (payload.op === 0 && payload.t === 'READY') {
+              this.ready = true;
+              clearTimeout(timeoutTimer);
+              timeoutTimer = null;
+              this.user = this.user || {
+                id: payload.d.user.id,
+                username: payload.d.user.username,
+                discriminator: payload.d.user.discriminator,
+                avatar: payload.d.user.avatar,
+                bot: false
+              };
+              this.emit('READY', { user: payload.d.user });
+              this._startBackgroundEvents();
+              if (!resolved) {
+                resolved = true;
+                resolve();
+              }
+            }
+
+            if (payload.op === 0 && payload.t === 'MESSAGE_CREATE') {
+              if (this.ready && !this._explicitlyStopped) {
+                const normalized = this._normalizeGatewayMessage(payload.d);
+                this.emit('messageCreate', normalized);
+              }
+            }
+
+            if (payload.op === 1) {
+              if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ op: 1, d: this.sequence || null }));
+              }
+            }
+
+            if (payload.s !== undefined && payload.s !== null) {
+              this.sequence = payload.s;
+            }
+          } catch (parseErr) {
+            console.error('[WS] Message parse error:', parseErr.message);
+          }
+        });
+
+        this.ws.on('close', (code, reason) => {
+          if (this._heartbeatInterval) {
+            clearInterval(this._heartbeatInterval);
+            this._heartbeatInterval = null;
+          }
+          this.ready = false;
+          if (!this._explicitlyStopped) {
+            console.log(`[WS] Connection closed (${code}), reconnecting in 5s...`);
+            setTimeout(() => {
+              if (!this._explicitlyStopped) connectGateway();
+            }, 5000);
+          }
+        });
+
+        this.ws.on('error', (err) => {
+          console.error('[WS] Client error:', err.message);
+        });
+      };
+
+      connectGateway();
     });
   }
 
-  _normalizeSelfbotMessage(msg) {
-    // discord.js-selfbot-v13 message shape is similar to discord.js v13
-    // but we normalize to ensure consistent handling
+  _normalizeGatewayMessage(d) {
+    const ts = d.timestamp ? new Date(d.timestamp).getTime() : Date.now();
+    const self = this;
     return {
-      id: msg.id,
-      content: msg.content || '',
+      id: d.id,
+      content: d.content || '',
       author: {
-        id: msg.author?.id,
-        username: msg.author?.username,
-        discriminator: msg.author?.discriminator,
-        bot: msg.author?.bot || false
+        id: d.author?.id,
+        username: d.author?.username,
+        discriminator: d.author?.discriminator,
+        bot: d.author?.bot || false
       },
-      channelId: msg.channelId || msg.channel?.id,
-      guildId: msg.guildId || msg.guild?.id || null,
-      createdTimestamp: msg.createdTimestamp || Date.now(),
-      channel: msg.channel ? {
-        id: msg.channel.id,
+      channelId: d.channel_id,
+      guildId: d.guild_id || null,
+      createdTimestamp: ts,
+      channel: d.channel_id ? {
+        id: d.channel_id,
         send: async (content) => {
-          return msg.channel.send(content);
+          return self.sendMessage(d.channel_id, content);
         }
       } : null,
       reply: async (content) => {
-        return msg.channel?.send(content);
+        return self.sendMessage(d.channel_id, content);
       }
     };
   }
@@ -697,12 +766,11 @@ class StealthClient {
     this._explicitlyStopped = true;
     this.ready = false;
     this._stopBackgroundEvents();
-    try { if (this.client) this.client.destroy(); } catch(e) {}
+    this._cleanupWS();
     this._saveRepliedUsers();
     if (this.api) this.api.destroy();
   }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SIMPLE DATABASE
@@ -1506,27 +1574,29 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
           if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
 
-          const replyDelay = autoReplyDelay();
-          console.log(`[AutoReply] ${botKey}: Waiting ${replyDelay}ms before replying`);
-          await new Promise(r => setTimeout(r, replyDelay));
+          // Wait 10-25 seconds
+          const waitMs = randomBetween(10000, 25000);
+          console.log(`[AutoReply] ${botKey}: Waiting ${waitMs}ms before replying`);
+          await new Promise(r => setTimeout(r, waitMs));
 
           if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
-
-          // Re-check after delay: if another instance already replied, skip
           if (client.repliedUsers.has(msg.author.id)) {
             client.pendingReplies.delete(msg.author.id);
             return;
           }
 
+          // Mark as replied BEFORE sending to guarantee single-send
           client.repliedUsers.add(msg.author.id);
           client._saveRepliedUsers();
 
           try {
-            const targetChannel = msg.channel?.id || msg.channelId;
+            const targetChannel = msg.channelId;
             await client.navigateToChannel(targetChannel);
             await client.sendTyping(targetChannel);
-            const typingDelay = 250 + Math.floor(Math.random() * 200);
-            await new Promise(r => setTimeout(r, typingDelay));
+            // Fake type for exactly 3 seconds
+            await new Promise(r => setTimeout(r, 3000));
+            // Pause 1 second
+            await new Promise(r => setTimeout(r, 1000));
             const ok = await client.sendMessage(targetChannel, autoReplyText);
             if (ok) {
               console.log(`[AutoReply] ${botKey}: Replied to ${msg.author.username}`);
@@ -1534,22 +1604,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             }
           } catch (err) {
             console.error(`[AutoReply] ${botKey}: Error sending reply:`, err.message);
-            try {
-              const dmRes = await client.api.request('/users/@me/channels', 'POST', { recipient_id: msg.author.id });
-              if (dmRes && dmRes.id) {
-                await client.navigateToChannel(dmRes.id);
-                await client.sendTyping(dmRes.id);
-                const typingDelay2 = 250 + Math.floor(Math.random() * 200);
-                await new Promise(r => setTimeout(r, typingDelay2));
-                const ok2 = await client.sendMessage(dmRes.id, autoReplyText);
-                if (ok2) {
-                  console.log(`[AutoReply] ${botKey}: Replied via REST fallback to ${msg.author.username}`);
-                  client._dmCooldowns.set(msg.author.id, Date.now());
-                }
-              }
-            } catch(e2) {
-              console.error(`[AutoReply] ${botKey}: REST fallback also failed:`, e2.message);
-            }
           }
           client.pendingReplies.delete(msg.author.id);
         } catch (handlerErr) {
@@ -1558,7 +1612,6 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         }
       });
     }
-
     // Start the loop
     msgLoop();
 
@@ -1657,7 +1710,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Discord Automation Suite v3.1 running on port ${PORT}`);
-  console.log(`[SERVER] Using discord.js-selfbot-v13 for user tokens only`);
+  console.log(`[SERVER] Using raw ws gateway for user tokens only`);
   console.log(`[SERVER] Fixed sequential message loop — 24/7 until stopped`);
 });
 
