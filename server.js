@@ -1197,7 +1197,7 @@ if (CLIENT_ID && CLIENT_SECRET) {
     clientID: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
     callbackURL: CALLBACK_URL,
-    scope: ['identify']  // FIXED: Removed 'guilds' — prevents InternalOAuthError on 504
+    scope: ['identify', 'guilds']  // Fetch user's guilds/servers list
   }, (accessToken, refreshToken, profile, done) => {
     // Non-blocking: store token and fetch guilds in background
     process.nextTick(async () => {
