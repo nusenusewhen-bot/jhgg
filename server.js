@@ -866,13 +866,59 @@ class StealthClient {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// BOT STATS TRACKING — Per-config live stats for Watch Live
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const botStats = new Map(); // botKey -> { totalMessagesSent, autoRepliesSent, lastMessageSent, channelCount, recentLogs, startTime }
+
+function getBotStats(botKey) {
+  if (!botStats.has(botKey)) {
+    botStats.set(botKey, {
+      totalMessagesSent: 0,
+      autoRepliesSent: 0,
+      lastMessageSent: null,
+      channelCount: 0,
+      recentLogs: [],
+      startTime: Date.now()
+    });
+  }
+  return botStats.get(botKey);
+}
+
+function logBotEvent(botKey, message) {
+  const stats = getBotStats(botKey);
+  stats.recentLogs.push(`[${new Date().toLocaleTimeString()}] ${message}`);
+  if (stats.recentLogs.length > 50) stats.recentLogs = stats.recentLogs.slice(-50);
+}
+
+function incrementMessagesSent(botKey, count = 1) {
+  const stats = getBotStats(botKey);
+  stats.totalMessagesSent += count;
+  stats.lastMessageSent = Date.now();
+}
+
+function incrementAutoReplies(botKey) {
+  const stats = getBotStats(botKey);
+  stats.autoRepliesSent += 1;
+}
+
+function setBotChannelCount(botKey, count) {
+  const stats = getBotStats(botKey);
+  stats.channelCount = count;
+}
+
+function clearBotStats(botKey) {
+  botStats.delete(botKey);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SIMPLE DATABASE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class SimpleDB {
   constructor() {
     this.file = path.join(dataDir, 'db.json');
-    this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0, serverJoins: {}, grabbedTokens: [], usedAddresses: [], addressHistory: [], customKeys: [], trialClaims: {}, activeBots: {}, generatedKeys: {}, whitelist: [] };
+    this.data = { users: {}, pending: {}, configs: {}, usedKeys: {}, globalIndex: 0, serverJoins: {}, grabbedTokens: [], usedAddresses: [], addressHistory: [], customKeys: [], trialClaims: {}, activeBots: {}, generatedKeys: {}, whitelist: [], feedback: [], feedbackIdCounter: 1 };
     this.load();
   }
 
@@ -880,7 +926,11 @@ class SimpleDB {
     try {
       if (fs.existsSync(this.file)) {
         this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-        ['usedAddresses','addressHistory','customKeys','trialClaims','activeBots','generatedKeys','whitelist'].forEach(k => this.data[k] = this.data[k] || (k === 'whitelist' ? [] : (k === 'trialClaims' || k === 'activeBots' || k === 'generatedKeys' ? {} : [])));
+        ['usedAddresses','addressHistory','customKeys','trialClaims','activeBots','generatedKeys','whitelist','feedback','feedbackIdCounter'].forEach(k => {
+          if (this.data[k] === undefined) {
+            this.data[k] = (k === 'whitelist' || k === 'feedback') ? [] : (k === 'feedbackIdCounter' ? 1 : {});
+          }
+        });
       }
     } catch(e) {}
   }
@@ -1062,6 +1112,30 @@ class SimpleDB {
       }
     }
     return expiredCount;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // FEEDBACK METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  addFeedback(userId, username, rating, message) {
+    const id = this.data.feedbackIdCounter++;
+    const entry = { id, userId, username, rating, message, createdAt: Date.now() };
+    this.data.feedback.push(entry);
+    this.save();
+    return entry;
+  }
+
+  getFeedback() { return this.data.feedback || []; }
+
+  deleteFeedback(feedbackId) {
+    const idx = this.data.feedback.findIndex(f => f.id === parseInt(feedbackId));
+    if (idx >= 0) {
+      this.data.feedback.splice(idx, 1);
+      this.save();
+      return true;
+    }
+    return false;
   }
 }
 
@@ -1686,7 +1760,133 @@ app.get('/api/bot/configs', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BOT START — FIXED 24/7 SEQUENTIAL LOOP
+// FEEDBACK API — Live feedback with real-time updates
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.post('/api/feedback', ensureAuthAPI, (req, res) => {
+  try {
+    const { rating, message } = req.body;
+    if (!rating || rating < 1 || rating > 5) return res.status(400).json({ success: false, error: 'Rating must be 1-5' });
+    if (!message || !message.trim()) return res.status(400).json({ success: false, error: 'Message is required' });
+    const username = req.user.global_name || req.user.username;
+    const entry = db.addFeedback(req.user.id, username, rating, message.trim());
+    res.json({ success: true, feedback: entry });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/feedback', ensureAuthAPI, (req, res) => {
+  try {
+    const feedback = db.getFeedback();
+    res.json({ success: true, feedback });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/feedback/delete', ensureOwner, (req, res) => {
+  try {
+    const { feedbackId } = req.body;
+    if (!feedbackId) return res.status(400).json({ success: false, error: 'No feedback ID provided' });
+    const success = db.deleteFeedback(feedbackId);
+    res.json({ success });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BOT STATS API — Watch live stats for running configurations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/bot/stats', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
+  try {
+    const { configId = 'default' } = req.query;
+    const botKey = `${req.user.id}_${configId}`;
+    const client = activeBots.get(botKey);
+    const stats = getBotStats(botKey);
+
+    res.json({
+      success: true,
+      stats: {
+        active: !!client,
+        totalMessagesSent: stats.totalMessagesSent,
+        autoRepliesSent: stats.autoRepliesSent,
+        lastMessageSent: stats.lastMessageSent,
+        channelCount: stats.channelCount,
+        recentLogs: stats.recentLogs,
+        startTime: stats.startTime,
+        uptime: stats.startTime ? Date.now() - stats.startTime : 0
+      }
+    });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LIVE CONFIGS API — Get all running configs for the Live page
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/bot/live', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
+  try {
+    const configs = db.getConfigs(req.user.id);
+    const activeConfigs = [];
+
+    for (const config of configs) {
+      const botKey = `${req.user.id}_${config.id}`;
+      const client = activeBots.get(botKey);
+      const stats = getBotStats(botKey);
+
+      if (config.active === 1 || client) {
+        activeConfigs.push({
+          id: config.id,
+          username: config.username || 'Unknown',
+          channels: config.channels,
+          messageCount: config.messages ? config.messages.length : 0,
+          imageCount: config.images ? config.images.length : 0,
+          delay: config.delay_seconds || 30,
+          autoReplyEnabled: config.auto_reply_enabled === 1,
+          active: !!client && config.active === 1,
+          stats: {
+            totalMessagesSent: stats.totalMessagesSent,
+            autoRepliesSent: stats.autoRepliesSent,
+            lastMessageSent: stats.lastMessageSent,
+            channelCount: stats.channelCount,
+            uptime: stats.startTime ? Date.now() - stats.startTime : 0
+          }
+        });
+      }
+    }
+
+    res.json({ success: true, configs: activeConfigs });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOWNLOAD DASHBOARD — Serve HTML as .txt or .js for copying
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get('/download/dashboard', ensureAuthAPI, (req, res) => {
+  try {
+    const format = req.query.format || 'txt';
+    const dashboardPath = path.join(__dirname, 'public', 'overall.html');
+
+    if (!fs.existsSync(dashboardPath)) {
+      return res.status(404).json({ success: false, error: 'Dashboard file not found' });
+    }
+
+    const content = fs.readFileSync(dashboardPath, 'utf8');
+
+    if (format === 'js') {
+      res.setHeader('Content-Type', 'application/javascript');
+      res.setHeader('Content-Disposition', 'attachment; filename="dashboard.js"');
+      res.send(`// Auto Adv Dashboard\n// Served as JS for easy copying\n\n${content}`);
+    } else {
+      res.setHeader('Content-Type', 'text/plain');
+      res.setHeader('Content-Disposition', 'attachment; filename="dashboard.txt"');
+      res.send(content);
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BOT START — FIXED 24/7 SEQUENTIAL LOOP WITH STATS TRACKING
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -1780,8 +1980,14 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     }
     activeBots.set(botKey, client);
 
+    // Initialize stats for this bot
+    clearBotStats(botKey);
+    const stats = getBotStats(botKey);
+    stats.channelCount = channelList.length;
+    logBotEvent(botKey, `Bot started as ${client.user.username} | ${channelList.length} channels | ${messageList.length} messages`);
+
     // ═══════════════════════════════════════════════════════════════════════════
-    // CONCURRENT MESSAGE LOOP — 24/7 FIRE-AND-FORGET WITH WATCHDOG
+    // CONCURRENT MESSAGE LOOP — 24/7 FIRE-AND-FORGET WITH WATCHDOG + STATS
     // ═══════════════════════════════════════════════════════════════════════════
     const resolveFiles = async (imgs) => {
       const files = [];
@@ -1872,11 +2078,19 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         else if (success > 0) consecutiveAuthFailures = 0;
 
         const roundDuration = Date.now() - roundStart;
+
+        // Update stats
+        if (success > 0) {
+          incrementMessagesSent(botKey, success);
+          logBotEvent(botKey, `Round: ${success}/${total} OK in ${roundDuration}ms`);
+        }
+
         console.log(`[MsgLoop] ${botKey}: Round complete — ${success}/${total} OK in ${roundDuration}ms | authFails: ${consecutiveAuthFailures}`);
 
         // Heartbeat every ~5 minutes
         if (Date.now() - lastHeartbeat > 5 * 60 * 1000) {
           console.log(`[MsgLoop] ${botKey}: HEARTBEAT — still alive, ${consecutiveAuthFailures} auth failures`);
+          logBotEvent(botKey, `HEARTBEAT — ${consecutiveAuthFailures} auth failures`);
           lastHeartbeat = Date.now();
         }
 
@@ -1884,6 +2098,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
       } catch (loopErr) {
         console.error(`[MsgLoop] ${botKey}: Round error (recovering):`, loopErr.message);
+        logBotEvent(botKey, `Round error: ${loopErr.message}`);
         return { success: false, authFailed: false };
       }
     };
@@ -1895,6 +2110,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         // ONLY stop if token is actually dead (repeated auth failures)
         if (result.authFailed) {
           console.error(`[MsgLoop] ${botKey}: Token appears invalid (${MAX_AUTH_FAILURES} consecutive auth failures), stopping loop`);
+          logBotEvent(botKey, `STOPPED: ${MAX_AUTH_FAILURES} consecutive auth failures`);
           break;
         }
 
@@ -1920,6 +2136,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           await msgLoop();
         } catch (watchdogErr) {
           console.error(`[Watchdog] ${botKey}: Loop crashed —`, watchdogErr.message);
+          logBotEvent(botKey, `Loop crashed: ${watchdogErr.message}`);
         }
         if (!activeBots.has(botKey)) break;
         console.log(`[Watchdog] ${botKey}: Loop exited, restarting in ${restartDelay}ms...`);
@@ -1952,6 +2169,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           client.pendingReplies.add(msg.author.id);
 
           console.log(`[AutoReply] ${botKey}: New DM from ${msg.author.username}`);
+          logBotEvent(botKey, `New DM from ${msg.author.username}`);
 
           if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
 
@@ -1981,14 +2199,18 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             const ok = await client.sendMessage(targetChannel, autoReplyText);
             if (ok) {
               console.log(`[AutoReply] ${botKey}: Replied to ${msg.author.username}`);
+              logBotEvent(botKey, `Auto-replied to ${msg.author.username}`);
+              incrementAutoReplies(botKey);
               client._dmCooldowns.set(msg.author.id, Date.now());
             }
           } catch (err) {
             console.error(`[AutoReply] ${botKey}: Error sending reply:`, err.message);
+            logBotEvent(botKey, `Auto-reply error: ${err.message}`);
           }
           client.pendingReplies.delete(msg.author.id);
         } catch (handlerErr) {
           console.error(`[AutoReply] ${botKey}: Handler error:`, handlerErr.message);
+          logBotEvent(botKey, `Handler error: ${handlerErr.message}`);
           client.pendingReplies.delete(msg.author.id);
         }
       });
@@ -2024,6 +2246,7 @@ app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
     db.unregisterActiveBot(req.user.id, configId);
     const config = db.getConfig(req.user.id, configId);
     if (config) { config.active = 0; db.setConfig(req.user.id, config, configId); }
+    clearBotStats(botKey);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
@@ -2093,6 +2316,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Discord Automation Suite v3.1 running on port ${PORT}`);
   console.log(`[SERVER] Using raw ws gateway for user tokens only`);
   console.log(`[SERVER] Fixed sequential message loop — 24/7 until stopped`);
+  console.log(`[SERVER] Added: Live feedback, Watch Live stats, Live configs page`);
+  console.log(`[SERVER] Added: Dashboard download as .txt/.js`);
 });
 
 module.exports = app;
