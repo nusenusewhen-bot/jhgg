@@ -9,18 +9,50 @@
     <style>
         * { box-sizing: border-box; }
         body { 
-            background: linear-gradient(135deg, #0f0a0a 0%, #1a0a0a 50%, #0f0a0a 100%); 
+            background: #0a0a0a; 
             color: #e5e7eb; 
             font-size: 15px; 
             margin: 0; 
             padding: 0; 
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             min-height: 100vh;
+            overflow-x: hidden;
         }
-        .red { color: #ef4444; }
+
+        /* Snow effect */
+        #snow-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1;
+            overflow: hidden;
+        }
+        .snowflake {
+            position: absolute;
+            top: -10px;
+            color: #fff;
+            opacity: 0.8;
+            font-size: 12px;
+            animation: fall linear infinite;
+            pointer-events: none;
+            user-select: none;
+        }
+        @keyframes fall {
+            to { transform: translateY(100vh); }
+        }
+
+        .content-wrapper {
+            position: relative;
+            z-index: 2;
+        }
+
+        .red { color: #fff; }
         .btn-red { 
-            background: #ef4444; 
-            color: #fff; 
+            background: #fff; 
+            color: #000; 
             font-weight: 700; 
             border: none; 
             cursor: pointer; 
@@ -29,11 +61,11 @@
             z-index: 10;
             pointer-events: auto;
         }
-        .btn-red:hover { background: #dc2626; }
-        .btn-red:disabled { background: #7f1d1d; cursor: not-allowed; opacity: 0.6; }
+        .btn-red:hover { background: #d4d4d4; }
+        .btn-red:disabled { background: #525252; cursor: not-allowed; opacity: 0.6; color: #a3a3a3; }
         .btn-purple { 
-            background: #8b5cf6; 
-            color: #fff; 
+            background: #d4d4d4; 
+            color: #000; 
             font-weight: 700; 
             border: none; 
             cursor: pointer; 
@@ -42,12 +74,12 @@
             z-index: 10;
             pointer-events: auto;
         }
-        .btn-purple:hover { background: #7c3aed; }
-        .btn-blue { background: #3b82f6; color: #fff; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
-        .btn-blue:hover { background: #2563eb; }
+        .btn-purple:hover { background: #fff; }
+        .btn-blue { background: #a3a3a3; color: #000; font-weight: 700; border: none; cursor: pointer; display: inline-block; }
+        .btn-blue:hover { background: #d4d4d4; }
         .btn-green {
-            background: #10b981;
-            color: #fff;
+            background: #d4d4d4;
+            color: #000;
             font-weight: 700;
             border: none;
             cursor: pointer;
@@ -56,11 +88,11 @@
             z-index: 10;
             pointer-events: auto;
         }
-        .btn-green:hover { background: #059669; }
-        .btn-green:disabled { background: #065f46; cursor: not-allowed; opacity: 0.6; }
+        .btn-green:hover { background: #fff; }
+        .btn-green:disabled { background: #525252; cursor: not-allowed; opacity: 0.6; color: #a3a3a3; }
         .btn-orange {
-            background: #f97316;
-            color: #fff;
+            background: #a3a3a3;
+            color: #000;
             font-weight: 700;
             border: none;
             cursor: pointer;
@@ -69,15 +101,15 @@
             z-index: 10;
             pointer-events: auto;
         }
-        .btn-orange:hover { background: #ea580c; }
+        .btn-orange:hover { background: #d4d4d4; }
         .card { 
-            background: linear-gradient(145deg, #1f1a1a 0%, #1a1515 100%); 
-            border: 1px solid #4a2d2d; 
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3); 
+            background: #171717; 
+            border: 1px solid #333; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5); 
         }
         .nav-link { 
             text-decoration: none; 
-            color: #9ca3af; 
+            color: #a3a3a3; 
             display: inline-block; 
             cursor: pointer; 
             white-space: nowrap; 
@@ -91,9 +123,9 @@
             z-index: 20;
         }
         .nav-link.active { 
-            color: #ef4444; 
-            border-bottom: 3px solid #ef4444;
-            text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+            color: #fff; 
+            border-bottom: 3px solid #fff;
+            text-shadow: 0 0 10px rgba(255,255,255,0.3);
         }
         .nav-link:hover { color: #fff; }
         .section { 
@@ -110,12 +142,12 @@
             font-family: 'Courier New', monospace; 
             word-break: break-all; 
             font-size: 14px; 
-            background: linear-gradient(145deg, #0f0a0a 0%, #150a0a 100%); 
+            background: #0a0a0a; 
             padding: 12px; 
             border-radius: 8px; 
-            border: 1px solid #ef4444; 
-            color: #ef4444; 
-            box-shadow: 0 0 10px rgba(239, 68, 68, 0.2); 
+            border: 1px solid #fff; 
+            color: #fff; 
+            box-shadow: 0 0 10px rgba(255,255,255,0.1); 
         }
         .modal { 
             display: none; 
@@ -137,37 +169,37 @@
             height: 32px; 
             border-radius: 50%; 
             object-fit: cover; 
-            border: 2px solid #ef4444; 
+            border: 2px solid #fff; 
         }
-        .error-text { color: #ef4444; font-size: 14px; margin-top: 8px; }
-        .success-text { color: #10b981; font-size: 14px; margin-top: 8px; }
+        .error-text { color: #ff6b6b; font-size: 14px; margin-top: 8px; }
+        .success-text { color: #6bff6b; font-size: 14px; margin-top: 8px; }
         .redeem-section { 
-            border: 2px dashed #ef4444; 
+            border: 2px dashed #fff; 
             border-radius: 16px; 
             padding: 20px; 
             margin-bottom: 20px; 
-            background: linear-gradient(145deg, rgba(239, 68, 68, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%); 
+            background: #1a1a1a; 
         }
         .trial-section {
-            border: 2px dashed #10b981;
+            border: 2px dashed #d4d4d4;
             border-radius: 16px;
             padding: 20px;
             margin-bottom: 20px;
-            background: linear-gradient(145deg, rgba(16, 185, 129, 0.1) 0%, rgba(16, 185, 129, 0.05) 100%);
+            background: #1a1a1a;
         }
         .generate-section {
-            border: 2px dashed #f97316;
+            border: 2px dashed #a3a3a3;
             border-radius: 16px;
             padding: 20px;
             margin-bottom: 20px;
-            background: linear-gradient(145deg, rgba(249, 115, 22, 0.1) 0%, rgba(249, 115, 22, 0.05) 100%);
+            background: #1a1a1a;
         }
         .whitelist-section {
-            border: 2px dashed #3b82f6;
+            border: 2px dashed #737373;
             border-radius: 16px;
             padding: 20px;
             margin-bottom: 20px;
-            background: linear-gradient(145deg, rgba(59, 130, 246, 0.1) 0%, rgba(59, 130, 246, 0.05) 100%);
+            background: #1a1a1a;
         }
         .toggle-wrapper { 
             position: relative; 
@@ -192,7 +224,7 @@
             left: 0; 
             right: 0; 
             bottom: 0; 
-            background-color: #374151; 
+            background-color: #404040; 
             transition: .4s; 
             border-radius: 34px; 
             pointer-events: auto;
@@ -208,24 +240,25 @@
             transition: .4s; 
             border-radius: 50%; 
         }
-        .toggle-input:checked + .toggle-slider { background-color: #ef4444; }
-        .toggle-input:checked + .toggle-slider:before { transform: translateX(24px); }
+        .toggle-input:checked + .toggle-slider { background-color: #fff; }
+        .toggle-input:checked + .toggle-slider:before { transform: translateX(24px); background-color: #000; }
         .account-card { 
-            background: linear-gradient(145deg, #181111 0%, #151111 100%); 
-            border: 1px solid #3a2d2d; 
+            background: #1a1a1a; 
+            border: 1px solid #333; 
             border-radius: 12px; 
             padding: 16px; 
             margin-bottom: 12px; 
             transition: all 0.2s;
             pointer-events: auto;
+            position: relative;
         }
         .account-card:hover { 
-            border-color: #ef4444; 
-            box-shadow: 0 0 20px rgba(239, 68, 68, 0.2); 
+            border-color: #fff; 
+            box-shadow: 0 0 20px rgba(255,255,255,0.1); 
         }
         .account-active { 
-            border-color: #ef4444; 
-            background: rgba(239, 68, 68, 0.1); 
+            border-color: #fff; 
+            background: rgba(255,255,255,0.05); 
         }
         .status-badge { 
             display: inline-block; 
@@ -234,40 +267,40 @@
             font-size: 12px; 
             font-weight: 600; 
         }
-        .status-running { background: #4a0f0f; color: #fca5a5; }
-        .status-stopped { background: #4a0f0f; color: #fca5a5; }
-        .feature-check { color: #ef4444; margin-right: 8px; }
+        .status-running { background: #262626; color: #fff; }
+        .status-stopped { background: #262626; color: #a3a3a3; }
+        .feature-check { color: #fff; margin-right: 8px; }
         .image-preview { 
             max-width: 200px; 
             max-height: 200px; 
             border-radius: 8px; 
-            border: 2px dashed #374151; 
+            border: 2px dashed #404040; 
             object-fit: cover;
             cursor: pointer;
         }
         .image-preview.has-image { 
-            border-color: #ef4444; 
+            border-color: #fff; 
             border-style: solid; 
         }
         .upload-area { 
-            border: 2px dashed #374151; 
+            border: 2px dashed #404040; 
             border-radius: 12px; 
             padding: 30px; 
             text-align: center; 
             cursor: pointer; 
             transition: all 0.2s; 
-            background: #111827;
+            background: #171717;
             pointer-events: auto;
             position: relative;
             z-index: 5;
         }
         .upload-area:hover { 
-            border-color: #ef4444; 
-            background: rgba(239, 68, 68, 0.1); 
+            border-color: #fff; 
+            background: rgba(255,255,255,0.05); 
         }
         .upload-area.has-file { 
-            border-color: #ef4444; 
-            background: rgba(239, 68, 68, 0.05); 
+            border-color: #fff; 
+            background: rgba(255,255,255,0.02); 
         }
         input, textarea { 
             font-family: inherit; 
@@ -276,8 +309,8 @@
             pointer-events: auto;
         }
         input:focus, textarea:focus { 
-            border-color: #ef4444 !important; 
-            box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1); 
+            border-color: #fff !important; 
+            box-shadow: 0 0 0 3px rgba(255,255,255,0.1); 
         }
         button { 
             transition: all 0.2s; 
@@ -302,7 +335,7 @@
         .form-label { 
             display: block; 
             font-size: 12px; 
-            color: #9ca3af; 
+            color: #a3a3a3; 
             margin-bottom: 8px; 
             font-weight: 500; 
             text-transform: uppercase; 
@@ -327,30 +360,30 @@
         }
         
         .activity-card { 
-            background: #111827; 
-            border: 1px solid #374151; 
+            background: #171717; 
+            border: 1px solid #333; 
             border-radius: 16px; 
             padding: 20px; 
             margin-bottom: 16px;
             pointer-events: auto;
         }
-        .activity-pending { border-color: #fbbf24; }
-        .activity-completed { border-color: #ef4444; }
-        .activity-expired { border-color: #ef4444; }
-        .activity-trial { border-color: #10b981; }
+        .activity-pending { border-color: #a3a3a3; }
+        .activity-completed { border-color: #fff; }
+        .activity-expired { border-color: #525252; }
+        .activity-trial { border-color: #d4d4d4; }
         .countdown { 
             font-family: 'Courier New', monospace; 
             font-size: 18px; 
-            color: #fbbf24; 
+            color: #d4d4d4; 
         }
         .trial-timer {
             font-family: 'Courier New', monospace;
             font-size: 24px;
-            color: #10b981;
+            color: #fff;
             font-weight: bold;
         }
         .address-history-item { 
-            background: #1f2937; 
+            background: #262626; 
             border-radius: 8px; 
             padding: 12px; 
             margin-bottom: 8px; 
@@ -359,26 +392,26 @@
         }
         
         .key-card {
-            background: #1f2937;
-            border: 1px solid #374151;
+            background: #262626;
+            border: 1px solid #404040;
             border-radius: 12px;
             padding: 16px;
             margin-bottom: 12px;
         }
-        .key-active { border-color: #10b981; }
-        .key-revoked { border-color: #ef4444; opacity: 0.7; }
-        .key-expired { border-color: #6b7280; opacity: 0.7; }
+        .key-active { border-color: #fff; }
+        .key-revoked { border-color: #525252; opacity: 0.7; }
+        .key-expired { border-color: #525252; opacity: 0.7; }
         
         .image-item {
-            background: #111827;
-            border: 1px solid #374151;
+            background: #171717;
+            border: 1px solid #333;
             border-radius: 12px;
             padding: 12px;
             margin-bottom: 12px;
         }
         .message-item {
-            background: #111827;
-            border: 1px solid #374151;
+            background: #171717;
+            border: 1px solid #333;
             border-radius: 12px;
             padding: 16px;
             margin-bottom: 12px;
@@ -386,21 +419,137 @@
         .remove-btn {
             background: none;
             border: none;
-            color: #ef4444;
+            color: #ff6b6b;
             cursor: pointer;
             font-size: 12px;
         }
-        .remove-btn:hover { color: #fca5a5; }
+        .remove-btn:hover { color: #ff9999; }
         .image-id-badge {
             display: inline-block;
-            background: #ef4444;
-            color: #fff;
+            background: #fff;
+            color: #000;
             font-size: 11px;
             font-weight: 700;
             padding: 2px 8px;
             border-radius: 9999px;
             margin-bottom: 8px;
         }
+        
+        /* Guide section styles */
+        .guide-card {
+            background: #171717;
+            border: 1px solid #333;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 16px;
+            transition: all 0.2s;
+        }
+        .guide-card:hover {
+            border-color: #fff;
+        }
+        .guide-icon {
+            font-size: 24px;
+            margin-bottom: 12px;
+            color: #fff;
+        }
+        .step-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            background: #fff;
+            color: #000;
+            border-radius: 50%;
+            font-weight: 700;
+            font-size: 14px;
+            margin-right: 12px;
+            flex-shrink: 0;
+        }
+        .step-row {
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+        
+        /* Feedback styles */
+        .feedback-card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+            position: relative;
+        }
+        .star-rating {
+            display: flex;
+            gap: 4px;
+            font-size: 20px;
+        }
+        .star-rating i {
+            cursor: pointer;
+            color: #525252;
+            transition: color 0.2s;
+        }
+        .star-rating i.active {
+            color: #fff;
+        }
+        .star-rating i:hover {
+            color: #d4d4d4;
+        }
+        
+        /* Dropdown menu */
+        .dropdown-menu {
+            position: absolute;
+            right: 0;
+            top: 40px;
+            background: #262626;
+            border: 1px solid #404040;
+            border-radius: 8px;
+            min-width: 140px;
+            z-index: 50;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            display: none;
+        }
+        .dropdown-menu.show { display: block; }
+        .dropdown-menu button {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 10px 14px;
+            background: none;
+            border: none;
+            color: #e5e7eb;
+            font-size: 13px;
+            cursor: pointer;
+            border-radius: 6px;
+            margin: 2px;
+        }
+        .dropdown-menu button:hover { background: #404040; }
+        
+        /* Watch Live modal */
+        .watch-live-stats {
+            background: #0a0a0a;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #262626;
+        }
+        .stat-row:last-child { border-bottom: none; }
+        .log-entry {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            padding: 6px 0;
+            border-bottom: 1px solid #262626;
+            color: #a3a3a3;
+        }
+        .log-entry:last-child { border-bottom: none; }
         
         @media (max-width: 640px) {
             .nav-link { padding: 6px 10px; font-size: 13px; }
@@ -411,10 +560,14 @@
 <base target="_blank">
 </head>
 <body class="min-h-screen pb-20">
+    <!-- Snow Background -->
+    <div id="snow-container"></div>
+
+    <div class="content-wrapper">
     <div id="logout-modal" class="modal" onclick="if(event.target === this) closeLogoutModal()">
         <div class="card rounded-3xl p-8 max-w-sm mx-4 w-full" style="position: relative; z-index: 1001;">
             <h3 class="text-xl font-bold mb-4">Confirm Logout</h3>
-            <p class="text-sm mb-4" style="color: #9ca3af;">Are you sure you want to logout?</p>
+            <p class="text-sm mb-4" style="color: #a3a3a3;">Are you sure you want to logout?</p>
             <div class="flex gap-3">
                 <button onclick="closeLogoutModal()" class="flex-1 bg-zinc-700 hover:bg-zinc-600 py-3 rounded-2xl text-sm" style="border: none; color: #fff;">Cancel</button>
                 <button onclick="confirmLogout()" class="flex-1 btn-red py-3 rounded-2xl text-sm">Logout</button>
@@ -422,10 +575,23 @@
         </div>
     </div>
 
-    <header class="sticky top-0 z-50" style="background: linear-gradient(90deg, #1a0f0f 0%, #1a0a0a 50%, #1a0f0f 100%); border-bottom: 1px solid #4a2d2d; position: sticky; top: 0;">
+    <!-- Watch Live Modal -->
+    <div id="watch-live-modal" class="modal" onclick="if(event.target === this) closeWatchLiveModal()">
+        <div class="card rounded-3xl p-6 max-w-lg mx-4 w-full" style="position: relative; z-index: 1001; max-height: 80vh; overflow-y: auto;">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-bold"><i class="fa-solid fa-eye mr-2"></i>Live Watch</h3>
+                <button onclick="closeWatchLiveModal()" style="background: none; border: none; color: #a3a3a3; cursor: pointer; font-size: 18px;"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div id="watch-live-content">
+                <p class="text-center" style="color: #a3a3a3;">Loading stats...</p>
+            </div>
+        </div>
+    </div>
+
+    <header class="sticky top-0 z-50" style="background: #0f0f0f; border-bottom: 1px solid #333; position: sticky; top: 0;">
         <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
             <div class="flex items-center gap-3 clickable" onclick="window.location.reload()" style="cursor: pointer; flex-shrink: 0;">
-                <i class="fa-solid fa-robot text-2xl" style="color: #ef4444;"></i>
+                <i class="fa-solid fa-ghost text-2xl" style="color: #fff;"></i>
                 <h1 class="text-xl font-bold" style="color: #fff; white-space: nowrap;">Auto Adv</h1>
             </div>
             
@@ -442,7 +608,7 @@
             
             <div class="flex items-center gap-3" style="flex-shrink: 0;">
                 <div id="user-display" class="flex items-center gap-2">
-                    <span class="text-xs bg-zinc-900 px-3 py-1 rounded-full" style="color: #9ca3af;">Loading...</span>
+                    <span class="text-xs bg-zinc-900 px-3 py-1 rounded-full" style="color: #a3a3a3;">Loading...</span>
                 </div>
                 <button onclick="initiateLogout()" class="text-zinc-400 hover:text-white" style="background: none; border: none; padding: 8px; border-radius: 8px; cursor: pointer;">
                     <i class="fa-solid fa-right-from-bracket"></i>
@@ -452,41 +618,112 @@
     </header>
 
     <div class="max-w-5xl mx-auto px-4 py-6">
+        <!-- MAIN SECTION -->
         <div id="section-0" class="section active">
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                <div class="card rounded-3xl p-6">
-                    <h3 class="text-zinc-400 text-sm" style="color: #9ca3af;">Status</h3>
-                    <div id="credits-display" class="text-4xl font-bold red mt-3" style="color: #ef4444;">Free User</div>
+            <!-- Guide / Info Section -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-circle-info mr-2"></i>Guide</h2>
+                
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+                    <div class="guide-card text-center">
+                        <div class="guide-icon"><i class="fa-solid fa-user-group"></i></div>
+                        <h3 class="font-bold mb-2" style="color: #fff;">Accounts</h3>
+                        <p class="text-sm" style="color: #a3a3a3;">Connect unlimited Discord accounts via token. Status pills show live connection state.</p>
+                    </div>
+                    <div class="guide-card text-center">
+                        <div class="guide-icon"><i class="fa-solid fa-bullhorn"></i></div>
+                        <h3 class="font-bold mb-2" style="color: #fff;">Campaigns</h3>
+                        <p class="text-sm" style="color: #a3a3a3;">Bulk-send to dozens of channels. Custom delay, auto-rotate accounts, cloud or client mode.</p>
+                    </div>
+                    <div class="guide-card text-center">
+                        <div class="guide-icon"><i class="fa-solid fa-comment-dots"></i></div>
+                        <h3 class="font-bold mb-2" style="color: #fff;">Auto Reply</h3>
+                        <p class="text-sm" style="color: #a3a3a3;">Reply to incoming DMs automatically. Skip duplicates, log every interaction.</p>
+                    </div>
                 </div>
+
                 <div class="card rounded-3xl p-6">
-                    <h3 class="text-lg font-semibold mb-4" style="color: #fff;">Access</h3>
-                    <div id="status-box" class="p-5 bg-zinc-900 rounded-2xl text-center">
-                        <p id="status-text" class="text-xl font-medium" style="color: #fbbf24;">Not Purchased</p>
-                        <button onclick="switchTab(1)" class="mt-5 w-full btn-red py-3.5 rounded-2xl text-base" style="border: none;">Get Access - $3.00</button>
+                    <h3 class="text-lg font-bold mb-4" style="color: #fff;"><i class="fa-solid fa-list-ol mr-2"></i>Getting Started</h3>
+                    <div class="step-row">
+                        <span class="step-badge">1</span>
+                        <div>
+                            <p class="font-medium" style="color: #fff;">Login with Discord</p>
+                            <p class="text-sm" style="color: #a3a3a3;">Click "Continue with Discord" on the auth screen. We use the official OAuth flow.</p>
+                        </div>
+                    </div>
+                    <div class="step-row">
+                        <span class="step-badge">2</span>
+                        <div>
+                            <p class="font-medium" style="color: #fff;">Add a Discord account</p>
+                            <p class="text-sm" style="color: #a3a3a3;">In the Accounts tab, paste your user token.</p>
+                        </div>
+                    </div>
+                    <div class="step-row">
+                        <span class="step-badge">3</span>
+                        <div>
+                            <p class="font-medium" style="color: #fff;">Create a config</p>
+                            <p class="text-sm" style="color: #a3a3a3;">Drop your channel IDs (18838382, 8282828 — example), write your message, set a delay, and hit Start & Save.</p>
+                        </div>
+                    </div>
+                    <div class="step-row">
+                        <span class="step-badge">4</span>
+                        <div>
+                            <p class="font-medium" style="color: #fff;">Enable Auto Reply (optional)</p>
+                            <p class="text-sm" style="color: #a3a3a3;">Add a default reply for incoming DMs. We track responded users so no one gets spammed twice.</p>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <div id="trial-section" class="trial-section card max-w-md mx-auto mt-8 hidden">
-                <h3 class="text-lg font-bold mb-3" style="color: #10b981;"><i class="fa-solid fa-gift mr-2"></i>Free Trial</h3>
-                <p class="text-sm mb-4" style="color: #9ca3af;">Claim 10 minutes of free access to try all features!</p>
+            <!-- Feedback Section -->
+            <div id="feedback-section" class="card rounded-3xl p-6 mb-6">
+                <h3 class="text-lg font-bold mb-4" style="color: #fff;"><i class="fa-solid fa-comments mr-2"></i>Feedback</h3>
+                
+                <!-- Submit Feedback -->
+                <div id="feedback-form" class="mb-6">
+                    <p class="text-sm mb-3" style="color: #a3a3a3;">Rate your experience</p>
+                    <div class="star-rating mb-4" id="star-rating">
+                        <i class="fa-solid fa-star" data-rating="1" onclick="setRating(1)"></i>
+                        <i class="fa-solid fa-star" data-rating="2" onclick="setRating(2)"></i>
+                        <i class="fa-solid fa-star" data-rating="3" onclick="setRating(3)"></i>
+                        <i class="fa-solid fa-star" data-rating="4" onclick="setRating(4)"></i>
+                        <i class="fa-solid fa-star" data-rating="5" onclick="setRating(5)"></i>
+                    </div>
+                    <textarea id="feedback-message" rows="3" placeholder="Share your thoughts..." class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm mb-3" style="color: #fff; resize: vertical;"></textarea>
+                    <button onclick="submitFeedback()" class="btn-purple px-6 py-2.5 rounded-2xl text-sm font-bold" style="border: none;">
+                        <i class="fa-solid fa-paper-plane mr-2"></i>Send Feedback
+                    </button>
+                    <div id="feedback-result" class="mt-3"></div>
+                </div>
+
+                <!-- Feedback List -->
+                <div id="feedback-list">
+                    <p class="text-center text-sm" style="color: #a3a3a3;">Loading feedback...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- PURCHASE SECTION -->
+        <div id="section-1" class="section">
+            <!-- Trial moved to Purchase -->
+            <div id="trial-section" class="trial-section card max-w-md mx-auto mb-6 hidden">
+                <h3 class="text-lg font-bold mb-3" style="color: #fff;"><i class="fa-solid fa-gift mr-2"></i>Free Trial</h3>
+                <p class="text-sm mb-4" style="color: #a3a3a3;">Claim 10 minutes of free access to try all features!</p>
                 <button id="claim-trial-btn" onclick="claimTrial()" class="w-full btn-green py-4 rounded-2xl text-base font-bold" style="border: none;">
                     <i class="fa-solid fa-clock mr-2"></i>Claim 10 Minutes Free Trial
                 </button>
                 <div id="trial-result" class="mt-3"></div>
             </div>
 
-            <div id="active-trial-section" class="trial-section card max-w-md mx-auto mt-8 hidden">
-                <h3 class="text-lg font-bold mb-3" style="color: #10b981;"><i class="fa-solid fa-check-circle mr-2"></i>Trial Active</h3>
-                <p class="text-sm mb-2" style="color: #9ca3af;">Time remaining:</p>
+            <div id="active-trial-section" class="trial-section card max-w-md mx-auto mb-6 hidden">
+                <h3 class="text-lg font-bold mb-3" style="color: #fff;"><i class="fa-solid fa-check-circle mr-2"></i>Trial Active</h3>
+                <p class="text-sm mb-2" style="color: #a3a3a3;">Time remaining:</p>
                 <div id="trial-timer" class="trial-timer mb-4">10:00</div>
                 <button onclick="switchTab(2)" class="w-full btn-green py-3 rounded-2xl text-sm font-bold" style="border: none;">Go to Configure</button>
             </div>
-        </div>
 
-        <div id="section-1" class="section">
             <div class="redeem-section card max-w-md mx-auto mb-6">
-                <h3 class="text-lg font-bold mb-3" style="color: #8b5cf6;"><i class="fa-solid fa-key mr-2"></i>Redeem Key</h3>
+                <h3 class="text-lg font-bold mb-3" style="color: #d4d4d4;"><i class="fa-solid fa-key mr-2"></i>Redeem Key</h3>
                 <div class="flex gap-2">
                     <input id="redeem-key" type="text" placeholder="Enter key" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm uppercase" style="color: #fff;">
                     <button id="redeem-btn" class="btn-purple px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">Redeem</button>
@@ -496,17 +733,17 @@
 
             <div class="card rounded-3xl p-8 max-w-md mx-auto">
                 <div class="text-center">
-                    <div class="inline-block text-white text-xs font-bold px-5 py-1 rounded-full mb-4" style="background: #ef4444;">LIFETIME</div>
+                    <div class="inline-block text-black text-xs font-bold px-5 py-1 rounded-full mb-4" style="background: #fff;">LIFETIME</div>
                     <h2 class="text-4xl font-bold mb-1" style="color: #fff;">$3.00</h2>
-                    <p class="text-zinc-400 mb-2" style="color: #9ca3af;">One-time payment</p>
-                    <p class="text-xs mb-6" style="color: #6b7280;">Send any amount, auto-swept 24/7</p>
+                    <p class="text-zinc-400 mb-2" style="color: #a3a3a3;">One-time payment</p>
+                    <p class="text-xs mb-6" style="color: #737373;">Send any amount, auto-swept 24/7</p>
                     
                     <div class="text-left bg-zinc-900 p-4 rounded-xl mb-6">
-                        <p class="text-sm font-medium mb-2" style="color: #ef4444;">Includes:</p>
-                        <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Auto-advertise in multiple channels</p>
-                        <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Auto-reply to DMs</p>
-                        <p class="text-xs mb-1" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Multiple account support</p>
-                        <p class="text-xs" style="color: #9ca3af;"><i class="fa-solid fa-check feature-check"></i>Image upload support</p>
+                        <p class="text-sm font-medium mb-2" style="color: #fff;">Includes:</p>
+                        <p class="text-xs mb-1" style="color: #a3a3a3;"><i class="fa-solid fa-check feature-check"></i>Auto-advertise in multiple channels</p>
+                        <p class="text-xs mb-1" style="color: #a3a3a3;"><i class="fa-solid fa-check feature-check"></i>Auto-reply to DMs</p>
+                        <p class="text-xs mb-1" style="color: #a3a3a3;"><i class="fa-solid fa-check feature-check"></i>Multiple account support</p>
+                        <p class="text-xs" style="color: #a3a3a3;"><i class="fa-solid fa-check feature-check"></i>Image upload support</p>
                     </div>
                     
                     <button id="buy-btn" class="w-full btn-red py-5 rounded-2xl text-lg font-bold" style="border: none;">Generate Address</button>
@@ -515,9 +752,10 @@
             </div>
         </div>
 
+        <!-- CONFIGURE SECTION -->
         <div id="section-2" class="section">
             <div id="active-accounts" class="mb-6 hidden">
-                <h3 class="text-lg font-bold mb-4" style="color: #ef4444;"><i class="fa-solid fa-server mr-2"></i>Running Accounts</h3>
+                <h3 class="text-lg font-bold mb-4" style="color: #fff;"><i class="fa-solid fa-server mr-2"></i>Running Accounts</h3>
                 <div id="accounts-list"></div>
             </div>
 
@@ -545,20 +783,20 @@
                         <button onclick="addImage()" class="mt-2 btn-purple px-4 py-2 rounded-xl text-xs" style="border: none;">
                             <i class="fa-solid fa-plus mr-1"></i>Add 1+ Image
                         </button>
-                        <p class="text-xs mt-2" style="color: #6b7280;">Images are numbered. Use the number in your messages to pick which image to send.</p>
+                        <p class="text-xs mt-2" style="color: #737373;">Images are numbered. Use the number in your messages to pick which image to send.</p>
                     </div>
                     
                     <div>
                         <label class="form-label">Channel IDs (comma separated)</label>
                         <input id="channels" type="text" placeholder="123456789012345678, 987654321098765432" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
-                        <p class="text-xs mt-1" style="color: #6b7280;">Right-click channel → Copy Channel ID (numbers only)</p>
-                        <p class="text-xs mt-1" style="color: #ef4444; display: none;" id="channel-error">Channel IDs must be numbers only</p>
+                        <p class="text-xs mt-1" style="color: #737373;">Right-click channel → Copy Channel ID (numbers only)</p>
+                        <p class="text-xs mt-1" style="color: #ff6b6b; display: none;" id="channel-error">Channel IDs must be numbers only</p>
                     </div>
                     
                     <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl border border-zinc-700 mb-4">
                         <div>
-                            <label class="text-sm font-medium block" style="color: #ef4444;"><i class="fa-solid fa-bolt mr-2"></i>Send All At Once</label>
-                            <p class="text-xs" style="color: #6b7280;">Send to all channels simultaneously</p>
+                            <label class="text-sm font-medium block" style="color: #fff;"><i class="fa-solid fa-bolt mr-2"></i>Send All At Once</label>
+                            <p class="text-xs" style="color: #737373;">Send to all channels simultaneously</p>
                         </div>
                         <label class="toggle-wrapper" for="send-all-at-once-toggle">
                             <input type="checkbox" id="send-all-at-once-toggle" class="toggle-input" checked>
@@ -569,7 +807,7 @@
                     <div>
                         <label class="form-label" id="delay-label">Delay (seconds)</label>
                         <input id="delay" type="number" value="30" min="10" max="3600" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
-                        <p class="text-xs mt-1" style="color: #6b7280;">Delay between each message in the loop</p>
+                        <p class="text-xs mt-1" style="color: #737373;">Delay between each message in the loop</p>
                     </div>
                     
                     <div>
@@ -578,13 +816,13 @@
                         <button onclick="addMessage()" class="mt-2 btn-purple px-4 py-2 rounded-xl text-xs" style="border: none;">
                             <i class="fa-solid fa-plus mr-1"></i>Add 1+ Message
                         </button>
-                        <p class="text-xs mt-2" style="color: #6b7280;">Messages loop in order. Leave Image IDs empty to send all images.</p>
+                        <p class="text-xs mt-2" style="color: #737373;">Messages loop in order. Leave Image IDs empty to send all images.</p>
                     </div>
                     
                     <div class="flex items-center justify-between bg-zinc-900 p-4 rounded-2xl border border-zinc-700">
                         <div>
                             <label class="text-sm font-medium block" style="color: #fff;">Auto-Reply</label>
-                            <p class="text-xs" style="color: #6b7280;">Auto-accept & reply once to new DM requests</p>
+                            <p class="text-xs" style="color: #737373;">Auto-accept & reply once to new DM requests</p>
                         </div>
                         <label class="toggle-wrapper" for="auto-reply-toggle">
                             <input type="checkbox" id="auto-reply-toggle" class="toggle-input">
@@ -599,32 +837,34 @@
                     
                     <div class="flex gap-4">
                         <button id="start-btn" class="flex-1 btn-red py-4 rounded-2xl" style="border: none;">Start & Save</button>
-                        <button id="stop-btn" class="flex-1 py-4 rounded-2xl text-white font-bold" style="background: #dc2626; border: none; cursor: pointer;">Stop</button>
+                        <button id="stop-btn" class="flex-1 py-4 rounded-2xl text-white font-bold" style="background: #525252; border: none; cursor: pointer;">Stop</button>
                     </div>
                     <div id="bot-status" class="text-center text-sm"></div>
                 </div>
             </div>
         </div>
 
+        <!-- PURCHASE LOGS SECTION -->
         <div id="section-3" class="section">
             <div class="max-w-2xl mx-auto">
-                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-clock-rotate-left mr-2" style="color: #ef4444;"></i>Purchase Logs</h2>
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-clock-rotate-left mr-2" style="color: #fff;"></i>Purchase Logs</h2>
                 
                 <div id="activity-content">
                     <div class="text-center p-8">
-                        <i class="fa-solid fa-spinner fa-spin text-3xl mb-4" style="color: #ef4444;"></i>
-                        <p style="color: #9ca3af;">Loading activity...</p>
+                        <i class="fa-solid fa-spinner fa-spin text-3xl mb-4" style="color: #fff;"></i>
+                        <p style="color: #a3a3a3;">Loading activity...</p>
                     </div>
                 </div>
             </div>
         </div>
 
+        <!-- GENERATE SECTION -->
         <div id="section-4" class="section">
             <div class="max-w-3xl mx-auto">
-                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-key mr-2" style="color: #f97316;"></i>Generate Keys</h2>
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-key mr-2" style="color: #a3a3a3;"></i>Generate Keys</h2>
                 
                 <div class="generate-section card mb-6">
-                    <h3 class="text-lg font-bold mb-4" style="color: #f97316;"><i class="fa-solid fa-plus mr-2"></i>Create New Key</h3>
+                    <h3 class="text-lg font-bold mb-4" style="color: #a3a3a3;"><i class="fa-solid fa-plus mr-2"></i>Create New Key</h3>
                     <div class="flex gap-3 mb-4">
                         <select id="key-duration" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm" style="color: #fff;">
                             <option value="lifetime">Lifetime (Never expires)</option>
@@ -640,24 +880,40 @@
                     <div id="generate-result" class="mt-3"></div>
                 </div>
 
+                <!-- Perm Key Revoke (Owner Only) -->
+                <div id="perm-key-section" class="generate-section card mb-6 hidden">
+                    <h3 class="text-lg font-bold mb-4" style="color: #a3a3a3;"><i class="fa-solid fa-ban mr-2"></i>Revoke Permanent Key</h3>
+                    <div class="flex gap-3">
+                        <select id="perm-key-select" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm" style="color: #fff;">
+                            <!-- Options populated by JS -->
+                        </select>
+                        <button onclick="revokePermKey()" class="btn-red px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">
+                            <i class="fa-solid fa-ban mr-2"></i>Revoke
+                        </button>
+                    </div>
+                    <div id="perm-key-result" class="mt-3"></div>
+                    <p class="text-xs mt-2" style="color: #737373;">Revoking a perm key will deactivate all users who redeemed it.</p>
+                </div>
+
                 <div class="card rounded-3xl p-6">
                     <h3 class="text-lg font-bold mb-4" style="color: #fff;"><i class="fa-solid fa-list mr-2"></i>Generated Keys</h3>
                     <div id="keys-list">
                         <div class="text-center p-4">
-                            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2" style="color: #f97316;"></i>
-                            <p style="color: #9ca3af;">Loading keys...</p>
+                            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2" style="color: #a3a3a3;"></i>
+                            <p style="color: #a3a3a3;">Loading keys...</p>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
 
+        <!-- WHITELIST SECTION -->
         <div id="section-5" class="section">
             <div class="max-w-2xl mx-auto">
-                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-shield-halved mr-2" style="color: #3b82f6;"></i>Whitelist Management</h2>
+                <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-shield-halved mr-2" style="color: #737373;"></i>Whitelist Management</h2>
                 
                 <div class="whitelist-section card mb-6">
-                    <h3 class="text-lg font-bold mb-4" style="color: #3b82f6;"><i class="fa-solid fa-user-plus mr-2"></i>Add to Whitelist</h3>
+                    <h3 class="text-lg font-bold mb-4" style="color: #737373;"><i class="fa-solid fa-user-plus mr-2"></i>Add to Whitelist</h3>
                     <div class="flex gap-3">
                         <input id="whitelist-id" type="text" placeholder="Discord User ID" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm" style="color: #fff;">
                         <button onclick="addToWhitelist()" class="btn-blue px-6 py-3 rounded-2xl text-sm font-bold" style="border: none;">
@@ -671,13 +927,14 @@
                     <h3 class="text-lg font-bold mb-4" style="color: #fff;"><i class="fa-solid fa-users mr-2"></i>Whitelisted Users</h3>
                     <div id="whitelist-list">
                         <div class="text-center p-4">
-                            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2" style="color: #3b82f6;"></i>
-                            <p style="color: #9ca3af;">Loading whitelist...</p>
+                            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2" style="color: #737373;"></i>
+                            <p style="color: #a3a3a3;">Loading whitelist...</p>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
+    </div>
     </div>
 
     <script>
@@ -693,15 +950,278 @@
         let isOwner = false;
         let isWhitelisted = false;
         let canGenerate = false;
+        let currentFeedbackRating = 0;
+        let watchLiveInterval = null;
+        let currentWatchConfigId = null;
 
         document.addEventListener('DOMContentLoaded', function() {
+            createSnow();
             initializeEventListeners();
             loadUserData();
             renderImages();
             renderMessages();
+            loadFeedback();
             setInterval(() => {
                 fetch('/api/user', { credentials: 'same-origin' }).catch(() => {});
             }, 60000);
+        });
+
+        // ====== SNOW EFFECT ======
+        function createSnow() {
+            const container = document.getElementById('snow-container');
+            const snowflakeCount = 50;
+            for (let i = 0; i < snowflakeCount; i++) {
+                const flake = document.createElement('div');
+                flake.className = 'snowflake';
+                flake.innerHTML = '&#8226;';
+                flake.style.left = Math.random() * 100 + '%';
+                flake.style.animationDuration = (Math.random() * 5 + 5) + 's';
+                flake.style.animationDelay = Math.random() * 10 + 's';
+                flake.style.fontSize = (Math.random() * 8 + 4) + 'px';
+                flake.style.opacity = Math.random() * 0.6 + 0.2;
+                container.appendChild(flake);
+            }
+        }
+
+        // ====== FEEDBACK ======
+        function setRating(rating) {
+            currentFeedbackRating = rating;
+            const stars = document.querySelectorAll('#star-rating i');
+            stars.forEach((star, index) => {
+                if (index < rating) star.classList.add('active');
+                else star.classList.remove('active');
+            });
+        }
+
+        async function submitFeedback() {
+            const message = document.getElementById('feedback-message').value.trim();
+            const result = document.getElementById('feedback-result');
+            
+            if (currentFeedbackRating === 0) {
+                result.innerHTML = '<p class="error-text">Please select a rating</p>';
+                return;
+            }
+            if (!message) {
+                result.innerHTML = '<p class="error-text">Please enter a message</p>';
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ rating: currentFeedbackRating, message })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    result.innerHTML = '<p class="success-text">Feedback submitted!</p>';
+                    document.getElementById('feedback-message').value = '';
+                    setRating(0);
+                    loadFeedback();
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Failed to submit feedback</p>';
+            }
+        }
+
+        async function loadFeedback() {
+            try {
+                const res = await fetch('/api/feedback', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                const container = document.getElementById('feedback-list');
+                if (!data.success || !data.feedback || data.feedback.length === 0) {
+                    container.innerHTML = '<p class="text-center text-sm" style="color: #737373;">No feedback yet. Be the first!</p>';
+                    return;
+                }
+                
+                let html = '';
+                data.feedback.slice().reverse().forEach(fb => {
+                    const stars = '&#9733;'.repeat(fb.rating) + '&#9734;'.repeat(5 - fb.rating);
+                    const date = new Date(fb.createdAt).toLocaleString();
+                    html += `
+                        <div class="feedback-card">
+                            <div class="flex justify-between items-start">
+                                <div class="flex-1">
+                                    <div class="flex items-center gap-2 mb-1">
+                                        <span style="color: #fff; font-size: 14px;">${stars}</span>
+                                        <span class="text-xs" style="color: #737373;">${date}</span>
+                                    </div>
+                                    <p class="text-sm" style="color: #e5e7eb;">${escapeHtml(fb.message)}</p>
+                                </div>
+                                ${isOwner ? `
+                                    <div style="position: relative;">
+                                        <button onclick="toggleFeedbackMenu('${fb.id}')" style="background: none; border: none; color: #a3a3a3; cursor: pointer; padding: 4px 8px;">
+                                            <i class="fa-solid fa-ellipsis-vertical"></i>
+                                        </button>
+                                        <div id="feedback-menu-${fb.id}" class="dropdown-menu">
+                                            <button onclick="deleteFeedback('${fb.id}')"><i class="fa-solid fa-trash mr-2"></i>Delete</button>
+                                        </div>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `;
+                });
+                container.innerHTML = html;
+            } catch (err) {
+                document.getElementById('feedback-list').innerHTML = '<p class="text-center text-sm" style="color: #737373;">Failed to load feedback</p>';
+            }
+        }
+
+        function toggleFeedbackMenu(feedbackId) {
+            const menu = document.getElementById(`feedback-menu-${feedbackId}`);
+            document.querySelectorAll('.dropdown-menu').forEach(m => {
+                if (m !== menu) m.classList.remove('show');
+            });
+            menu.classList.toggle('show');
+        }
+
+        async function deleteFeedback(feedbackId) {
+            if (!confirm('Delete this feedback?')) return;
+            try {
+                const res = await fetch('/api/feedback/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ feedbackId })
+                });
+                const data = await res.json();
+                if (data.success) loadFeedback();
+            } catch (err) {
+                alert('Failed to delete feedback');
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ====== PERM KEY REVOKE ======
+        async function revokePermKey() {
+            const key = document.getElementById('perm-key-select').value;
+            const result = document.getElementById('perm-key-result');
+            if (!key) return;
+            
+            if (!confirm(`Revoke ${key}? This will deactivate all users who used it.`)) return;
+            
+            try {
+                const res = await fetch('/api/admin/permkey/revoke', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ key })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    result.innerHTML = '<p class="success-text">Key revoked successfully</p>';
+                    loadPermKeySelect();
+                } else {
+                    result.innerHTML = `<p class="error-text">${data.error}</p>`;
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error-text">Failed to revoke key</p>';
+            }
+        }
+
+        function loadPermKeySelect() {
+            const select = document.getElementById('perm-key-select');
+            select.innerHTML = '';
+            for (let i = 1; i <= 100; i++) {
+                const option = document.createElement('option');
+                option.value = 'HBB' + i;
+                option.textContent = 'HBB' + i;
+                select.appendChild(option);
+            }
+        }
+
+        // ====== WATCH LIVE ======
+        function openWatchLive(configId) {
+            currentWatchConfigId = configId;
+            document.getElementById('watch-live-modal').classList.add('active');
+            loadWatchLiveStats();
+            if (watchLiveInterval) clearInterval(watchLiveInterval);
+            watchLiveInterval = setInterval(loadWatchLiveStats, 3000);
+        }
+
+        function closeWatchLiveModal() {
+            document.getElementById('watch-live-modal').classList.remove('active');
+            if (watchLiveInterval) {
+                clearInterval(watchLiveInterval);
+                watchLiveInterval = null;
+            }
+            currentWatchConfigId = null;
+        }
+
+        async function loadWatchLiveStats() {
+            if (!currentWatchConfigId) return;
+            try {
+                const res = await fetch(`/api/bot/stats?configId=${currentWatchConfigId}`, { credentials: 'same-origin' });
+                const data = await res.json();
+                const container = document.getElementById('watch-live-content');
+                
+                if (!data.success) {
+                    container.innerHTML = '<p class="text-center" style="color: #a3a3a3;">No stats available</p>';
+                    return;
+                }
+                
+                const stats = data.stats;
+                let logsHtml = '';
+                if (stats.recentLogs && stats.recentLogs.length > 0) {
+                    logsHtml = '<div style="max-height: 200px; overflow-y: auto; margin-top: 12px;">';
+                    stats.recentLogs.slice().reverse().forEach(log => {
+                        logsHtml += `<div class="log-entry">${escapeHtml(log)}</div>`;
+                    });
+                    logsHtml += '</div>';
+                } else {
+                    logsHtml = '<p class="text-sm mt-3" style="color: #737373;">No recent activity</p>';
+                }
+                
+                container.innerHTML = `
+                    <div class="watch-live-stats">
+                        <div class="stat-row">
+                            <span style="color: #a3a3a3;">Status</span>
+                            <span style="color: #fff; font-weight: 600;">${stats.active ? 'Running' : 'Stopped'}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span style="color: #a3a3a3;">Total Messages Sent</span>
+                            <span style="color: #fff; font-weight: 600;">${stats.totalMessagesSent || 0}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span style="color: #a3a3a3;">Auto Replies Sent</span>
+                            <span style="color: #fff; font-weight: 600;">${stats.autoRepliesSent || 0}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span style="color: #a3a3a3;">Last Message Sent</span>
+                            <span style="color: #fff; font-weight: 600;">${stats.lastMessageSent ? new Date(stats.lastMessageSent).toLocaleTimeString() : 'Never'}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span style="color: #a3a3a3;">Channels</span>
+                            <span style="color: #fff; font-weight: 600;">${stats.channelCount || 0}</span>
+                        </div>
+                    </div>
+                    <h4 class="font-bold mb-2" style="color: #fff;"><i class="fa-solid fa-list mr-2"></i>Recent Activity</h4>
+                    ${logsHtml}
+                `;
+            } catch (err) {
+                document.getElementById('watch-live-content').innerHTML = '<p class="text-center" style="color: #a3a3a3;">Failed to load stats</p>';
+            }
+        }
+
+        // Close dropdowns on outside click
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.dropdown-menu') && !e.target.closest('[onclick*="toggleFeedbackMenu"]')) {
+                document.querySelectorAll('.dropdown-menu').forEach(m => m.classList.remove('show'));
+            }
+            if (!e.target.closest('.acct-dropdown-menu') && !e.target.closest('[onclick*="toggleAccountMenu"]')) {
+                document.querySelectorAll('.acct-dropdown-menu').forEach(m => m.classList.remove('show'));
+            }
         });
 
         function initializeEventListeners() {
@@ -813,8 +1333,8 @@
             
             const activeNav = document.getElementById('nav-' + n);
             activeNav.classList.add('active');
-            activeNav.style.borderBottom = '3px solid #ef4444';
-            activeNav.style.color = '#ef4444';
+            activeNav.style.borderBottom = '3px solid #fff';
+            activeNav.style.color = '#fff';
             
             const navScroll = document.getElementById('nav-scroll');
             if (navScroll) {
@@ -826,7 +1346,13 @@
                 loadPurchaseLogs();
                 activityInterval = setInterval(loadPurchaseLogs, 5000);
             }
-            if (n === 4) loadGeneratedKeys();
+            if (n === 4) {
+                loadGeneratedKeys();
+                if (isOwner) {
+                    loadPermKeySelect();
+                    document.getElementById('perm-key-section').classList.remove('hidden');
+                }
+            }
             if (n === 5) loadWhitelist();
         }
 
@@ -854,12 +1380,11 @@
                         document.getElementById('trial-section').classList.add('hidden');
                         document.getElementById('active-trial-section').classList.remove('hidden');
                         document.getElementById('nav-2').classList.remove('hidden');
-                        document.getElementById('nav-3').classList.remove('hidden');
                         document.getElementById('credits-display').textContent = 'Trial Active';
-                        document.getElementById('credits-display').style.color = '#10b981';
+                        document.getElementById('credits-display').style.color = '#fff';
                         document.getElementById('status-text').textContent = 'Trial Active';
-                        document.getElementById('status-text').style.color = '#10b981';
-                        document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #10b981;">Trial Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                        document.getElementById('status-text').style.color = '#fff';
+                        document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #fff;">Trial Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
                         startTrialTimer();
                         switchTab(2);
                     }, 1500);
@@ -907,12 +1432,11 @@
             document.getElementById('trial-section').classList.add('hidden');
             document.getElementById('active-trial-section').classList.remove('hidden');
             document.getElementById('nav-2').classList.remove('hidden');
-            document.getElementById('nav-3').classList.remove('hidden');
             document.getElementById('credits-display').textContent = 'Trial Active';
-            document.getElementById('credits-display').style.color = '#10b981';
+            document.getElementById('credits-display').style.color = '#fff';
             document.getElementById('status-text').textContent = 'Trial Active';
-            document.getElementById('status-text').style.color = '#10b981';
-            document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #10b981;">Trial Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+            document.getElementById('status-text').style.color = '#fff';
+            document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #fff;">Trial Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
             
             startTrialTimer();
         }
@@ -936,14 +1460,14 @@
                     html += `
                         <div class="activity-card activity-trial mb-6">
                             <div class="flex items-center justify-between mb-4">
-                                <h3 class="text-lg font-bold" style="color: #10b981;"><i class="fa-solid fa-gift mr-2"></i>Trial Active</h3>
-                                <span class="text-xs bg-green-900 text-green-200 px-3 py-1 rounded-full">Free Access</span>
+                                <h3 class="text-lg font-bold" style="color: #fff;"><i class="fa-solid fa-gift mr-2"></i>Trial Active</h3>
+                                <span class="text-xs bg-zinc-800 text-zinc-200 px-3 py-1 rounded-full">Free Access</span>
                             </div>
                             <div class="flex items-center justify-between bg-zinc-900 p-3 rounded-lg">
-                                <span class="text-xs" style="color: #9ca3af;">Time remaining:</span>
+                                <span class="text-xs" style="color: #a3a3a3;">Time remaining:</span>
                                 <span class="trial-timer">${minutes}:${seconds.toString().padStart(2, '0')}</span>
                             </div>
-                            <p class="text-xs mt-3" style="color: #6b7280;"><i class="fa-solid fa-circle-info mr-1"></i>Trial expires automatically after 10 minutes</p>
+                            <p class="text-xs mt-3" style="color: #737373;"><i class="fa-solid fa-circle-info mr-1"></i>Trial expires automatically after 10 minutes</p>
                         </div>
                     `;
                 }
@@ -956,16 +1480,16 @@
                     html += `
                         <div class="activity-card activity-pending mb-6">
                             <div class="flex items-center justify-between mb-4">
-                                <h3 class="text-lg font-bold" style="color: #fbbf24;"><i class="fa-solid fa-hourglass-half mr-2"></i>Payment Pending</h3>
-                                <span class="text-xs bg-yellow-900 text-yellow-200 px-3 py-1 rounded-full">Waiting for payment</span>
+                                <h3 class="text-lg font-bold" style="color: #d4d4d4;"><i class="fa-solid fa-hourglass-half mr-2"></i>Payment Pending</h3>
+                                <span class="text-xs bg-zinc-800 text-zinc-200 px-3 py-1 rounded-full">Waiting for payment</span>
                             </div>
-                            <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
+                            <p class="text-sm mb-2" style="color: #a3a3a3;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
                             <p class="address-box text-sm mb-4">${data.pending.address}</p>
                             <div class="flex items-center justify-between bg-zinc-900 p-3 rounded-lg">
-                                <span class="text-xs" style="color: #9ca3af;">Time remaining:</span>
+                                <span class="text-xs" style="color: #a3a3a3;">Time remaining:</span>
                                 <span class="countdown" id="countdown">${minutes}:${seconds.toString().padStart(2, '0')}</span>
                             </div>
-                            <p class="text-xs mt-3" style="color: #6b7280;"><i class="fa-solid fa-circle-info mr-1"></i>Address expires in 30 minutes. Never reuse addresses.</p>
+                            <p class="text-xs mt-3" style="color: #737373;"><i class="fa-solid fa-circle-info mr-1"></i>Address expires in 30 minutes. Never reuse addresses.</p>
                         </div>
                     `;
                     
@@ -977,8 +1501,8 @@
                         <div class="activity-card activity-completed mb-6">
                             <div class="flex items-center justify-between">
                                 <div>
-                                    <h3 class="text-lg font-bold" style="color: #ef4444;"><i class="fa-solid fa-check-circle mr-2"></i>Purchase Complete</h3>
-                                    <p class="text-sm mt-1" style="color: #9ca3af;">You have lifetime access to Auto Adv</p>
+                                    <h3 class="text-lg font-bold" style="color: #fff;"><i class="fa-solid fa-check-circle mr-2"></i>Purchase Complete</h3>
+                                    <p class="text-sm mt-1" style="color: #a3a3a3;">You have lifetime access to Auto Adv</p>
                                 </div>
                                 <button onclick="switchTab(2)" class="btn-red px-4 py-2 rounded-lg text-sm" style="border: none;">Configure</button>
                             </div>
@@ -987,24 +1511,24 @@
                 }
                 
                 if (data.history && data.history.length > 0) {
-                    html += `<h3 class="text-lg font-bold mb-4" style="color: #9ca3af;">Address History</h3>`;
+                    html += `<h3 class="text-lg font-bold mb-4" style="color: #a3a3a3;">Address History</h3>`;
                     html += `<div class="space-y-2">`;
                     
                     data.history.slice().reverse().forEach(h => {
-                        let statusColor = '#6b7280';
+                        let statusColor = '#737373';
                         let statusIcon = 'fa-clock';
                         let statusText = 'Unknown';
                         
                         if (h.status === 'completed') {
-                            statusColor = '#ef4444';
+                            statusColor = '#fff';
                             statusIcon = 'fa-check';
                             statusText = 'Paid';
                         } else if (h.status === 'expired') {
-                            statusColor = '#ef4444';
+                            statusColor = '#ff6b6b';
                             statusIcon = 'fa-xmark';
                             statusText = 'Expired';
                         } else if (h.status === 'monitoring') {
-                            statusColor = '#fbbf24';
+                            statusColor = '#d4d4d4';
                             statusIcon = 'fa-hourglass';
                             statusText = 'Pending';
                         }
@@ -1015,8 +1539,8 @@
                             <div class="address-history-item">
                                 <div class="flex justify-between items-start">
                                     <div>
-                                        <p class="font-mono text-xs mb-1" style="color: #9ca3af;">${h.address}</p>
-                                        <p class="text-xs" style="color: #6b7280;">Generated: ${date}</p>
+                                        <p class="font-mono text-xs mb-1" style="color: #a3a3a3;">${h.address}</p>
+                                        <p class="text-xs" style="color: #737373;">Generated: ${date}</p>
                                     </div>
                                     <span class="text-xs px-2 py-1 rounded" style="background: ${statusColor}20; color: ${statusColor};">
                                         <i class="fa-solid ${statusIcon} mr-1"></i>${statusText}
@@ -1030,10 +1554,10 @@
                 } else if (!data.pending && !data.purchased && !data.trialActive) {
                     html += `
                         <div class="text-center p-8 card rounded-3xl">
-                            <i class="fa-solid fa-inbox text-4xl mb-4" style="color: #374151;"></i>
-                            <p style="color: #9ca3af;">No activity yet. Generate an address or claim trial to get started.</p>
+                            <i class="fa-solid fa-inbox text-4xl mb-4" style="color: #404040;"></i>
+                            <p style="color: #a3a3a3;">No activity yet. Generate an address or claim trial to get started.</p>
                             <div class="flex gap-3 mt-4 justify-center">
-                                <button onclick="switchTab(0)" class="btn-green px-6 py-2 rounded-lg text-sm" style="border: none;">Claim Trial</button>
+                                <button onclick="switchTab(1)" class="btn-green px-6 py-2 rounded-lg text-sm" style="border: none;">Claim Trial</button>
                                 <button onclick="switchTab(1)" class="btn-purple px-6 py-2 rounded-lg text-sm" style="border: none;">Generate Address</button>
                             </div>
                         </div>
@@ -1046,10 +1570,9 @@
                     isPurchased = true;
                     document.getElementById('credits-display').textContent = 'Active';
                     document.getElementById('status-text').textContent = 'Active';
-                    document.getElementById('status-text').style.color = '#fca5a5';
+                    document.getElementById('status-text').style.color = '#fff';
                     document.getElementById('nav-2').classList.remove('hidden');
-                    document.getElementById('nav-3').classList.remove('hidden');
-                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #fca5a5;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-red py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #fff;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-red py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
                     document.getElementById('trial-section').classList.add('hidden');
                     document.getElementById('active-trial-section').classList.add('hidden');
                     
@@ -1106,10 +1629,10 @@
                 
                 if (data.success) {
                     result.innerHTML = `
-                        <div class="bg-zinc-900 p-4 rounded-xl border border-orange-500">
-                            <p class="text-sm mb-2" style="color: #f97316;"><i class="fa-solid fa-check mr-1"></i>Key Generated!</p>
+                        <div class="bg-zinc-900 p-4 rounded-xl border border-white">
+                            <p class="text-sm mb-2" style="color: #fff;"><i class="fa-solid fa-check mr-1"></i>Key Generated!</p>
                             <p class="font-mono text-lg mb-2" style="color: #fff;">${data.key.key}</p>
-                            <p class="text-xs" style="color: #9ca3af;">Duration: ${data.key.duration} • Created: ${new Date(data.key.createdAt).toLocaleString()}</p>
+                            <p class="text-xs" style="color: #a3a3a3;">Duration: ${data.key.duration} • Created: ${new Date(data.key.createdAt).toLocaleString()}</p>
                         </div>
                     `;
                     loadGeneratedKeys();
@@ -1132,7 +1655,7 @@
                 }
                 
                 if (data.keys.length === 0) {
-                    document.getElementById('keys-list').innerHTML = '<p class="text-center" style="color: #6b7280;">No keys generated yet</p>';
+                    document.getElementById('keys-list').innerHTML = '<p class="text-center" style="color: #737373;">No keys generated yet</p>';
                     return;
                 }
                 
@@ -1140,16 +1663,16 @@
                 data.keys.slice().reverse().forEach(key => {
                     let statusClass = 'key-active';
                     let statusText = 'Active';
-                    let statusColor = '#10b981';
+                    let statusColor = '#fff';
                     
                     if (!key.active) {
                         statusClass = 'key-revoked';
                         statusText = 'Revoked';
-                        statusColor = '#ef4444';
+                        statusColor = '#ff6b6b';
                     } else if (key.expiresAt && Date.now() > key.expiresAt) {
                         statusClass = 'key-expired';
                         statusText = 'Expired';
-                        statusColor = '#6b7280';
+                        statusColor = '#737373';
                     }
                     
                     const usedCount = key.usedBy ? key.usedBy.length : 0;
@@ -1165,14 +1688,14 @@
                             <div class="flex justify-between items-start mb-2">
                                 <div>
                                     <p class="font-mono text-sm font-bold" style="color: #fff;">${key.key}</p>
-                                    <p class="text-xs mt-1" style="color: #9ca3af;">Used by: ${usedCount} users</p>
+                                    <p class="text-xs mt-1" style="color: #a3a3a3;">Used by: ${usedCount} users</p>
                                 </div>
                                 <span class="text-xs px-3 py-1 rounded-full" style="background: ${statusColor}20; color: ${statusColor};">${statusText}</span>
                             </div>
                             <div class="flex justify-between items-center mt-3">
-                                <div class="text-xs" style="color: #6b7280;">
+                                <div class="text-xs" style="color: #737373;">
                                     <span>Duration: ${key.duration}</span>
-                                    <span class="mx-2">•</span>
+                                    <span class="mx-2">&#8226;</span>
                                     <span>Expires: ${expiresText}</span>
                                 </div>
                                 ${key.active ? `
@@ -1276,7 +1799,7 @@
                 }
                 
                 if (data.whitelist.length === 0) {
-                    document.getElementById('whitelist-list').innerHTML = '<p class="text-center" style="color: #6b7280;">No users whitelisted</p>';
+                    document.getElementById('whitelist-list').innerHTML = '<p class="text-center" style="color: #737373;">No users whitelisted</p>';
                     return;
                 }
                 
@@ -1285,7 +1808,7 @@
                     html += `
                         <div class="flex justify-between items-center bg-zinc-900 p-3 rounded-lg mb-2">
                             <span class="font-mono text-sm" style="color: #fff;">${userId}</span>
-                            <button onclick="removeFromWhitelist('${userId}')" class="text-xs px-3 py-1 rounded" style="background: #7f1d1d; color: #fca5a5; border: none; cursor: pointer;">
+                            <button onclick="removeFromWhitelist('${userId}')" class="text-xs px-3 py-1 rounded" style="background: #404040; color: #fff; border: none; cursor: pointer;">
                                 <i class="fa-solid fa-trash mr-1"></i>Remove
                             </button>
                         </div>
@@ -1316,9 +1839,9 @@
                     <div class="upload-area ${img.base64 ? 'has-file' : ''}" onclick="document.getElementById('image-input-${index}').click()">
                         <input type="file" id="image-input-${index}" class="image-input-file" accept="image/*" onchange="handleImageSelect(event, ${index})">
                         <div id="upload-placeholder-${index}" class="${img.base64 ? 'hidden' : ''}">
-                            <i class="fa-solid fa-image text-3xl mb-2" style="color: #6b7280;"></i>
-                            <p class="text-sm" style="color: #9ca3af;">Click to upload image</p>
-                            <p class="text-xs mt-1" style="color: #6b7280;">PNG, JPG, GIF up to 5MB</p>
+                            <i class="fa-solid fa-image text-3xl mb-2" style="color: #737373;"></i>
+                            <p class="text-sm" style="color: #a3a3a3;">Click to upload image</p>
+                            <p class="text-xs mt-1" style="color: #737373;">PNG, JPG, GIF up to 5MB</p>
                         </div>
                         <img id="image-preview-${index}" class="image-preview ${img.base64 ? 'has-image' : 'hidden'} mx-auto" src="${img.base64 || ''}" />
                     </div>
@@ -1335,7 +1858,6 @@
 
         function removeImage(index) {
             selectedImages.splice(index, 1);
-            // Reassign IDs to keep them sequential
             selectedImages.forEach((img, i) => img.id = i + 1);
             renderImages();
         }
@@ -1367,7 +1889,7 @@
                 div.className = 'message-item';
                 div.innerHTML = `
                     <div class="flex justify-between items-center mb-3">
-                        <span class="text-xs font-bold" style="color: #ef4444;">MESSAGE #${index + 1}</span>
+                        <span class="text-xs font-bold" style="color: #fff;">MESSAGE #${index + 1}</span>
                         ${messages.length > 1 ? `
                             <button onclick="removeMessage(${index})" class="remove-btn">
                                 <i class="fa-solid fa-trash mr-1"></i>Remove
@@ -1376,7 +1898,7 @@
                     </div>
                     <textarea id="msg-text-${index}" rows="2" placeholder="Your ad message..." class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-4 py-3 text-sm mb-3" style="color: #fff; resize: vertical;">${msg.text}</textarea>
                     <div>
-                        <label class="text-xs" style="color: #6b7280;">Image IDs (comma separated, empty = all images)</label>
+                        <label class="text-xs" style="color: #737373;">Image IDs (comma separated, empty = all images)</label>
                         <input id="msg-images-${index}" type="text" placeholder="e.g. 1, 2" value="${msg.imageIds ? msg.imageIds.join(', ') : ''}" class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2 text-sm mt-1" style="color: #fff;">
                     </div>
                 `;
@@ -1385,8 +1907,6 @@
         }
 
         function addMessage() {
-            // FIX: Sync current DOM values into the messages array BEFORE adding a new one.
-            // Otherwise the user's typed text gets wiped when renderMessages() rebuilds the DOM.
             const current = gatherMessages();
             messages = current;
             messages.push({ text: '', imageIds: [] });
@@ -1395,7 +1915,6 @@
 
         function removeMessage(index) {
             if (messages.length <= 1) return;
-            // FIX: Sync DOM state before removing so we don't lose any edits.
             const current = gatherMessages();
             messages = current;
             messages.splice(index, 1);
@@ -1439,26 +1958,22 @@
                     document.getElementById('nav-4').classList.remove('hidden');
                 }
                 
+                // Show/hide Purchase Logs based on access
+                if (!data.purchased && !data.trialActive) {
+                    document.getElementById('nav-3').classList.add('hidden');
+                }
+                
                 if (data.purchased) {
                     isPurchased = true;
-                    document.getElementById('credits-display').textContent = 'Active';
-                    document.getElementById('status-text').textContent = 'Active';
-                    document.getElementById('status-text').style.color = '#fca5a5';
                     document.getElementById('nav-2').classList.remove('hidden');
-                    document.getElementById('nav-3').classList.remove('hidden');
-                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #fca5a5;">Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-red py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                    document.getElementById('nav-3').classList.add('hidden');
                     document.getElementById('trial-section').classList.add('hidden');
                     document.getElementById('active-trial-section').classList.add('hidden');
                 } else if (data.trialActive) {
                     isTrialActive = true;
                     trialTimeLeft = data.trialTimeLeft;
-                    document.getElementById('credits-display').textContent = 'Trial Active';
-                    document.getElementById('credits-display').style.color = '#10b981';
-                    document.getElementById('status-text').textContent = 'Trial Active';
-                    document.getElementById('status-text').style.color = '#10b981';
                     document.getElementById('nav-2').classList.remove('hidden');
-                    document.getElementById('nav-3').classList.remove('hidden');
-                    document.getElementById('status-box').innerHTML = '<p class="text-xl font-medium" style="color: #10b981;">Trial Active</p><button onclick="switchTab(2)" class="mt-4 w-full btn-green py-3 rounded-2xl text-sm" style="border: none;">Configure</button>';
+                    document.getElementById('nav-3').classList.add('hidden');
                     document.getElementById('trial-section').classList.add('hidden');
                     document.getElementById('active-trial-section').classList.remove('hidden');
                     updateTrialTimerDisplay();
@@ -1517,25 +2032,41 @@
                 card.innerHTML = `
                     <div class="flex justify-between items-start mb-2">
                         <div>
-                            <h4 class="font-bold" style="color: #ef4444;">${config.username || 'Unknown'}</h4>
-                            <p class="text-xs mt-1" style="color: #6b7280;">Channels: ${config.channels}</p>
-                            <p class="text-xs mt-1" style="color: #8b5cf6;">
+                            <h4 class="font-bold" style="color: #fff;">${config.username || 'Unknown'}</h4>
+                            <p class="text-xs mt-1" style="color: #737373;">Channels: ${config.channels}</p>
+                            <p class="text-xs mt-1" style="color: #a3a3a3;">
                                 <i class="fa-solid fa-message mr-1"></i>${msgCount} message${msgCount !== 1 ? 's' : ''} 
-                                <span class="mx-1">•</span> 
+                                <span class="mx-1">&#8226;</span> 
                                 <i class="fa-solid fa-image mr-1"></i>${imgCount} image${imgCount !== 1 ? 's' : ''}
                             </p>
                         </div>
-                        <span class="status-badge ${isActive ? 'status-running' : 'status-stopped'}">
-                            ${isActive ? 'Running' : 'Stopped'}
-                        </span>
-                    </div>
-                    <div class="flex gap-2 mt-3">
-                        <button onclick="editConfig('${config.id}')" class="flex-1 py-2 rounded-lg text-xs" style="background: #374151; color: #fff; border: none; cursor: pointer;">Edit</button>
-                        <button onclick="deleteConfig('${config.id}')" class="flex-1 py-2 rounded-lg text-xs text-red-200" style="background: #7f1d1d; border: none; cursor: pointer;">Delete</button>
+                        <div class="flex items-center gap-2">
+                            <span class="status-badge ${isActive ? 'status-running' : 'status-stopped'}">
+                                ${isActive ? 'Running' : 'Stopped'}
+                            </span>
+                            <div style="position: relative;">
+                                <button onclick="toggleAccountMenu('${config.id}')" style="background: none; border: none; color: #a3a3a3; cursor: pointer; padding: 4px;">
+                                    <i class="fa-solid fa-ellipsis-vertical"></i>
+                                </button>
+                                <div id="account-menu-${config.id}" class="dropdown-menu acct-dropdown-menu" style="right: 0; top: 30px;">
+                                    <button onclick="editConfig('${config.id}')"><i class="fa-solid fa-pen mr-2"></i>Edit</button>
+                                    <button onclick="deleteConfig('${config.id}')"><i class="fa-solid fa-trash mr-2"></i>Delete</button>
+                                    ${isActive ? `<button onclick="openWatchLive('${config.id}')"><i class="fa-solid fa-eye mr-2"></i>Watch Live</button>` : ''}
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 `;
                 list.appendChild(card);
             });
+        }
+
+        function toggleAccountMenu(configId) {
+            const menu = document.getElementById(`account-menu-${configId}`);
+            document.querySelectorAll('.acct-dropdown-menu').forEach(m => {
+                if (m !== menu) m.classList.remove('show');
+            });
+            menu.classList.toggle('show');
         }
 
         function showNewAccountForm() {
@@ -1579,7 +2110,6 @@
             document.getElementById('send-all-at-once-toggle').checked = config.send_all_at_once !== 0;
             document.getElementById('channel-error').style.display = 'none';
             
-            // Load images
             selectedImages = [];
             if (config.images && Array.isArray(config.images)) {
                 selectedImages = config.images.map((img, i) => ({
@@ -1591,7 +2121,6 @@
             }
             renderImages();
             
-            // Load messages
             messages = [];
             if (config.messages && Array.isArray(config.messages)) {
                 messages = config.messages.map(m => ({
@@ -1675,21 +2204,21 @@
                     if (data.existing) {
                         result.innerHTML = `
                             <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
-                                <p class="text-sm mb-2" style="color: #fbbf24;"><i class="fa-solid fa-triangle-exclamation mr-1"></i>You already have an active address</p>
-                                <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
+                                <p class="text-sm mb-2" style="color: #d4d4d4;"><i class="fa-solid fa-triangle-exclamation mr-1"></i>You already have an active address</p>
+                                <p class="text-sm mb-2" style="color: #a3a3a3;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
-                                <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
-                                <p class="text-xs" style="color: #6b7280;">Expires in ${data.expiresIn} minutes • <button onclick="switchTab(3)" style="background: none; border: none; color: #ef4444; cursor: pointer;">View in Purchase Logs</button></p>
+                                <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #404040; color: #fff; border: none; cursor: pointer;">Copy</button>
+                                <p class="text-xs" style="color: #737373;">Expires in ${data.expiresIn} minutes • <button onclick="switchTab(3)" style="background: none; border: none; color: #fff; cursor: pointer;">View in Purchase Logs</button></p>
                             </div>`;
                     } else {
                         const expiresAt = new Date(data.expiresAt).toLocaleTimeString();
                         result.innerHTML = `
                             <div class="bg-zinc-900 p-5 rounded-2xl border border-zinc-700">
-                                <p class="text-sm mb-2" style="color: #ef4444;"><i class="fa-solid fa-check mr-1"></i>Address generated!</p>
-                                <p class="text-sm mb-2" style="color: #9ca3af;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
+                                <p class="text-sm mb-2" style="color: #fff;"><i class="fa-solid fa-check mr-1"></i>Address generated!</p>
+                                <p class="text-sm mb-2" style="color: #a3a3a3;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
-                                <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #374151; color: #fff; border: none; cursor: pointer;">Copy</button>
-                                <p class="text-xs" style="color: #6b7280;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) • <button onclick="switchTab(3)" style="background: none; border: none; color: #ef4444; cursor: pointer;">View in Purchase Logs</button></p>
+                                <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #404040; color: #fff; border: none; cursor: pointer;">Copy</button>
+                                <p class="text-xs" style="color: #737373;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) • <button onclick="switchTab(3)" style="background: none; border: none; color: #fff; cursor: pointer;">View in Purchase Logs</button></p>
                             </div>`;
                     }
                 } else {
@@ -1721,12 +2250,12 @@
             const messageList = gatherMessages();
             
             if (!token || !channels) {
-                status.innerHTML = '<span style="color: #ef4444;">Fill all required fields</span>';
+                status.innerHTML = '<span style="color: #ff6b6b;">Fill all required fields</span>';
                 return;
             }
             
             if (messageList.length === 0 || messageList.every(m => !m.text)) {
-                status.innerHTML = '<span style="color: #ef4444;">Enter at least one message</span>';
+                status.innerHTML = '<span style="color: #ff6b6b;">Enter at least one message</span>';
                 return;
             }
             
@@ -1734,21 +2263,20 @@
             const invalidChannels = channelArray.filter(c => !/^\d+$/.test(c));
             if (invalidChannels.length > 0) {
                 channelError.style.display = 'block';
-                status.innerHTML = '<span style="color: #ef4444;">Channel IDs must be numbers only</span>';
+                status.innerHTML = '<span style="color: #ff6b6b;">Channel IDs must be numbers only</span>';
                 return;
             } else {
                 channelError.style.display = 'none';
             }
             
             if (autoReplyEnabled && !autoReplyText) {
-                status.innerHTML = '<span style="color: #ef4444;">Enter auto-reply text or disable it</span>';
+                status.innerHTML = '<span style="color: #ff6b6b;">Enter auto-reply text or disable it</span>';
                 return;
             }
             
             btn.disabled = true;
-            status.innerHTML = '<span style="color: #fbbf24;">Validating...</span>';
+            status.innerHTML = '<span style="color: #d4d4d4;">Validating...</span>';
             
-            // Prepare images payload
             const imagesPayload = selectedImages.map(img => ({
                 id: img.id,
                 url: img.base64
@@ -1775,7 +2303,7 @@
                     let msg = `Running as ${data.username}! Saved.`;
                     if (data.imageCount > 0) msg += ` ${data.imageCount} image(s).`;
                     msg += ` ${data.messageCount} message(s).`;
-                    status.innerHTML = `<span style="color: #fca5a5;">${msg}</span>`;
+                    status.innerHTML = `<span style="color: #fff;">${msg}</span>`;
                     
                     await loadSavedConfigs();
                     
@@ -1785,10 +2313,10 @@
                         currentConfigId = 'default';
                     }, 2000);
                 } else {
-                    status.innerHTML = `<span style="color: #ef4444;">${data.error}</span>`;
+                    status.innerHTML = `<span style="color: #ff6b6b;">${data.error}</span>`;
                 }
             } catch (err) {
-                status.innerHTML = '<span style="color: #ef4444;">Error</span>';
+                status.innerHTML = '<span style="color: #ff6b6b;">Error</span>';
             } finally {
                 btn.disabled = false;
             }
@@ -1804,11 +2332,11 @@
                     body: JSON.stringify({ configId: currentConfigId })
                 });
                 const data = await res.json();
-                status.innerHTML = data.success ? '<span style="color: #9ca3af;">Stopped & Saved</span>' : '<span style="color: #ef4444;">Failed</span>';
+                status.innerHTML = data.success ? '<span style="color: #a3a3a3;">Stopped & Saved</span>' : '<span style="color: #ff6b6b;">Failed</span>';
                 
                 if (data.success) await loadSavedConfigs();
             } catch (err) {
-                status.innerHTML = '<span style="color: #ef4444;">Error</span>';
+                status.innerHTML = '<span style="color: #ff6b6b;">Error</span>';
             }
         }
 
