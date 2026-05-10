@@ -1115,6 +1115,27 @@ class SimpleDB {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // STATS METHODS — For dashboard analytics
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  getTotalRedeemedKeysCount() {
+    return Object.keys(this.data.usedKeys).length;
+  }
+
+  getActiveAdvertiserCount() {
+    let count = 0;
+    for (const userId in this.data.activeBots) {
+      const userBots = this.data.activeBots[userId];
+      if (Object.keys(userBots).length > 0) count++;
+    }
+    return count;
+  }
+
+  getTotalUsersWithAccess() {
+    return Object.values(this.data.users).filter(u => u.auto_adv_purchased === 1).length;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // FEEDBACK METHODS
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1857,6 +1878,31 @@ app.get('/api/bot/live', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// STATS API — Usage analytics for the Generate page
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/stats/usage', ensureAuthAPI, ensureCanGenerate, (req, res) => {
+  try {
+    const totalRedeemedKeys = db.getTotalRedeemedKeysCount();
+    const totalGeneratedKeys = Object.keys(db.data.generatedKeys).length;
+    const activeAdvertisers = db.getActiveAdvertiserCount();
+    const totalUsersWithAccess = db.getTotalUsersWithAccess();
+    const totalActiveBots = activeBots.size;
+
+    res.json({
+      success: true,
+      stats: {
+        totalRedeemedKeys,
+        totalGeneratedKeys,
+        activeAdvertisers,
+        totalUsersWithAccess,
+        totalActiveBots
+      }
+    });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // DOWNLOAD DASHBOARD — Serve HTML as .txt or .js for copying
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2318,6 +2364,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Fixed sequential message loop — 24/7 until stopped`);
   console.log(`[SERVER] Added: Live feedback, Watch Live stats, Live configs page`);
   console.log(`[SERVER] Added: Dashboard download as .txt/.js`);
+  console.log(`[SERVER] Added: Running tab, usage stats API, fixed 3-dots menu`);
 });
 
 module.exports = app;
