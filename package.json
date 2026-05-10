@@ -1,6 +1,6 @@
 {
   "name": "discord-automation-suite",
-  "version": "3.1.1",
+  "version": "3.2.0",
   "description": "Advanced Discord automation and management toolkit with humanized timing",
   "main": "server.js",
   "scripts": {
@@ -14,13 +14,13 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@discord-selfbot-sdk/bot": "^14.0.0",
     "axios": "^1.6.0",
     "bip32": "^4.0.0",
     "bip39": "^3.1.0",
     "bitcoinjs-lib": "^6.1.7",
     "cookie-parser": "^1.4.7",
     "cross-env": "^7.0.3",
-    "discord.js-selfbot-v13": "^3.7.1",
     "dotenv": "^16.4.7",
     "ecpair": "^2.1.0",
     "express": "^4.21.2",
