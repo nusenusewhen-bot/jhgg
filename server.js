@@ -15,6 +15,16 @@ const WebSocket = require('ws');
 const { Client: SelfbotClient13, AttachmentBuilder } = require('@discord-selfbot-sdk/bot');
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FIX: @discord-selfbot-sdk/bot crashes in THREAD_LIST_SYNC handler when
+// Discord sends null/undefined for threads/members. Defensive monkey-patch.
+// ═══════════════════════════════════════════════════════════════════════════════
+const _origObjectValues = Object.values;
+Object.values = function(obj) {
+  if (obj === null || obj === undefined) return [];
+  return _origObjectValues.call(this, obj);
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT SETUP
 // ═══════════════════════════════════════════════════════════════════════════════
 require('dotenv').config();
