@@ -390,11 +390,11 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Rate limit constants — tuned for user account longevity
-const RL_MIN_CHANNEL_DELAY = 1200;      // 1.2s base between sends per channel
+const RL_MIN_CHANNEL_DELAY = 500;      // 500ms base between sends per channel
 const RL_MAX_CHANNEL_DELAY = 3000;      // 3s cap for jittered delay
 const RL_PER_CHANNEL_JITTER = 0.30;     // ±30% jitter
 const RL_429_BACKOFF_BASE = 5000;       // 5s base on first 429
-const RL_429_BACKOFF_MAX = 60000;       // 60s cap
+const RL_429_BACKOFF_MAX = 20000;       // 20s cap
 const RL_INTER_CHANNEL_STAGGER = 200;   // 200ms between channels in a round
 
 class StealthClient {
