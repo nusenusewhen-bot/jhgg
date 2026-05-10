@@ -114,9 +114,9 @@
             cursor: pointer; 
             white-space: nowrap; 
             flex-shrink: 0; 
-            padding: 8px 12px; 
-            background: none; 
-            border: none; 
+            padding: 8px 12px;
+            background: none;
+            border: none;
             border-bottom: 3px solid transparent;
             pointer-events: auto;
             position: relative;
@@ -213,7 +213,7 @@
         .toggle-input { 
             opacity: 0; 
             width: 0; 
-            height: 0; 
+            height: 0;
             position: absolute;
             cursor: pointer;
         }
@@ -502,14 +502,16 @@
         .dropdown-menu {
             position: absolute;
             right: 0;
-            top: 40px;
-            background: #262626;
+            top: 100%;
+            margin-top: 4px;
+            background: #1a1a1a;
             border: 1px solid #404040;
             border-radius: 8px;
-            min-width: 140px;
-            z-index: 50;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            min-width: 160px;
+            z-index: 9999;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.8);
             display: none;
+            overflow: hidden;
         }
         .dropdown-menu.show { display: block; }
         .dropdown-menu button {
@@ -522,10 +524,29 @@
             color: #e5e7eb;
             font-size: 13px;
             cursor: pointer;
-            border-radius: 6px;
-            margin: 2px;
+            transition: background 0.15s;
         }
-        .dropdown-menu button:hover { background: #404040; }
+        .dropdown-menu button:hover { background: #333; }
+        .dropdown-menu button i {
+            width: 18px;
+            text-align: center;
+        }
+        
+        /* Menu trigger button */
+        .menu-trigger {
+            background: none;
+            border: none;
+            color: #a3a3a3;
+            cursor: pointer;
+            padding: 6px 8px;
+            border-radius: 6px;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+        .menu-trigger:hover {
+            color: #fff;
+            background: rgba(255,255,255,0.1);
+        }
         
         /* Watch Live modal */
         .watch-live-stats {
@@ -550,13 +571,82 @@
             color: #a3a3a3;
         }
         .log-entry:last-child { border-bottom: none; }
+
+        /* Running config card styles */
+        .running-config-card {
+            background: #1a1a1a;
+            border: 1px solid #404040;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .running-config-card:hover {
+            border-color: #fff;
+            box-shadow: 0 0 20px rgba(255,255,255,0.08);
+        }
+        .running-config-card .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+        .running-config-card .card-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+        .running-config-card .stats-row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        .running-config-card .stats-row .stat-item {
+            font-size: 12px;
+            color: #a3a3a3;
+        }
+        .running-config-card .stats-row .stat-value {
+            color: #fff;
+            font-weight: 600;
+        }
+        
+        /* Stats dashboard in Generate */
+        .stats-dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .stats-dashboard .stat-box {
+            background: #171717;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+        .stats-dashboard .stat-box .stat-number {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .stats-dashboard .stat-box .stat-label {
+            font-size: 11px;
+            color: #a3a3a3;
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
         
         @media (max-width: 640px) {
             .nav-link { padding: 6px 10px; font-size: 13px; }
             .nav-wrapper { margin: 0 8px; }
+            .running-config-card .card-actions { flex-direction: column; }
+            .running-config-card .card-actions button { width: 100%; }
         }
     </style>
-<base target="_blank">
 <base target="_blank">
 </head>
 <body class="min-h-screen pb-20">
@@ -600,6 +690,7 @@
                     <button class="nav-link active" id="nav-0" data-tab="0">Main</button>
                     <button class="nav-link" id="nav-1" data-tab="1">Purchase</button>
                     <button class="nav-link hidden" id="nav-2" data-tab="2">Configure</button>
+                    <button class="nav-link hidden" id="nav-6" data-tab="6">Running</button>
                     <button class="nav-link hidden" id="nav-3" data-tab="3">Purchase Logs</button>
                     <button class="nav-link hidden" id="nav-4" data-tab="4">Generate</button>
                     <button class="nav-link hidden" id="nav-5" data-tab="5">Whitelist</button>
@@ -662,7 +753,7 @@
                         <span class="step-badge">3</span>
                         <div>
                             <p class="font-medium" style="color: #fff;">Create a config</p>
-                            <p class="text-sm" style="color: #a3a3a3;">Drop your channel IDs (18838382, 8282828 — example), write your message, set a delay, and hit Start & Save.</p>
+                            <p class="text-sm" style="color: #a3a3a3;">Drop your channel IDs (18838382, 8282828), write your message, set a delay, and hit Start & Save.</p>
                         </div>
                     </div>
                     <div class="step-row">
@@ -807,7 +898,7 @@
                     <div>
                         <label class="form-label" id="delay-label">Delay (seconds)</label>
                         <input id="delay" type="number" value="30" min="10" max="3600" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm" style="color: #fff;">
-                        <p class="text-xs mt-1" style="color: #737373;">Delay between each message in the loop</p>
+                        <p class="text-xs mt-1" style="color: #737373;">Delay between each message round</p>
                     </div>
                     
                     <div>
@@ -862,6 +953,29 @@
         <div id="section-4" class="section">
             <div class="max-w-3xl mx-auto">
                 <h2 class="text-2xl font-bold mb-6" style="color: #fff;"><i class="fa-solid fa-key mr-2" style="color: #a3a3a3;"></i>Generate Keys</h2>
+                
+                <!-- Usage Stats Dashboard -->
+                <div id="usage-stats-section" class="generate-section card mb-6">
+                    <h3 class="text-lg font-bold mb-4" style="color: #a3a3a3;"><i class="fa-solid fa-chart-bar mr-2"></i>Usage Statistics</h3>
+                    <div class="stats-dashboard" id="stats-dashboard">
+                        <div class="stat-box">
+                            <div class="stat-number" id="stat-redeemed">-</div>
+                            <div class="stat-label">Keys Redeemed</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" id="stat-generated">-</div>
+                            <div class="stat-label">Keys Generated</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" id="stat-advertisers">-</div>
+                            <div class="stat-label">Active Advertisers</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" id="stat-users">-</div>
+                            <div class="stat-label">Total Users</div>
+                        </div>
+                    </div>
+                </div>
                 
                 <div class="generate-section card mb-6">
                     <h3 class="text-lg font-bold mb-4" style="color: #a3a3a3;"><i class="fa-solid fa-plus mr-2"></i>Create New Key</h3>
@@ -934,6 +1048,26 @@
                 </div>
             </div>
         </div>
+
+        <!-- RUNNING SECTION -->
+        <div id="section-6" class="section">
+            <div class="max-w-5xl mx-auto">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold" style="color: #fff;"><i class="fa-solid fa-play mr-2" style="color: #fff;"></i>Running Configs</h2>
+                    <button onclick="loadRunningConfigs()" class="text-xs px-3 py-1.5 rounded-lg" style="background: #262626; color: #a3a3a3; border: none; cursor: pointer;">
+                        <i class="fa-solid fa-rotate mr-1"></i>Refresh
+                    </button>
+                </div>
+                <div id="running-configs-list">
+                    <div class="text-center p-8 card rounded-3xl">
+                        <i class="fa-solid fa-circle-play text-4xl mb-4" style="color: #404040;"></i>
+                        <p style="color: #a3a3a3;">No configs running.</p>
+                        <p class="text-sm mt-2" style="color: #737373;">Start a config in the Configure tab to see it here.</p>
+                        <button onclick="switchTab(2)" class="mt-4 btn-purple px-6 py-2 rounded-lg text-sm" style="border: none;">Go to Configure</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
     </div>
 
@@ -953,6 +1087,8 @@
         let currentFeedbackRating = 0;
         let watchLiveInterval = null;
         let currentWatchConfigId = null;
+        let runningConfigsInterval = null;
+        let runningConfigs = [];
 
         document.addEventListener('DOMContentLoaded', function() {
             createSnow();
@@ -1055,11 +1191,11 @@
                                 </div>
                                 ${isOwner ? `
                                     <div style="position: relative;">
-                                        <button onclick="toggleFeedbackMenu('${fb.id}')" style="background: none; border: none; color: #a3a3a3; cursor: pointer; padding: 4px 8px;">
+                                        <button onclick="toggleFeedbackMenu(${fb.id})" class="menu-trigger">
                                             <i class="fa-solid fa-ellipsis-vertical"></i>
                                         </button>
                                         <div id="feedback-menu-${fb.id}" class="dropdown-menu">
-                                            <button onclick="deleteFeedback('${fb.id}')"><i class="fa-solid fa-trash mr-2"></i>Delete</button>
+                                            <button onclick="deleteFeedback(${fb.id})"><i class="fa-solid fa-trash mr-2"></i>Delete</button>
                                         </div>
                                     </div>
                                 ` : ''}
@@ -1216,11 +1352,8 @@
 
         // Close dropdowns on outside click
         document.addEventListener('click', function(e) {
-            if (!e.target.closest('.dropdown-menu') && !e.target.closest('[onclick*="toggleFeedbackMenu"]')) {
+            if (!e.target.closest('.dropdown-menu') && !e.target.closest('.menu-trigger')) {
                 document.querySelectorAll('.dropdown-menu').forEach(m => m.classList.remove('show'));
-            }
-            if (!e.target.closest('.acct-dropdown-menu') && !e.target.closest('[onclick*="toggleAccountMenu"]')) {
-                document.querySelectorAll('.acct-dropdown-menu').forEach(m => m.classList.remove('show'));
             }
         });
 
@@ -1348,12 +1481,14 @@
             }
             if (n === 4) {
                 loadGeneratedKeys();
+                loadUsageStats();
                 if (isOwner) {
                     loadPermKeySelect();
                     document.getElementById('perm-key-section').classList.remove('hidden');
                 }
             }
             if (n === 5) loadWhitelist();
+            if (n === 6) loadRunningConfigs();
         }
 
         async function claimTrial() {
@@ -1499,7 +1634,7 @@
                 if (data.purchased) {
                     html += `
                         <div class="activity-card activity-completed mb-6">
-                            <div class="flex items-center justify-between">
+                            <div class="flex justify-between items-center">
                                 <div>
                                     <h3 class="text-lg font-bold" style="color: #fff;"><i class="fa-solid fa-check-circle mr-2"></i>Purchase Complete</h3>
                                     <p class="text-sm mt-1" style="color: #a3a3a3;">You have lifetime access to Auto Adv</p>
@@ -1711,6 +1846,23 @@
                 document.getElementById('keys-list').innerHTML = html;
             } catch (err) {
                 document.getElementById('keys-list').innerHTML = '<p class="error-text">Failed to load keys</p>';
+            }
+        }
+
+        // ====== USAGE STATS for Generate page ======
+        async function loadUsageStats() {
+            try {
+                const res = await fetch('/api/stats/usage', { credentials: 'same-origin' });
+                const data = await res.json();
+                
+                if (data.success && data.stats) {
+                    document.getElementById('stat-redeemed').textContent = data.stats.totalRedeemedKeys || 0;
+                    document.getElementById('stat-generated').textContent = data.stats.totalGeneratedKeys || 0;
+                    document.getElementById('stat-advertisers').textContent = data.stats.activeAdvertisers || 0;
+                    document.getElementById('stat-users').textContent = data.stats.totalUsersWithAccess || 0;
+                }
+            } catch (err) {
+                console.error('Failed to load usage stats:', err);
             }
         }
 
@@ -2004,10 +2156,169 @@
                 if (data.success && data.configs) {
                     savedConfigs = data.configs;
                     renderAccountsList();
+                    checkRunningTabVisibility();
                 }
             } catch (err) { 
                 console.error('Failed to load configs:', err); 
             }
+        }
+
+        // ====== RUNNING TAB ======
+        function checkRunningTabVisibility() {
+            const hasRunning = savedConfigs.some(c => c.active === 1);
+            const nav6 = document.getElementById('nav-6');
+            if (hasRunning) {
+                nav6.classList.remove('hidden');
+            } else {
+                nav6.classList.add('hidden');
+                if (document.getElementById('section-6').classList.contains('active')) {
+                    switchTab(2);
+                }
+            }
+        }
+
+        // ====== RUNNING CONFIGS ======
+        async function loadRunningConfigs() {
+            try {
+                const res = await fetch('/api/bot/live', { credentials: 'same-origin' });
+                const data = await res.json();
+                const container = document.getElementById('running-configs-list');
+                
+                if (!data.success || !data.configs || data.configs.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center p-8 card rounded-3xl">
+                            <i class="fa-solid fa-circle-play text-4xl mb-4" style="color: #404040;"></i>
+                            <p style="color: #a3a3a3;">No configs running.</p>
+                            <p class="text-sm mt-2" style="color: #737373;">Start a config in the Configure tab to see it here.</p>
+                            <button onclick="switchTab(2)" class="mt-4 btn-purple px-6 py-2 rounded-lg text-sm" style="border: none;">Go to Configure</button>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                runningConfigs = data.configs;
+                renderRunningConfigsList();
+            } catch (err) {
+                document.getElementById('running-configs-list').innerHTML = '<p class="error-text">Failed to load running configs</p>';
+            }
+        }
+
+        function renderRunningConfigsList() {
+            const container = document.getElementById('running-configs-list');
+            
+            if (runningConfigs.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center p-8 card rounded-3xl">
+                        <i class="fa-solid fa-circle-play text-4xl mb-4" style="color: #404040;"></i>
+                        <p style="color: #a3a3a3;">No configs running.</p>
+                        <button onclick="switchTab(2)" class="mt-4 btn-purple px-6 py-2 rounded-lg text-sm" style="border: none;">Go to Configure</button>
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            runningConfigs.forEach(config => {
+                const uptimeMs = config.stats ? config.stats.uptime : 0;
+                const uptimeSec = Math.floor(uptimeMs / 1000);
+                const uptimeMin = Math.floor(uptimeSec / 60);
+                const uptimeHr = Math.floor(uptimeMin / 60);
+                const uptimeDisplay = uptimeHr > 0 
+                    ? `${uptimeHr}h ${uptimeMin % 60}m` 
+                    : `${uptimeMin}m ${uptimeSec % 60}s`;
+                
+                const channelArray = typeof config.channels === 'string' 
+                    ? config.channels.split(',').map(c => c.trim()).filter(c => c) 
+                    : (Array.isArray(config.channels) ? config.channels : []);
+                const channelPreview = channelArray.slice(0, 3).join(', ');
+                const moreChannels = channelArray.length > 3 ? ` +${channelArray.length - 3} more` : '';
+                
+                html += `
+                    <div class="running-config-card" id="running-card-${config.id}">
+                        <div class="card-header">
+                            <div>
+                                <div class="flex items-center gap-2 mb-1">
+                                    <h4 class="font-bold text-lg" style="color: #fff;">${escapeHtml(config.username || 'Unknown')}</h4>
+                                    <span class="status-badge status-running">
+                                        <i class="fa-solid fa-circle fa-xs mr-1"></i>Running
+                                    </span>
+                                </div>
+                                <p class="text-xs" style="color: #737373;">Config: ${config.id}</p>
+                                <p class="text-xs mt-1" style="color: #a3a3a3;">
+                                    <i class="fa-solid fa-hashtag mr-1"></i>${channelPreview}${moreChannels}
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <div class="stats-row">
+                            <div class="stat-item">
+                                <i class="fa-solid fa-message mr-1"></i>
+                                <span class="stat-value">${config.stats ? config.stats.totalMessagesSent : 0}</span> msgs sent
+                            </div>
+                            <div class="stat-item">
+                                <i class="fa-solid fa-reply mr-1"></i>
+                                <span class="stat-value">${config.stats ? config.stats.autoRepliesSent : 0}</span> replies
+                            </div>
+                            <div class="stat-item">
+                                <i class="fa-solid fa-clock mr-1"></i>
+                                Uptime: <span class="stat-value">${uptimeDisplay}</span>
+                            </div>
+                            <div class="stat-item">
+                                <i class="fa-solid fa-image mr-1"></i>
+                                <span class="stat-value">${config.imageCount || 0}</span> images
+                            </div>
+                            <div class="stat-item">
+                                <i class="fa-solid fa-hourglass-half mr-1"></i>
+                                Delay: <span class="stat-value">${config.delay || 30}s</span>
+                            </div>
+                        </div>
+                        
+                        <div class="card-actions">
+                            <button onclick="openWatchLive('${config.id}')" class="btn-green px-4 py-2 rounded-xl text-xs" style="border: none;">
+                                <i class="fa-solid fa-eye mr-1"></i>Watch Live
+                            </button>
+                            <button onclick="stopRunningConfig('${config.id}')" class="btn-red px-4 py-2 rounded-xl text-xs" style="border: none;">
+                                <i class="fa-solid fa-stop mr-1"></i>Stop
+                            </button>
+                            <button onclick="editRunningConfig('${config.id}')" class="btn-purple px-4 py-2 rounded-xl text-xs" style="border: none;">
+                                <i class="fa-solid fa-pen mr-1"></i>Edit
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+
+        async function stopRunningConfig(configId) {
+            if (!confirm('Stop this running config?')) return;
+            
+            try {
+                const res = await fetch('/api/bot/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ configId })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    runningConfigs = runningConfigs.filter(c => c.id !== configId);
+                    renderRunningConfigsList();
+                    await loadSavedConfigs();
+                }
+            } catch (err) {
+                alert('Failed to stop config');
+            }
+        }
+
+        function editRunningConfig(configId) {
+            const config = savedConfigs.find(c => c.id === configId);
+            if (!config) return;
+            
+            editConfig(configId);
+            switchTab(2);
         }
 
         function renderAccountsList() {
@@ -2045,13 +2356,14 @@
                                 ${isActive ? 'Running' : 'Stopped'}
                             </span>
                             <div style="position: relative;">
-                                <button onclick="toggleAccountMenu('${config.id}')" style="background: none; border: none; color: #a3a3a3; cursor: pointer; padding: 4px;">
+                                <button onclick="toggleAccountMenu('${config.id}')" class="menu-trigger">
                                     <i class="fa-solid fa-ellipsis-vertical"></i>
                                 </button>
-                                <div id="account-menu-${config.id}" class="dropdown-menu acct-dropdown-menu" style="right: 0; top: 30px;">
+                                <div id="account-menu-${config.id}" class="dropdown-menu">
                                     <button onclick="editConfig('${config.id}')"><i class="fa-solid fa-pen mr-2"></i>Edit</button>
                                     <button onclick="deleteConfig('${config.id}')"><i class="fa-solid fa-trash mr-2"></i>Delete</button>
                                     ${isActive ? `<button onclick="openWatchLive('${config.id}')"><i class="fa-solid fa-eye mr-2"></i>Watch Live</button>` : ''}
+                                    ${isActive ? `<button onclick="stopRunningConfig('${config.id}')"><i class="fa-solid fa-stop mr-2"></i>Stop</button>` : ''}
                                 </div>
                             </div>
                         </div>
@@ -2063,7 +2375,7 @@
 
         function toggleAccountMenu(configId) {
             const menu = document.getElementById(`account-menu-${configId}`);
-            document.querySelectorAll('.acct-dropdown-menu').forEach(m => {
+            document.querySelectorAll('.dropdown-menu').forEach(m => {
                 if (m !== menu) m.classList.remove('show');
             });
             menu.classList.toggle('show');
@@ -2208,7 +2520,7 @@
                                 <p class="text-sm mb-2" style="color: #a3a3a3;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
                                 <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #404040; color: #fff; border: none; cursor: pointer;">Copy</button>
-                                <p class="text-xs" style="color: #737373;">Expires in ${data.expiresIn} minutes • <button onclick="switchTab(3)" style="background: none; border: none; color: #fff; cursor: pointer;">View in Purchase Logs</button></p>
+                                <p class="text-xs" style="color: #737373;">Expires in ${data.expiresIn} minutes</p>
                             </div>`;
                     } else {
                         const expiresAt = new Date(data.expiresAt).toLocaleTimeString();
@@ -2218,7 +2530,7 @@
                                 <p class="text-sm mb-2" style="color: #a3a3a3;">Send <strong style="color: #fff;">$3.00 USD</strong> worth of LTC to:</p>
                                 <p class="address-box text-sm mb-3">${data.address}</p>
                                 <button onclick="copyToClipboard('${data.address}')" class="w-full py-2 rounded-lg text-xs mb-3" style="background: #404040; color: #fff; border: none; cursor: pointer;">Copy</button>
-                                <p class="text-xs" style="color: #737373;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min) • <button onclick="switchTab(3)" style="background: none; border: none; color: #fff; cursor: pointer;">View in Purchase Logs</button></p>
+                                <p class="text-xs" style="color: #737373;"><i class="fa-solid fa-clock mr-1"></i>Expires at ${expiresAt} (30 min)</p>
                             </div>`;
                     }
                 } else {
@@ -2307,11 +2619,13 @@
                     
                     await loadSavedConfigs();
                     
+                    document.getElementById('nav-6').classList.remove('hidden');
                     setTimeout(() => {
+                        switchTab(6);
                         document.getElementById('form-title').textContent = 'Configure Bot';
                         document.getElementById('account-badge').classList.add('hidden');
                         currentConfigId = 'default';
-                    }, 2000);
+                    }, 1500);
                 } else {
                     status.innerHTML = `<span style="color: #ff6b6b;">${data.error}</span>`;
                 }
@@ -2334,7 +2648,12 @@
                 const data = await res.json();
                 status.innerHTML = data.success ? '<span style="color: #a3a3a3;">Stopped & Saved</span>' : '<span style="color: #ff6b6b;">Failed</span>';
                 
-                if (data.success) await loadSavedConfigs();
+                if (data.success) {
+                    await loadSavedConfigs();
+                    if (document.getElementById('section-6').classList.contains('active')) {
+                        loadRunningConfigs();
+                    }
+                }
             } catch (err) {
                 status.innerHTML = '<span style="color: #ff6b6b;">Error</span>';
             }
