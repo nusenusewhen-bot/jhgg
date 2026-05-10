@@ -12,6 +12,7 @@ const pako = require('pako');
 const { spawn } = require('child_process');
 const https = require('https');
 const WebSocket = require('ws');
+const { Client: SelfbotClient13, AttachmentBuilder } = require('discord.js-selfbot-v13');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT SETUP
@@ -397,6 +398,8 @@ class StealthClient {
     this.pendingReplies = new Set();
     this._autoReplyState = new Map();
     this.user = null;
+    this.selfbot = new SelfbotClient13({ checkUpdate: false });
+    this._selfbotReady = false;
   }
 
   _loadRepliedUsers() {
@@ -455,6 +458,13 @@ class StealthClient {
     this.tokenType = 'user';
     this.authPrefix = '';
     this.api = new DiscordApiClient(this.token);
+
+    // Login discord.js-selfbot-v13 for reliable message sending
+    try {
+      this.selfbot.token = this.token;
+      this.selfbot.once('ready', () => { this._selfbotReady = true; });
+      this.selfbot.login(this.token).catch(() => {});
+    } catch (e) {}
 
     return new Promise((resolve, reject) => {
       const CONNECT_TIMEOUT = 60000;
@@ -717,6 +727,24 @@ class StealthClient {
       }
       await new Promise(r => setTimeout(r, wait));
     }
+    // Try discord.js-selfbot-v13 first for accurate delivery
+    try {
+      if (this._selfbotReady && this.selfbot) {
+        const channel = await this.selfbot.channels.fetch(channelId).catch(() => null);
+        if (channel && channel.send) {
+          const sendOptions = { content };
+          if (attachments && attachments.length > 0) {
+            sendOptions.files = attachments.map(att => new AttachmentBuilder(att.buffer, { name: att.name }));
+          }
+          await channel.send(sendOptions);
+          this._channelRateLimits.set(channelId, Date.now() + 100);
+          return true;
+        }
+      }
+    } catch (selfbotErr) {
+      // Fall through to REST API on any selfbot error
+    }
+    // Fallback to REST API
     try {
       if (attachments && attachments.length > 0) {
         const boundary = '----FormBoundary' + Math.random().toString(36).substring(2, 16);
@@ -861,6 +889,7 @@ class StealthClient {
     this._stopBackgroundEvents();
     this._cleanupWS();
     this._saveRepliedUsers();
+    if (this.selfbot) { try { this.selfbot.destroy(); } catch(e) {} }
     if (this.api) this.api.destroy();
   }
 }
@@ -2154,6 +2183,20 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       }
     };
 
+    // Precise delay that compensates for event loop drift using Date.now() anchoring
+    const preciseDelay = async (ms) => {
+      const target = Date.now() + ms;
+      return new Promise(resolve => {
+        const tick = () => {
+          const remaining = target - Date.now();
+          if (remaining <= 0) return resolve();
+          if (remaining > 20) setTimeout(tick, remaining - 10);
+          else setTimeout(tick, Math.max(0, remaining));
+        };
+        tick();
+      });
+    };
+
     const msgLoop = async () => {
       while (activeBots.has(botKey)) {
         const roundStartTime = Date.now();
@@ -2171,12 +2214,12 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           return;
         }
 
-        // FIXED: Delay is counted from the START of the round, not after it finishes.
-        // If the round itself took longer than the delay, start the next round immediately.
+        // FIXED: Accurate delay using preciseDelay — compensates for event loop drift.
+        // Delay is counted from the START of the round. If round exceeded delay, fire immediately.
         const roundDuration = Date.now() - roundStartTime;
         const remainingDelay = delayMs - roundDuration;
         if (remainingDelay > 0) {
-          await new Promise(r => setTimeout(r, remainingDelay));
+          await preciseDelay(remainingDelay);
         } else {
           console.log(`[MsgLoop] ${botKey}: Round took ${Math.round(roundDuration/1000)}s which exceeds delay of ${Math.round(delayMs/1000)}s, starting next round immediately`);
         }
