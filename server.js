@@ -62,7 +62,7 @@ async function validateTokenFormat(token) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SIMPLE DELAY UTILITIES
+// HUMANIZED DELAY UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function randomBetween(min, max) {
@@ -72,6 +72,29 @@ function randomBetween(min, max) {
 function jitterDelay(baseMs, jitterPercent = 0.25) {
   const jitter = baseMs * jitterPercent * (Math.random() * 2 - 1);
   return Math.max(0, Math.floor(baseMs + jitter));
+}
+
+/**
+ * Humanize a base delay by adding natural variation.
+ * Returns a value between baseMs * (1 - humanization) and baseMs * (1 + humanization),
+ * but never less than minPercent of baseMs.
+ */
+function humanizeDelay(baseMs, humanization = 0.30, minPercent = 0.4) {
+  const jitter = baseMs * humanization * (Math.random() * 2 - 1);
+  return Math.max(Math.floor(baseMs * minPercent), Math.floor(baseMs + jitter));
+}
+
+/**
+ * Simulate human typing time based on message length.
+ * Average person types ~200-300 chars per minute = ~3-5 chars per second.
+ */
+function typingTimeForMessage(text) {
+  const charCount = (text || '').length;
+  if (charCount === 0) return randomBetween(800, 2000);
+  // ~40-80ms per character = ~15-25 chars/sec (faster than real but feels right)
+  const baseTime = charCount * randomBetween(40, 80);
+  // Cap at 8 seconds for very long messages
+  return Math.min(baseTime, 8000);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -358,10 +381,13 @@ class DiscordApiClient {
 
         if (status === 429) {
           const isGlobal = res.headers['x-ratelimit-global'] === 'true';
-          const retryAfter = parseFloat(res.headers['retry-after'] || 5) * 1000;
-          if (isGlobal) _sharedGlobalRateLimits.set(this._tokenHash, Date.now() + retryAfter);
+          // FIX: Cap retry-after at 60 seconds to prevent 10+ minute waits
+          const rawRetryAfter = parseFloat(res.headers['retry-after'] || 5);
+          const retryAfter = Math.min(rawRetryAfter, 60); // CAP AT 60s
+          const retryAfterMs = retryAfter < 1000 ? retryAfter * 1000 : retryAfter;
+          if (isGlobal) _sharedGlobalRateLimits.set(this._tokenHash, Date.now() + retryAfterMs);
           // Exponential backoff: base retry + attempt multiplier
-          const backoffMs = retryAfter * (1 + attempts * 0.5);
+          const backoffMs = retryAfterMs * (1 + attempts * 0.5);
           await new Promise(r => setTimeout(r, backoffMs));
           attempts++;
           continue;
@@ -400,12 +426,14 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Rate limit constants — tuned for user account longevity
-const RL_MIN_CHANNEL_DELAY = 500;      // 500ms base between sends per channel
-const RL_MAX_CHANNEL_DELAY = 3000;      // 3s cap for jittered delay
-const RL_PER_CHANNEL_JITTER = 0.30;     // ±30% jitter
+const RL_MIN_CHANNEL_DELAY = 800;       // 800ms base between sends per channel (was 500)
+const RL_MAX_CHANNEL_DELAY = 2500;      // 2.5s cap for jittered delay (was 3000)
+const RL_PER_CHANNEL_JITTER = 0.35;     // ±35% jitter (was 0.30)
 const RL_429_BACKOFF_BASE = 5000;       // 5s base on first 429
-const RL_429_BACKOFF_MAX = 20000;       // 20s cap
-const RL_INTER_CHANNEL_STAGGER = 200;   // 200ms between channels in a round
+const RL_429_BACKOFF_MAX = 30000;       // 30s cap (was 20s)
+const RL_429_RETRY_CAP_SEC = 60;        // FIX: Cap Discord retry-after at 60s (was uncapped!)
+const RL_MAX_WAIT_BEFORE_SKIP = 8000;   // FIX: If we need to wait >8s, skip instead
+const RL_INTER_CHANNEL_STAGGER = 350;   // 350ms between channels in a round (was 200)
 
 class StealthClient {
   constructor(token) {
@@ -553,6 +581,8 @@ class StealthClient {
                 };
               }
 
+              // FIX: Removed hardcoded "vanitys always" custom status.
+              // Now sends empty activities so no custom status is forced on users.
               this.ws.send(JSON.stringify({
                 op: 2,
                 d: {
@@ -562,12 +592,7 @@ class StealthClient {
                   presence: {
                     status: 'online',
                     since: 0,
-                    activities: [{
-                      name: 'Custom Status',
-                      type: 4,
-                      state: 'vanitys always',
-                      emoji: null
-                    }],
+                    activities: [],  // FIX: No custom status forced
                     afk: false,
                     broadcast: null
                   },
@@ -732,12 +757,20 @@ class StealthClient {
   }
 
   // ── Compute next allowed send time for a channel with jitter ──
+  // FIX: Prevent endless compounding. If currentFree is way in the future,
+  // reset toward now instead of stacking more delay on top.
   _getNextChannelFreeTime(channelId, baseDelayMs = RL_MIN_CHANNEL_DELAY) {
     const now = Date.now();
     const currentFree = this._channelRateLimits.get(channelId) || 0;
     const jittered = jitterDelay(baseDelayMs, RL_PER_CHANNEL_JITTER);
-    const nextFree = Math.max(now, currentFree) + Math.min(jittered, RL_MAX_CHANNEL_DELAY);
-    return nextFree;
+    const clampedJitter = Math.min(jittered, RL_MAX_CHANNEL_DELAY);
+
+    // FIX: If rate limit is more than 10s in the future, something went wrong.
+    // Reset it toward now to prevent infinite compounding.
+    if (currentFree > now + 10000) {
+      return now + clampedJitter;
+    }
+    return Math.max(now, currentFree) + clampedJitter;
   }
 
   async sendMessage(channelId, content, attachments = []) {
@@ -747,7 +780,13 @@ class StealthClient {
     }
     const freeAt = this._getNextChannelFreeTime(channelId);
     const wait = freeAt - Date.now();
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    // FIX: Cap wait time — if it's absurdly long, skip instead of blocking forever
+    if (wait > 0 && wait <= RL_MAX_WAIT_BEFORE_SKIP) {
+      await new Promise(r => setTimeout(r, wait));
+    } else if (wait > RL_MAX_WAIT_BEFORE_SKIP) {
+      console.log(`[SendMessage] ${channelId}: Wait ${wait}ms too long, skipping`);
+      return false;
+    }
     const variedContent = varyMessage(content);
     return this.sendMessageDirect(channelId, variedContent, attachments);
   }
@@ -756,7 +795,11 @@ class StealthClient {
     if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) return false;
     const freeAt = this._getNextChannelFreeTime(channelId);
     const wait = freeAt - Date.now();
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    if (wait > 0 && wait <= RL_MAX_WAIT_BEFORE_SKIP) {
+      await new Promise(r => setTimeout(r, wait));
+    } else if (wait > RL_MAX_WAIT_BEFORE_SKIP) {
+      return false;
+    }
     const variedContent = varyMessage(content);
     return this.sendMessageDirect(channelId, variedContent, attachments);
   }
@@ -788,7 +831,7 @@ class StealthClient {
       }
       // Stagger queued messages even in the same channel
       if (q.queue.length > 0) {
-        const stagger = jitterDelay(300, 0.4);
+        const stagger = jitterDelay(400, 0.4); // slightly more human (was 300)
         await new Promise(r => setTimeout(r, stagger));
       }
     }
@@ -803,17 +846,24 @@ class StealthClient {
     const freeAt = this._channelRateLimits.get(channelId) || 0;
     if (now < freeAt) {
       const wait = freeAt - now;
-      if (wait > RL_MAX_CHANNEL_DELAY) {
+      // FIX: If wait is > 8s, skip this send rather than blocking for minutes
+      if (wait > RL_MAX_WAIT_BEFORE_SKIP) {
         console.log(`[SendDirect] ${channelId}: Channel RL wait ${wait}ms too long, skipping`);
         return false;
       }
       await new Promise(r => setTimeout(r, wait));
     }
 
-    // Also check 429 backoff
+    // Also check 429 backoff — but don't wait more than 30s total
     const backoff = this._channel429Backoff.get(channelId) || 0;
     if (now < backoff) {
       const wait = backoff - now;
+      if (wait > RL_429_BACKOFF_MAX) {
+        // FIX: Backoff is excessive, clear it and skip
+        console.log(`[SendDirect] ${channelId}: 429 backoff ${wait}ms excessive, clearing`);
+        this._channel429Backoff.delete(channelId);
+        return false;
+      }
       console.log(`[SendDirect] ${channelId}: 429 backoff active, waiting ${wait}ms`);
       await new Promise(r => setTimeout(r, wait));
     }
@@ -869,14 +919,18 @@ class StealthClient {
       return true;
     } catch (err) {
       if (err.status === 429) {
-        const rawRetry = err.data?.retry_after || (err.data && err.data.retryAfter) || 5;
-        const retryAfterMs = parseFloat(rawRetry) < 1000 ? parseFloat(rawRetry) * 1000 : parseFloat(rawRetry);
-        // Exponential backoff for 429s
+        // FIX: Cap retry-after at 60 seconds to prevent 10+ minute blocks
+        let rawRetry = err.data?.retry_after || (err.data && err.data.retryAfter) || 5;
+        let retryAfterSec = parseFloat(rawRetry);
+        if (retryAfterSec >= 1000) retryAfterSec = retryAfterSec / 1000; // handle ms format
+        const cappedRetrySec = Math.min(retryAfterSec, RL_429_RETRY_CAP_SEC);
+        const retryAfterMs = cappedRetrySec * 1000;
+
         const currentBackoff = this._channel429Backoff.get(channelId) || RL_429_BACKOFF_BASE;
         const nextBackoff = Math.min(currentBackoff * 2, RL_429_BACKOFF_MAX);
         this._channel429Backoff.set(channelId, Date.now() + retryAfterMs + nextBackoff);
         this._channelRateLimits.set(channelId, Date.now() + retryAfterMs + 250);
-        console.error(`[SendDirect] ${channelId}: Rate limited, retry after ${retryAfterMs}ms + ${nextBackoff}ms backoff`);
+        console.error(`[SendDirect] ${channelId}: Rate limited, retry after ${cappedRetrySec}s + ${nextBackoff}ms backoff (Discord said ${retryAfterSec}s, capped at ${RL_429_RETRY_CAP_SEC}s)`);
       }
       const discordCode = err.data?.code || err.code;
       if (err.status === 403 || err.status === 401 || err.status === 404 || discordCode === 50001 || discordCode === 50013 || discordCode === 10003) {
@@ -2059,7 +2113,7 @@ app.get('/download/dashboard', ensureAuthAPI, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BOT START — FIXED 24/7 SEQUENTIAL LOOP WITH STAGGERED SENDS + STATS
+// BOT START — HUMANIZED MESSAGE LOOP WITH FIXES
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -2157,14 +2211,9 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     clearBotStats(botKey);
     const stats = getBotStats(botKey);
     stats.channelCount = channelList.length;
-    logBotEvent(botKey, `Bot started as ${client.user.username} | ${channelList.length} channels | ${messageList.length} messages`);
+    logBotEvent(botKey, `Bot started as ${client.user.username} | ${channelList.length} channels | ${messageList.length} messages | ${delaySec}s delay`);
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STAGGERED CONCURRENT MESSAGE LOOP — 24/7 FIRE-AND-FORGET WITH WATCHDOG
-    // FIXED: Instead of flooding all channels simultaneously, sends are now
-    // staggered with RL_INTER_CHANNEL_STAGGER ms between each channel.
-    // This prevents hitting Discord's concurrent send rate limits.
-    // ═══════════════════════════════════════════════════════════════════════════
+    // Pre-resolve attachments for each message so we don't re-read disk every round
     const resolveFiles = async (imgs) => {
       const files = [];
       for (const img of imgs) {
@@ -2201,7 +2250,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       })
     );
 
-    console.log(`[MsgLoop] ${botKey}: Starting STAGGERED sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ${delayMs}ms between rounds, ${RL_INTER_CHANNEL_STAGGER}ms stagger`);
+    console.log(`[MsgLoop] ${botKey}: Starting HUMANIZED sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ~${delaySec}s base delay with humanization`);
 
     // Token health check — only stop if token is actually invalid
     let consecutiveAuthFailures = 0;
@@ -2246,7 +2295,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           // Stagger: wait before next channel (but not after the last one)
           channelIndex++;
           if (channelIndex < channelList.length) {
-            const stagger = jitterDelay(RL_INTER_CHANNEL_STAGGER, 0.3);
+            // FIX: More natural stagger — random 250-500ms instead of fixed 200ms
+            const stagger = randomBetween(250, 500);
             await new Promise(r => setTimeout(r, stagger));
           }
         }
@@ -2291,18 +2341,11 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       }
     };
 
-    // Precise delay that compensates for event loop drift using Date.now() anchoring
-    const preciseDelay = async (ms) => {
-      const target = Date.now() + ms;
-      return new Promise(resolve => {
-        const tick = () => {
-          const remaining = target - Date.now();
-          if (remaining <= 0) return resolve();
-          if (remaining > 20) setTimeout(tick, remaining - 10);
-          else setTimeout(tick, Math.max(0, remaining));
-        };
-        tick();
-      });
+    // FIX: Humanized delay — adds natural ±30% variation so it's not robotic.
+    // A 30s base becomes ~21-39s randomly, averaging ~30s. Looks like a real person.
+    const humanizedDelay = async (baseMs) => {
+      const humanizedMs = humanizeDelay(baseMs, 0.30, 0.4);
+      await new Promise(resolve => setTimeout(resolve, humanizedMs));
     };
 
     const msgLoop = async () => {
@@ -2322,12 +2365,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           return;
         }
 
-        // FIXED: Accurate delay using preciseDelay — compensates for event loop drift.
+        // FIX: Humanized delay — natural variation instead of robotic precision.
         // Delay is counted from the START of the round. If round exceeded delay, fire immediately.
         const roundDuration = Date.now() - roundStartTime;
         const remainingDelay = delayMs - roundDuration;
         if (remainingDelay > 0) {
-          await preciseDelay(remainingDelay);
+          // Apply humanization to make timing look natural
+          const humanizedMs = humanizeDelay(remainingDelay, 0.30, 0.4);
+          console.log(`[MsgLoop] ${botKey}: Humanized delay ${Math.round(remainingDelay/1000)}s -> ${Math.round(humanizedMs/1000)}s`);
+          await new Promise(r => setTimeout(r, humanizedMs));
         } else {
           console.log(`[MsgLoop] ${botKey}: Round took ${Math.round(roundDuration/1000)}s which exceeds delay of ${Math.round(delayMs/1000)}s, starting next round immediately`);
         }
@@ -2383,8 +2429,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
           if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
 
-          // Wait 10-25 seconds
-          const waitMs = randomBetween(10000, 25000);
+          // FIX: More human wait time — 8-20s instead of 10-25s
+          const waitMs = randomBetween(8000, 20000);
           console.log(`[AutoReply] ${botKey}: Waiting ${waitMs}ms before replying`);
           await new Promise(r => setTimeout(r, waitMs));
 
@@ -2402,10 +2448,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
             const targetChannel = msg.channelId;
             await client.navigateToChannel(targetChannel);
             await client.sendTyping(targetChannel);
-            // Fake type for exactly 3 seconds
-            await new Promise(r => setTimeout(r, 3000));
-            // Pause 1 second
-            await new Promise(r => setTimeout(r, 1000));
+
+            // FIX: Simulate realistic typing time based on message length
+            const typeTime = typingTimeForMessage(autoReplyText);
+            console.log(`[AutoReply] ${botKey}: Simulating typing for ${typeTime}ms (${autoReplyText.length} chars)`);
+            await new Promise(r => setTimeout(r, typeTime));
+
+            // Small pause after typing stops before sending
+            await new Promise(r => setTimeout(r, randomBetween(600, 1500)));
+
             const ok = await client.sendMessage(targetChannel, autoReplyText);
             if (ok) {
               console.log(`[AutoReply] ${botKey}: Replied to ${msg.author.username}`);
@@ -2437,6 +2488,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       imageCount: savedImages.length,
       messageCount: messageList.length,
       delayMs,
+      delayHumanized: true,
       autoReplyEnabled: !!autoReply,
       autoReplyText: autoReplyText || null,
       tokenType: client.tokenType
@@ -2523,10 +2575,12 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[SERVER] Discord Automation Suite v3.2 running on port ${PORT}`);
-  console.log(`[SERVER] Using @discord-selfbot-sdk/bot v14 — RL fixes applied`);
-  console.log(`[SERVER] Staggered sends: ${RL_INTER_CHANNEL_STAGGER}ms between channels`);
-  console.log(`[SERVER] Per-channel min delay: ${RL_MIN_CHANNEL_DELAY}ms + ${RL_PER_CHANNEL_JITTER * 100}% jitter`);
+  console.log(`[SERVER] Discord Automation Suite v3.3 running on port ${PORT}`);
+  console.log(`[SERVER] HUMANIZED mode enabled — ±30% delay jitter, typing simulation`);
+  console.log(`[SERVER] 429 retry capped at 60s — no more 10min blocks`);
+  console.log(`[SERVER] Custom status removed — no more forced vanitys always`);
+  console.log(`[SERVER] Stagger: 250-500ms between channels (natural variation)`);
+  console.log(`[SERVER] Per-channel delay: ${RL_MIN_CHANNEL_DELAY}ms + ${RL_PER_CHANNEL_JITTER * 100}% jitter, max ${RL_MAX_CHANNEL_DELAY}ms`);
   console.log(`[SERVER] 429 backoff: ${RL_429_BACKOFF_BASE}ms base, exponential up to ${RL_429_BACKOFF_MAX}ms`);
 });
 
