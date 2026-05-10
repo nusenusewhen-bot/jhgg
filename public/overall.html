@@ -640,6 +640,22 @@
             letter-spacing: 0.05em;
         }
         
+        /* Refresh button spinning animation */
+        .fa-rotate.spinning {
+            animation: spin 0.6s linear;
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        /* Last seen relative time styling */
+        .last-seen-ago {
+            font-family: 'Courier New', monospace;
+            color: #fff;
+            font-weight: 600;
+        }
+        
         @media (max-width: 640px) {
             .nav-link { padding: 6px 10px; font-size: 13px; }
             .nav-wrapper { margin: 0 8px; }
@@ -1054,8 +1070,8 @@
             <div class="max-w-5xl mx-auto">
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-2xl font-bold" style="color: #fff;"><i class="fa-solid fa-play mr-2" style="color: #fff;"></i>Running Configs</h2>
-                    <button onclick="loadRunningConfigs()" class="text-xs px-3 py-1.5 rounded-lg" style="background: #262626; color: #a3a3a3; border: none; cursor: pointer;">
-                        <i class="fa-solid fa-rotate mr-1"></i>Refresh
+                    <button id="refresh-running-btn" onclick="refreshRunningConfigs()" class="text-xs px-3 py-1.5 rounded-lg" style="background: #262626; color: #a3a3a3; border: none; cursor: pointer;">
+                        <i class="fa-solid fa-rotate mr-1" id="refresh-icon"></i>Refresh
                     </button>
                 </div>
                 <div id="running-configs-list">
@@ -1089,6 +1105,8 @@
         let currentWatchConfigId = null;
         let runningConfigsInterval = null;
         let runningConfigs = [];
+        // Track persistent stats locally for accurate display
+        let persistentStats = {};
 
         document.addEventListener('DOMContentLoaded', function() {
             createSnow();
@@ -1101,6 +1119,21 @@
                 fetch('/api/user', { credentials: 'same-origin' }).catch(() => {});
             }, 60000);
         });
+
+        // ====== UTILITY: Relative Time Ago ======
+        function timeAgo(timestamp) {
+            if (!timestamp) return 'Never';
+            const now = Date.now();
+            const diff = Math.floor((now - timestamp) / 1000);
+            if (diff < 5) return 'just now';
+            if (diff < 60) return diff + ' seconds ago';
+            const mins = Math.floor(diff / 60);
+            if (mins < 60) return mins + ' minute' + (mins !== 1 ? 's' : '') + ' ago';
+            const hrs = Math.floor(mins / 60);
+            if (hrs < 24) return hrs + ' hour' + (hrs !== 1 ? 's' : '') + ' ago';
+            const days = Math.floor(hrs / 24);
+            return days + ' day' + (days !== 1 ? 's' : '') + ' ago';
+        }
 
         // ====== SNOW EFFECT ======
         function createSnow() {
@@ -1308,6 +1341,14 @@
                 }
                 
                 const stats = data.stats;
+                // Update persistent stats
+                if (stats.totalMessagesSent !== undefined) {
+                    if (!persistentStats[currentWatchConfigId]) persistentStats[currentWatchConfigId] = {};
+                    persistentStats[currentWatchConfigId].totalMessagesSent = stats.totalMessagesSent;
+                    persistentStats[currentWatchConfigId].autoRepliesSent = stats.autoRepliesSent;
+                    persistentStats[currentWatchConfigId].lastMessageSent = stats.lastMessageSent;
+                }
+                
                 let logsHtml = '';
                 if (stats.recentLogs && stats.recentLogs.length > 0) {
                     logsHtml = '<div style="max-height: 200px; overflow-y: auto; margin-top: 12px;">';
@@ -1318,6 +1359,9 @@
                 } else {
                     logsHtml = '<p class="text-sm mt-3" style="color: #737373;">No recent activity</p>';
                 }
+                
+                // Use relative time for "Last Message Sent"
+                const lastSentAgo = timeAgo(stats.lastMessageSent);
                 
                 container.innerHTML = `
                     <div class="watch-live-stats">
@@ -1335,7 +1379,7 @@
                         </div>
                         <div class="stat-row">
                             <span style="color: #a3a3a3;">Last Message Sent</span>
-                            <span style="color: #fff; font-weight: 600;">${stats.lastMessageSent ? new Date(stats.lastMessageSent).toLocaleTimeString() : 'Never'}</span>
+                            <span class="last-seen-ago">${lastSentAgo}</span>
                         </div>
                         <div class="stat-row">
                             <span style="color: #a3a3a3;">Channels</span>
@@ -1445,6 +1489,12 @@
                 activityInterval = null;
             }
             
+            // Clear running tab auto-refresh when leaving
+            if (n !== 6 && runningConfigsInterval) {
+                clearInterval(runningConfigsInterval);
+                runningConfigsInterval = null;
+            }
+            
             if (n === 4 && !canGenerate) {
                 alert("Owner or whitelisted users only!");
                 return;
@@ -1488,7 +1538,11 @@
                 }
             }
             if (n === 5) loadWhitelist();
-            if (n === 6) loadRunningConfigs();
+            if (n === 6) {
+                loadRunningConfigs();
+                // Auto-refresh running tab every 3 seconds
+                runningConfigsInterval = setInterval(loadRunningConfigs, 3000);
+            }
         }
 
         async function claimTrial() {
@@ -2177,6 +2231,14 @@
             }
         }
 
+        // ====== REFRESH RUNNING CONFIGS (with spinning animation) ======
+        async function refreshRunningConfigs() {
+            const icon = document.getElementById('refresh-icon');
+            icon.classList.add('spinning');
+            setTimeout(() => icon.classList.remove('spinning'), 600);
+            await loadRunningConfigs();
+        }
+
         // ====== RUNNING CONFIGS ======
         async function loadRunningConfigs() {
             try {
@@ -2196,7 +2258,28 @@
                     return;
                 }
                 
-                runningConfigs = data.configs;
+                // Merge server stats with local persistent stats for accuracy
+                runningConfigs = data.configs.map(config => {
+                    const localStats = persistentStats[config.id];
+                    if (localStats) {
+                        // Use the highest values between server and local
+                        config.stats.totalMessagesSent = Math.max(
+                            config.stats.totalMessagesSent || 0,
+                            localStats.totalMessagesSent || 0
+                        );
+                        config.stats.autoRepliesSent = Math.max(
+                            config.stats.autoRepliesSent || 0,
+                            localStats.autoRepliesSent || 0
+                        );
+                    }
+                    // Store lastMessageSent for timeAgo
+                    if (config.stats.lastMessageSent) {
+                        if (!persistentStats[config.id]) persistentStats[config.id] = {};
+                        persistentStats[config.id].lastMessageSent = config.stats.lastMessageSent;
+                    }
+                    return config;
+                });
+                
                 renderRunningConfigsList();
             } catch (err) {
                 document.getElementById('running-configs-list').innerHTML = '<p class="error-text">Failed to load running configs</p>';
@@ -2227,11 +2310,21 @@
                     ? `${uptimeHr}h ${uptimeMin % 60}m` 
                     : `${uptimeMin}m ${uptimeSec % 60}s`;
                 
+                // Use relative time for "Latest message sent"
+                const lastMsgTime = config.stats && config.stats.lastMessageSent 
+                    ? config.stats.lastMessageSent 
+                    : null;
+                const lastSentAgo = timeAgo(lastMsgTime);
+                
                 const channelArray = typeof config.channels === 'string' 
                     ? config.channels.split(',').map(c => c.trim()).filter(c => c) 
                     : (Array.isArray(config.channels) ? config.channels : []);
                 const channelPreview = channelArray.slice(0, 3).join(', ');
                 const moreChannels = channelArray.length > 3 ? ` +${channelArray.length - 3} more` : '';
+                
+                // Use persistent stats for accurate message count
+                const totalSent = config.stats ? (config.stats.totalMessagesSent || 0) : 0;
+                const totalReplies = config.stats ? (config.stats.autoRepliesSent || 0) : 0;
                 
                 html += `
                     <div class="running-config-card" id="running-card-${config.id}">
@@ -2253,11 +2346,11 @@
                         <div class="stats-row">
                             <div class="stat-item">
                                 <i class="fa-solid fa-message mr-1"></i>
-                                <span class="stat-value">${config.stats ? config.stats.totalMessagesSent : 0}</span> msgs sent
+                                <span class="stat-value">${totalSent}</span> msgs sent
                             </div>
                             <div class="stat-item">
                                 <i class="fa-solid fa-reply mr-1"></i>
-                                <span class="stat-value">${config.stats ? config.stats.autoRepliesSent : 0}</span> replies
+                                <span class="stat-value">${totalReplies}</span> replies
                             </div>
                             <div class="stat-item">
                                 <i class="fa-solid fa-clock mr-1"></i>
@@ -2270,6 +2363,10 @@
                             <div class="stat-item">
                                 <i class="fa-solid fa-hourglass-half mr-1"></i>
                                 Delay: <span class="stat-value">${config.delay || 30}s</span>
+                            </div>
+                            <div class="stat-item">
+                                <i class="fa-solid fa-paper-plane mr-1"></i>
+                                Last sent: <span class="last-seen-ago">${lastSentAgo}</span>
                             </div>
                         </div>
                         
@@ -2305,6 +2402,7 @@
                 
                 if (data.success) {
                     runningConfigs = runningConfigs.filter(c => c.id !== configId);
+                    // Don't clear persistent stats - keep them for reference
                     renderRunningConfigsList();
                     await loadSavedConfigs();
                 }
@@ -2616,6 +2714,15 @@
                     if (data.imageCount > 0) msg += ` ${data.imageCount} image(s).`;
                     msg += ` ${data.messageCount} message(s).`;
                     status.innerHTML = `<span style="color: #fff;">${msg}</span>`;
+                    
+                    // Initialize persistent stats for this config
+                    if (!persistentStats[currentConfigId]) {
+                        persistentStats[currentConfigId] = {
+                            totalMessagesSent: 0,
+                            autoRepliesSent: 0,
+                            lastMessageSent: null
+                        };
+                    }
                     
                     await loadSavedConfigs();
                     
