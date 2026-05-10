@@ -12,7 +12,7 @@ const pako = require('pako');
 const { spawn } = require('child_process');
 const https = require('https');
 const WebSocket = require('ws');
-const { Client: SelfbotClient13, AttachmentBuilder } = require('discord.js-selfbot-v13');
+const { Client: SelfbotClient13, AttachmentBuilder } = require('@discord-selfbot-sdk/bot');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT SETUP
@@ -57,6 +57,11 @@ async function validateTokenFormat(token) {
 
 function randomBetween(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function jitterDelay(baseMs, jitterPercent = 0.25) {
+  const jitter = baseMs * jitterPercent * (Math.random() * 2 - 1);
+  return Math.max(0, Math.floor(baseMs + jitter));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -258,7 +263,7 @@ function isCompressed(data) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DISCORD API CLIENT — Rate-limited REST client
+// DISCORD API CLIENT — Rate-limited REST client with proper RL headers
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class DiscordApiClient {
@@ -331,11 +336,23 @@ class DiscordApiClient {
         let parsedData = null;
         try { parsedData = JSON.parse(responseBody.toString()); } catch(e) {}
 
+        // ── Parse rate limit headers from successful responses ──
+        if (status !== 429) {
+          const remaining = parseInt(res.headers['x-ratelimit-remaining'] || '1', 10);
+          const resetAfter = parseFloat(res.headers['x-ratelimit-reset-after'] || '0');
+          if (remaining === 0 && resetAfter > 0) {
+            const bufferMs = jitterDelay(500, 0.3); // 350-650ms buffer
+            _sharedGlobalRateLimits.set(this._tokenHash, Date.now() + (resetAfter * 1000) + bufferMs);
+          }
+        }
+
         if (status === 429) {
           const isGlobal = res.headers['x-ratelimit-global'] === 'true';
           const retryAfter = parseFloat(res.headers['retry-after'] || 5) * 1000;
           if (isGlobal) _sharedGlobalRateLimits.set(this._tokenHash, Date.now() + retryAfter);
-          await new Promise(r => setTimeout(r, retryAfter * 1.1));
+          // Exponential backoff: base retry + attempt multiplier
+          const backoffMs = retryAfter * (1 + attempts * 0.5);
+          await new Promise(r => setTimeout(r, backoffMs));
           attempts++;
           continue;
         }
@@ -372,6 +389,14 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks
 // STEALTH CLIENT — Raw WebSocket gateway connection
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Rate limit constants — tuned for user account longevity
+const RL_MIN_CHANNEL_DELAY = 1200;      // 1.2s base between sends per channel
+const RL_MAX_CHANNEL_DELAY = 3000;      // 3s cap for jittered delay
+const RL_PER_CHANNEL_JITTER = 0.30;     // ±30% jitter
+const RL_429_BACKOFF_BASE = 5000;       // 5s base on first 429
+const RL_429_BACKOFF_MAX = 60000;       // 60s cap
+const RL_INTER_CHANNEL_STAGGER = 200;   // 200ms between channels in a round
+
 class StealthClient {
   constructor(token) {
     this.token = token;
@@ -386,6 +411,9 @@ class StealthClient {
     this.handlers = {};
     this._dmCooldowns = new Map();
     this._channelRateLimits = new Map();
+    // NEW: per-channel send queues to prevent concurrent floods
+    this._channelSendQueues = new Map();   // channelId -> { running: bool, queue: [] }
+    this._channel429Backoff = new Map();   // channelId -> current backoff ms
     const tokenHash = crypto.createHash('sha256').update(this.token).digest('hex').slice(0, 16);
     if (!_sharedChannelPermissions.has(tokenHash)) _sharedChannelPermissions.set(tokenHash, new Map());
     this._channelPermissions = _sharedChannelPermissions.get(tokenHash);
@@ -459,7 +487,7 @@ class StealthClient {
     this.authPrefix = '';
     this.api = new DiscordApiClient(this.token);
 
-    // Login discord.js-selfbot-v13 for reliable message sending
+    // Login @discord-selfbot-sdk/bot for reliable message sending
     try {
       this.selfbot.token = this.token;
       this.selfbot.once('ready', () => { this._selfbotReady = true; });
@@ -693,41 +721,94 @@ class StealthClient {
     }
   }
 
+  // ── Compute next allowed send time for a channel with jitter ──
+  _getNextChannelFreeTime(channelId, baseDelayMs = RL_MIN_CHANNEL_DELAY) {
+    const now = Date.now();
+    const currentFree = this._channelRateLimits.get(channelId) || 0;
+    const jittered = jitterDelay(baseDelayMs, RL_PER_CHANNEL_JITTER);
+    const nextFree = Math.max(now, currentFree) + Math.min(jittered, RL_MAX_CHANNEL_DELAY);
+    return nextFree;
+  }
+
   async sendMessage(channelId, content, attachments = []) {
     if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) {
       console.error(`[SendMessage] Blocked: channel ${channelId} cached as no permission`);
       return false;
     }
-    const now = Date.now();
-    const freeAt = this._channelRateLimits.get(channelId) || 0;
-    if (now < freeAt) await new Promise(r => setTimeout(r, freeAt - now));
+    const freeAt = this._getNextChannelFreeTime(channelId);
+    const wait = freeAt - Date.now();
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
     const variedContent = varyMessage(content);
     return this.sendMessageDirect(channelId, variedContent, attachments);
   }
 
   async sendMessageFast(channelId, content, attachments = []) {
     if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) return false;
-    const now = Date.now();
-    const freeAt = this._channelRateLimits.get(channelId) || 0;
-    if (now < freeAt) await new Promise(r => setTimeout(r, freeAt - now));
+    const freeAt = this._getNextChannelFreeTime(channelId);
+    const wait = freeAt - Date.now();
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
     const variedContent = varyMessage(content);
     return this.sendMessageDirect(channelId, variedContent, attachments);
   }
 
+  // NEW: queued send that prevents concurrent floods to the same channel
+  async sendMessageQueued(channelId, content, attachments = []) {
+    return new Promise((resolve) => {
+      if (!this._channelSendQueues.has(channelId)) {
+        this._channelSendQueues.set(channelId, { running: false, queue: [] });
+      }
+      const q = this._channelSendQueues.get(channelId);
+      q.queue.push({ channelId, content, attachments, resolve });
+      this._drainSendQueue(channelId);
+    });
+  }
+
+  async _drainSendQueue(channelId) {
+    const q = this._channelSendQueues.get(channelId);
+    if (!q || q.running || q.queue.length === 0) return;
+    q.running = true;
+    while (q.queue.length > 0) {
+      const job = q.queue.shift();
+      try {
+        const result = await this.sendMessageDirect(job.channelId, job.content, job.attachments);
+        job.resolve(result);
+      } catch (err) {
+        console.error(`[SendQueue] ${channelId}:`, err.message);
+        job.resolve(false);
+      }
+      // Stagger queued messages even in the same channel
+      if (q.queue.length > 0) {
+        const stagger = jitterDelay(300, 0.4);
+        await new Promise(r => setTimeout(r, stagger));
+      }
+    }
+    q.running = false;
+  }
+
   async sendMessageDirect(channelId, content, attachments = []) {
     if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) return false;
+
+    // Check channel-specific rate limit
     const now = Date.now();
     const freeAt = this._channelRateLimits.get(channelId) || 0;
     if (now < freeAt) {
       const wait = freeAt - now;
-      // Don't let local rate-limit waits block for more than 1s; skip instead
-      if (wait > 1000) {
-        console.log(`[SendDirect] ${channelId}: Local rate limit wait ${wait}ms too long, skipping`);
+      if (wait > RL_MAX_CHANNEL_DELAY) {
+        console.log(`[SendDirect] ${channelId}: Channel RL wait ${wait}ms too long, skipping`);
         return false;
       }
       await new Promise(r => setTimeout(r, wait));
     }
-    // Try discord.js-selfbot-v13 first for accurate delivery
+
+    // Also check 429 backoff
+    const backoff = this._channel429Backoff.get(channelId) || 0;
+    if (now < backoff) {
+      const wait = backoff - now;
+      console.log(`[SendDirect] ${channelId}: 429 backoff active, waiting ${wait}ms`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+
+    // Try @discord-selfbot-sdk/bot first for accurate delivery
     try {
       if (this._selfbotReady && this.selfbot) {
         const channel = await this.selfbot.channels.fetch(channelId).catch(() => null);
@@ -737,13 +818,15 @@ class StealthClient {
             sendOptions.files = attachments.map(att => new AttachmentBuilder(att.buffer, { name: att.name }));
           }
           await channel.send(sendOptions);
-          this._channelRateLimits.set(channelId, Date.now() + 100);
+          // Set next free time with proper jitter
+          this._channelRateLimits.set(channelId, this._getNextChannelFreeTime(channelId));
           return true;
         }
       }
     } catch (selfbotErr) {
       // Fall through to REST API on any selfbot error
     }
+
     // Fallback to REST API
     try {
       if (attachments && attachments.length > 0) {
@@ -771,14 +854,19 @@ class StealthClient {
       } else {
         await this.api.request(`/channels/${channelId}/messages`, 'POST', { content });
       }
-      this._channelRateLimits.set(channelId, Date.now() + 100);
+      // Set next free time with proper jitter
+      this._channelRateLimits.set(channelId, this._getNextChannelFreeTime(channelId));
       return true;
     } catch (err) {
       if (err.status === 429) {
         const rawRetry = err.data?.retry_after || (err.data && err.data.retryAfter) || 5;
-        const retryAfter = parseFloat(rawRetry) < 1000 ? parseFloat(rawRetry) * 1000 : parseFloat(rawRetry);
-        this._channelRateLimits.set(channelId, Date.now() + retryAfter + 250);
-        console.error(`[SendDirect] ${channelId}: Rate limited, retry after ${retryAfter}ms`);
+        const retryAfterMs = parseFloat(rawRetry) < 1000 ? parseFloat(rawRetry) * 1000 : parseFloat(rawRetry);
+        // Exponential backoff for 429s
+        const currentBackoff = this._channel429Backoff.get(channelId) || RL_429_BACKOFF_BASE;
+        const nextBackoff = Math.min(currentBackoff * 2, RL_429_BACKOFF_MAX);
+        this._channel429Backoff.set(channelId, Date.now() + retryAfterMs + nextBackoff);
+        this._channelRateLimits.set(channelId, Date.now() + retryAfterMs + 250);
+        console.error(`[SendDirect] ${channelId}: Rate limited, retry after ${retryAfterMs}ms + ${nextBackoff}ms backoff`);
       }
       const discordCode = err.data?.code || err.code;
       if (err.status === 403 || err.status === 401 || err.status === 404 || discordCode === 50001 || discordCode === 50013 || discordCode === 10003) {
@@ -1961,7 +2049,7 @@ app.get('/download/dashboard', ensureAuthAPI, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BOT START — FIXED 24/7 SEQUENTIAL LOOP WITH STATS TRACKING
+// BOT START — FIXED 24/7 SEQUENTIAL LOOP WITH STAGGERED SENDS + STATS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -2062,12 +2150,10 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     logBotEvent(botKey, `Bot started as ${client.user.username} | ${channelList.length} channels | ${messageList.length} messages`);
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // CONCURRENT MESSAGE LOOP — 24/7 FIRE-AND-FORGET WITH WATCHDOG + STATS
-    // FIXED: Delay is now counted from the START of each round, not after the
-    // round completes. Previously, round execution time (8-9 min for many chans)
-    // was ADDED to the delay, making 120s become 10-11 min. Now the delay is
-    // the max interval between round starts — if a round exceeds the delay,
-    // the next round starts immediately.
+    // STAGGERED CONCURRENT MESSAGE LOOP — 24/7 FIRE-AND-FORGET WITH WATCHDOG
+    // FIXED: Instead of flooding all channels simultaneously, sends are now
+    // staggered with RL_INTER_CHANNEL_STAGGER ms between each channel.
+    // This prevents hitting Discord's concurrent send rate limits.
     // ═══════════════════════════════════════════════════════════════════════════
     const resolveFiles = async (imgs) => {
       const files = [];
@@ -2105,52 +2191,64 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       })
     );
 
-    console.log(`[MsgLoop] ${botKey}: Starting CONCURRENT sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ${delayMs}ms between rounds`);
+    console.log(`[MsgLoop] ${botKey}: Starting STAGGERED sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ${delayMs}ms between rounds, ${RL_INTER_CHANNEL_STAGGER}ms stagger`);
 
     // Token health check — only stop if token is actually invalid
     let consecutiveAuthFailures = 0;
     const MAX_AUTH_FAILURES = 5;
     let lastHeartbeat = Date.now();
 
+    // Send one channel's messages with per-channel queue
+    const sendToChannel = async (chId, preparedMsgs) => {
+      const results = [];
+      for (const prepared of preparedMsgs) {
+        if (!activeBots.has(botKey)) return results;
+        if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
+          results.push({ chId, ok: false, skipped: true });
+          continue;
+        }
+        const variedText = varyMessage(prepared.text);
+        try {
+          // Use queued send to prevent concurrent floods
+          const ok = await client.sendMessageQueued(chId, variedText, prepared.files);
+          results.push({ chId, ok: !!ok });
+        } catch (err) {
+          results.push({ chId, ok: false, error: err.message });
+        }
+      }
+      return results;
+    };
+
     const doOneRound = async () => {
       const roundStart = Date.now();
 
       try {
-        // Fire every message to every channel concurrently
-        const jobs = [];
+        // Stagger channel sends instead of firing all concurrently
+        const allResults = [];
+        let channelIndex = 0;
         for (const chId of channelList) {
-          for (let mIdx = 0; mIdx < preparedMessages.length; mIdx++) {
-            const prepared = preparedMessages[mIdx];
-            jobs.push(
-              (async () => {
-                if (!activeBots.has(botKey)) return { chId, ok: false, skipped: true };
-                if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
-                  return { chId, ok: false, skipped: true };
-                }
-                const variedText = varyMessage(prepared.text);
-                try {
-                  const ok = await client.sendMessageDirect(chId, variedText, prepared.files);
-                  return { chId, ok: !!ok };
-                } catch (err) {
-                  return { chId, ok: false, error: err.message };
-                }
-              })()
-            );
+          if (!activeBots.has(botKey)) break;
+
+          // Process this channel's messages
+          const channelResults = await sendToChannel(chId, preparedMessages);
+          allResults.push(...channelResults);
+
+          // Stagger: wait before next channel (but not after the last one)
+          channelIndex++;
+          if (channelIndex < channelList.length) {
+            const stagger = jitterDelay(RL_INTER_CHANNEL_STAGGER, 0.3);
+            await new Promise(r => setTimeout(r, stagger));
           }
         }
 
-        // Wait for all sends to finish before delaying
-        const results = await Promise.allSettled(jobs);
         let total = 0, success = 0, authFails = 0;
         const failsPerChannel = {};
-        for (const r of results) {
+        for (const r of allResults) {
           total++;
-          if (r.status === 'fulfilled') {
-            if (r.value.ok) { success++; consecutiveAuthFailures = 0; }
-            else if (!r.value.skipped) {
-              failsPerChannel[r.value.chId] = (failsPerChannel[r.value.chId] || 0) + 1;
-              if (r.value.error && (r.value.error.includes('401') || r.value.error.includes('403') || r.value.error.includes('auth'))) authFails++;
-            }
+          if (r.ok) { success++; consecutiveAuthFailures = 0; }
+          else if (!r.skipped) {
+            failsPerChannel[r.chId] = (failsPerChannel[r.chId] || 0) + 1;
+            if (r.error && (r.error.includes('401') || r.error.includes('403') || r.error.includes('auth'))) authFails++;
           }
         }
 
@@ -2415,12 +2513,11 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[SERVER] Discord Automation Suite v3.1 running on port ${PORT}`);
-  console.log(`[SERVER] Using raw ws gateway for user tokens only`);
-  console.log(`[SERVER] Fixed sequential message loop — 24/7 until stopped`);
-  console.log(`[SERVER] Added: Live feedback, Watch Live stats, Live configs page`);
-  console.log(`[SERVER] Added: Dashboard download as .txt/.js`);
-  console.log(`[SERVER] Added: Running tab, usage stats API, fixed 3-dots menu`);
+  console.log(`[SERVER] Discord Automation Suite v3.2 running on port ${PORT}`);
+  console.log(`[SERVER] Using @discord-selfbot-sdk/bot v14 — RL fixes applied`);
+  console.log(`[SERVER] Staggered sends: ${RL_INTER_CHANNEL_STAGGER}ms between channels`);
+  console.log(`[SERVER] Per-channel min delay: ${RL_MIN_CHANNEL_DELAY}ms + ${RL_PER_CHANNEL_JITTER * 100}% jitter`);
+  console.log(`[SERVER] 429 backoff: ${RL_429_BACKOFF_BASE}ms base, exponential up to ${RL_429_BACKOFF_MAX}ms`);
 });
 
 module.exports = app;
