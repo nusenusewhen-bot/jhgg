@@ -2034,6 +2034,11 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
     // ═══════════════════════════════════════════════════════════════════════════
     // CONCURRENT MESSAGE LOOP — 24/7 FIRE-AND-FORGET WITH WATCHDOG + STATS
+    // FIXED: Delay is now counted from the START of each round, not after the
+    // round completes. Previously, round execution time (8-9 min for many chans)
+    // was ADDED to the delay, making 120s become 10-11 min. Now the delay is
+    // the max interval between round starts — if a round exceeds the delay,
+    // the next round starts immediately.
     // ═══════════════════════════════════════════════════════════════════════════
     const resolveFiles = async (imgs) => {
       const files = [];
@@ -2151,6 +2156,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
 
     const msgLoop = async () => {
       while (activeBots.has(botKey)) {
+        const roundStartTime = Date.now();
         const result = await doOneRound();
 
         // ONLY stop if token is actually dead (repeated auth failures)
@@ -2165,8 +2171,15 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           return;
         }
 
-        // Exact delay between rounds
-        await new Promise(r => setTimeout(r, delayMs));
+        // FIXED: Delay is counted from the START of the round, not after it finishes.
+        // If the round itself took longer than the delay, start the next round immediately.
+        const roundDuration = Date.now() - roundStartTime;
+        const remainingDelay = delayMs - roundDuration;
+        if (remainingDelay > 0) {
+          await new Promise(r => setTimeout(r, remainingDelay));
+        } else {
+          console.log(`[MsgLoop] ${botKey}: Round took ${Math.round(roundDuration/1000)}s which exceeds delay of ${Math.round(delayMs/1000)}s, starting next round immediately`);
+        }
       }
       console.log(`[MsgLoop] ${botKey}: Message loop ended`);
     };
