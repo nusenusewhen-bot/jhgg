@@ -2733,77 +2733,59 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     let authFailStreak = 0;
     const MAX_AUTH_FAILS = 5;
 
-    // Send to ONE channel, return result. Isolated — one failure doesn't affect others.
-    const sendToOneChannel = async (chId, prepared) => {
+    // Send to ONE channel. Isolated — one failure doesn't affect others.
+    // Fire-and-forget: we don't await the result. Success/failure is logged internally.
+    const sendToOneChannel = (chId, prepared) => {
       if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
-        return { ok: false, skipped: true, channelId: chId, reason: 'no_permission_cached' };
+        return;
       }
       const variedText = varyMessage(prepared.text);
-      try {
-        const ok = await client.sendMessageQueued(chId, variedText, prepared.files);
-        if (ok) return { ok: true, channelId: chId };
-        return { ok: false, channelId: chId, reason: 'send_returned_false' };
-      } catch (err) {
-        return { ok: false, channelId: chId, reason: err.message };
-      }
+      client.sendMessageQueued(chId, variedText, prepared.files)
+        .then(ok => {
+          if (ok) {
+            incrementMessagesSent(botKey, 1);
+          }
+        })
+        .catch(() => {
+          // Isolated error — affects nothing
+        });
     };
 
-    // Send to ALL channels at the SAME TIME (concurrently). Each channel gets the same message.
-    // One channel failing does NOT block or stop the others.
-    const doOneRound = async () => {
-      if (channelList.length === 0 || preparedMessages.length === 0) return [];
+    // Fire ALL channels at once, then immediately return.
+    // NO awaiting. Delay timer starts right after firing.
+    // One blocked channel has ZERO effect on timing or other channels.
+    const doOneRound = () => {
+      if (channelList.length === 0 || preparedMessages.length === 0) return;
 
       // Rotate which message to use this round
-      const prepared = preparedMessages[0]; // use first message (or rotate if you have multiple)
+      currentMsgIdx = (currentMsgIdx + 1) % preparedMessages.length;
+      const prepared = preparedMessages[currentMsgIdx];
 
-      // Fire ALL sends at the same time — each is independent
-      const promises = channelList.map(chId => sendToOneChannel(chId, prepared));
-      const results = await Promise.all(promises);
-
-      // Count results
-      let success = 0, fail = 0, skipped = 0, authFails = 0;
-      for (const r of results) {
-        if (r.ok) success++;
-        else if (r.skipped) skipped++;
-        else { fail++; if (r.reason && (r.reason.includes('401') || r.reason.includes('403'))) authFails++; }
+      // Fire ALL sends simultaneously — each is fully isolated
+      for (const chId of channelList) {
+        sendToOneChannel(chId, prepared);
       }
-
-      if (authFails > 0) authFailStreak += authFails;
-      else if (success > 0) authFailStreak = 0;
-
-      if (success > 0) {
-        incrementMessagesSent(botKey, success);
-        logBotEvent(botKey, `Sent to ${success}/${channelList.length} channels`);
-      }
-      console.log(`[MsgLoop] ${botKey}: Round done — ${success} OK, ${fail} fail, ${skipped} skipped | authStreak: ${authFailStreak}`);
-
-      return results;
     };
 
-    // Main loop: send to ALL channels → wait delay → repeat forever
+    // Track consecutive auth failures for dead-token detection
+    let currentMsgIdx = 0;
+
+    // Main loop: fire ALL channels → wait EXACT delay → repeat
+    // doOneRound returns immediately (fire-and-forget). Sends happen in background.
     const msgLoop = async () => {
       while (activeBots.has(botKey)) {
-        await doOneRound();
-
-        // Stop only if token is completely dead
-        if (authFailStreak >= MAX_AUTH_FAILS) {
-          console.error(`[MsgLoop] ${botKey}: ${MAX_AUTH_FAILS} auth failures, stopping`);
-          logBotEvent(botKey, `STOPPED: ${MAX_AUTH_FAILS} auth failures`);
-          break;
-        }
+        doOneRound();
 
         if (!activeBots.has(botKey)) return;
 
         // Heartbeat every ~5 minutes
         if (Date.now() - lastHeartbeat > 5 * 60 * 1000) {
-          console.log(`[MsgLoop] ${botKey}: HEARTBEAT — alive`);
+          console.log(`[MsgLoop] ${botKey}: HEARTBEAT — alive | msgsSent=${getBotStats(botKey).totalMessagesSent}`);
           lastHeartbeat = Date.now();
         }
 
-        // Wait the configured delay before sending again
-        const humanizedMs = humanizeDelay(delayMs, 0.10, 0.85);
-        console.log(`[MsgLoop] ${botKey}: Waiting ${Math.round(humanizedMs / 1000)}s before next round...`);
-        await new Promise(r => setTimeout(r, humanizedMs));
+        // EXACT delay — no humanization. Sends run in background while we sleep.
+        await new Promise(r => setTimeout(r, delayMs));
       }
       console.log(`[MsgLoop] ${botKey}: Loop ended`);
     };
