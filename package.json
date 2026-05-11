@@ -8,26 +8,26 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "@discord-selfbot-sdk/bot": "latest",
-    "axios": "latest",
-    "bip32": "latest",
-    "bip39": "latest",
-    "coincurve": "latest",
-    "cookie-parser": "latest",
-    "crypto": "latest",
-    "discord.js-selfbot-v13": "latest",
-    "dotenv": "latest",
-    "express": "latest",
-    "express-session": "latest",
-    "pako": "latest",
-    "passport": "latest",
-    "passport-discord": "latest",
-    "secp256k1": "latest",
-    "tiny-secp256k1": "latest",
-    "tweetnacl": "latest"
+    "@discord-selfbot-sdk/bot": "^1.4.2",
+    "axios": "^1.7.2",
+    "bip32": "^4.0.0",
+    "bip39": "^3.1.0",
+    "cookie-parser": "^1.4.6",
+    "crypto": "^1.0.1",
+    "discord.js-selfbot-v13": "^3.6.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "pako": "^2.1.0",
+    "passport": "^0.7.0",
+    "passport-discord": "^0.1.4",
+    "secp256k1": "^5.0.0",
+    "tiny-secp256k1": "^2.2.3",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
-    "nodemon": "latest"
+    "nodemon": "^3.1.4"
   },
   "engines": {
     "node": ">=18.0.0"
