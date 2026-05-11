@@ -2727,155 +2727,88 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       })
     );
 
-    console.log(`[MsgLoop] ${botKey}: Starting FIXED sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ~${delaySec}s delay`);
+    console.log(`[MsgLoop] ${botKey}: Starting — send to ALL ${channelList.length} channels at once, wait ~${delaySec}s, repeat`);
 
-    // Token health check — only stop if token is actually invalid
-    let consecutiveAuthFailures = 0;
-    const MAX_AUTH_FAILURES = 5;
     let lastHeartbeat = Date.now();
+    let authFailStreak = 0;
+    const MAX_AUTH_FAILS = 5;
 
-    const doOneRound = async () => {
-      const roundStart = Date.now();
-
+    // Send to ONE channel, return result. Isolated — one failure doesn't affect others.
+    const sendToOneChannel = async (chId, prepared) => {
+      if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
+        return { ok: false, skipped: true, channelId: chId, reason: 'no_permission_cached' };
+      }
+      const variedText = varyMessage(prepared.text);
       try {
-        // FIX: Spread sends evenly across the delay period instead of burst-sending.
-        // Calculate per-send spacing to distribute all sends across ~70% of the delay.
-        const totalSends = channelList.length * preparedMessages.length;
-        const targetRoundDuration = delayMs * 0.7;
-        const rawSpacing = Math.floor(targetRoundDuration / Math.max(totalSends, 1));
-        const sendSpacing = Math.max(800, Math.min(8000, rawSpacing));
-
-        const allResults = [];
-        let sendIndex = 0;
-
-        for (const chId of channelList) {
-          if (!activeBots.has(botKey)) break;
-
-          for (const prepared of preparedMessages) {
-            if (!activeBots.has(botKey)) break;
-
-            if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
-              allResults.push({ chId, ok: false, skipped: true });
-              sendIndex++;
-              continue;
-            }
-
-            const variedText = varyMessage(prepared.text);
-            try {
-              const ok = await client.sendMessageQueued(chId, variedText, prepared.files);
-              allResults.push({ chId, ok: !!ok });
-            } catch (err) {
-              allResults.push({ chId, ok: false, error: err.message });
-            }
-
-            sendIndex++;
-            // Wait before next send (but not after the last one)
-            if (sendIndex < totalSends) {
-              await new Promise(r => setTimeout(r, sendSpacing));
-            }
-          }
-        }
-
-        let total = 0, success = 0, authFails = 0;
-        const failsPerChannel = {};
-        for (const r of allResults) {
-          total++;
-          if (r.ok) { success++; consecutiveAuthFailures = 0; }
-          else if (!r.skipped) {
-            failsPerChannel[r.chId] = (failsPerChannel[r.chId] || 0) + 1;
-            if (r.error && (r.error.includes('401') || r.error.includes('403') || r.error.includes('auth'))) authFails++;
-          }
-        }
-
-        if (authFails > 0) consecutiveAuthFailures++;
-        else if (success > 0) consecutiveAuthFailures = 0;
-
-        const roundDuration = Date.now() - roundStart;
-
-        // Update stats
-        if (success > 0) {
-          incrementMessagesSent(botKey, success);
-          logBotEvent(botKey, `Round: ${success}/${total} OK in ${roundDuration}ms (spacing: ${sendSpacing}ms)`);
-        }
-
-        console.log(`[MsgLoop] ${botKey}: Round complete — ${success}/${total} OK in ${roundDuration}ms | authFails: ${consecutiveAuthFailures}`);
-
-        // Heartbeat every ~5 minutes
-        if (Date.now() - lastHeartbeat > 5 * 60 * 1000) {
-          console.log(`[MsgLoop] ${botKey}: HEARTBEAT — still alive, ${consecutiveAuthFailures} auth failures`);
-          logBotEvent(botKey, `HEARTBEAT — ${consecutiveAuthFailures} auth failures`);
-          lastHeartbeat = Date.now();
-        }
-
-        return { success: true, authFailed: consecutiveAuthFailures >= MAX_AUTH_FAILURES, roundDuration };
-
-      } catch (loopErr) {
-        console.error(`[MsgLoop] ${botKey}: Round error (recovering):`, loopErr.message);
-        logBotEvent(botKey, `Round error: ${loopErr.message}`);
-        return { success: false, authFailed: false, roundDuration: Date.now() - roundStart };
+        const ok = await client.sendMessageQueued(chId, variedText, prepared.files);
+        if (ok) return { ok: true, channelId: chId };
+        return { ok: false, channelId: chId, reason: 'send_returned_false' };
+      } catch (err) {
+        return { ok: false, channelId: chId, reason: err.message };
       }
     };
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // FIX #1: Complete rewrite of the delay loop.
-    //
-    // OLD (broken — caused 10-11 min delays):
-    //   const roundStartTime = Date.now();
-    //   await doOneRound();
-    //   const roundDuration = Date.now() - roundStartTime;
-    //   const remainingDelay = delayMs - roundDuration;
-    //   if (remainingDelay > 0) await sleep(remainingDelay);
-    //   else start next round IMMEDIATELY (no delay!)
-    //
-    // PROBLEM: When roundDuration > delayMs (because of compounding rate
-    // limits), remainingDelay <= 0 so the next round fires RIGHT AWAY.
-    // But channels still have future rate limits from the previous round,
-    // making the next round even SLOWER → snowball effect.
-    //
-    // NEW (fixed — always waits the full delay after round ends):
-    //   await doOneRound();
-    //   client.resetChannelRateLimitsForNextRound();  // FIX #4
-    //   const humanizedDelay = humanizeDelay(delayMs, ...);
-    //   await sleep(humanizedDelay);  // ALWAYS waits, never skips
-    //
-    // This guarantees the configured delay is always respected, and the
-    // rate limit reset prevents compounding across rounds.
-    // ═══════════════════════════════════════════════════════════════════════════
+    // Send to ALL channels at the SAME TIME (concurrently). Each channel gets the same message.
+    // One channel failing does NOT block or stop the others.
+    const doOneRound = async () => {
+      if (channelList.length === 0 || preparedMessages.length === 0) return [];
+
+      // Rotate which message to use this round
+      const prepared = preparedMessages[0]; // use first message (or rotate if you have multiple)
+
+      // Fire ALL sends at the same time — each is independent
+      const promises = channelList.map(chId => sendToOneChannel(chId, prepared));
+      const results = await Promise.all(promises);
+
+      // Count results
+      let success = 0, fail = 0, skipped = 0, authFails = 0;
+      for (const r of results) {
+        if (r.ok) success++;
+        else if (r.skipped) skipped++;
+        else { fail++; if (r.reason && (r.reason.includes('401') || r.reason.includes('403'))) authFails++; }
+      }
+
+      if (authFails > 0) authFailStreak += authFails;
+      else if (success > 0) authFailStreak = 0;
+
+      if (success > 0) {
+        incrementMessagesSent(botKey, success);
+        logBotEvent(botKey, `Sent to ${success}/${channelList.length} channels`);
+      }
+      console.log(`[MsgLoop] ${botKey}: Round done — ${success} OK, ${fail} fail, ${skipped} skipped | authStreak: ${authFailStreak}`);
+
+      return results;
+    };
+
+    // Main loop: send to ALL channels → wait delay → repeat forever
     const msgLoop = async () => {
       while (activeBots.has(botKey)) {
-        const result = await doOneRound();
+        await doOneRound();
 
-        // ONLY stop if token is actually dead (repeated auth failures)
-        if (result.authFailed) {
-          console.error(`[MsgLoop] ${botKey}: Token appears invalid (${MAX_AUTH_FAILURES} consecutive auth failures), stopping loop`);
-          logBotEvent(botKey, `STOPPED: ${MAX_AUTH_FAILURES} consecutive auth failures`);
+        // Stop only if token is completely dead
+        if (authFailStreak >= MAX_AUTH_FAILS) {
+          console.error(`[MsgLoop] ${botKey}: ${MAX_AUTH_FAILS} auth failures, stopping`);
+          logBotEvent(botKey, `STOPPED: ${MAX_AUTH_FAILS} auth failures`);
           break;
         }
 
-        if (!activeBots.has(botKey)) {
-          console.log(`[MsgLoop] ${botKey}: Stopped before delay`);
-          return;
+        if (!activeBots.has(botKey)) return;
+
+        // Heartbeat every ~5 minutes
+        if (Date.now() - lastHeartbeat > 5 * 60 * 1000) {
+          console.log(`[MsgLoop] ${botKey}: HEARTBEAT — alive`);
+          lastHeartbeat = Date.now();
         }
 
-        // Reset channel rate limits before calculating delay
-        client.resetChannelRateLimitsForNextRound();
-
-        // FIX: Subtract round duration from the configured delay so the total
-        // cycle time matches what the user configured. If the round ran longer
-        // than the delay, enforce a minimum 1s pause to avoid zero-delay loops.
-        const roundDuration = result.roundDuration || 0;
-        const remainingDelay = Math.max(1000, delayMs - roundDuration);
-        const humanizedMs = humanizeDelay(remainingDelay, 0.10, 0.8);
-
-        console.log(`[MsgLoop] ${botKey}: Round took ${Math.round(roundDuration/1000)}s, waiting ${Math.round(humanizedMs/1000)}s (base: ${delaySec}s)`);
+        // Wait the configured delay before sending again
+        const humanizedMs = humanizeDelay(delayMs, 0.10, 0.85);
+        console.log(`[MsgLoop] ${botKey}: Waiting ${Math.round(humanizedMs / 1000)}s before next round...`);
         await new Promise(r => setTimeout(r, humanizedMs));
       }
-      console.log(`[MsgLoop] ${botKey}: Message loop ended`);
+      console.log(`[MsgLoop] ${botKey}: Loop ended`);
     };
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // WATCHDOG — restarts the loop if it ever dies, as long as bot is active
-    // ═══════════════════════════════════════════════════════════════════════════
+    // WATCHDOG — restarts the loop if it ever crashes
     const startWithWatchdog = async () => {
       let restartDelay = 5000;
       while (activeBots.has(botKey)) {
@@ -2887,11 +2820,11 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           logBotEvent(botKey, `Loop crashed: ${watchdogErr.message}`);
         }
         if (!activeBots.has(botKey)) break;
-        console.log(`[Watch] ${botKey}: Loop exited, restarting in ${restartDelay}ms...`);
+        console.log(`[Watchdog] ${botKey}: Restarting in ${restartDelay}ms...`);
         await new Promise(r => setTimeout(r, restartDelay));
-        restartDelay = Math.min(restartDelay * 2, 60000); // cap at 60s
+        restartDelay = Math.min(restartDelay * 2, 60000);
       }
-      console.log(`[Watchdog] ${botKey}: Watchdog stopped`);
+      console.log(`[Watchdog] ${botKey}: Stopped`);
     };
 
     // ── AUTO-REPLY HANDLER ──
