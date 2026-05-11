@@ -2770,8 +2770,10 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     // Track consecutive auth failures for dead-token detection
     let currentMsgIdx = 0;
 
-    // Main loop: fire ALL channels → wait EXACT delay → repeat
+    // Main loop: fire ALL channels → wait humanized delay → repeat
     // doOneRound returns immediately (fire-and-forget). Sends happen in background.
+    // Delay is humanized (±10% jitter) to avoid detection via exact intervals.
+    // One blocked channel CANNOT delay this — it's purely a timer.
     const msgLoop = async () => {
       while (activeBots.has(botKey)) {
         doOneRound();
@@ -2784,8 +2786,10 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           lastHeartbeat = Date.now();
         }
 
-        // EXACT delay — no humanization. Sends run in background while we sleep.
-        await new Promise(r => setTimeout(r, delayMs));
+        // Humanized delay: base ±10%, never below 85% of configured delay.
+        // This prevents Discord from detecting perfectly exact intervals.
+        const humanizedMs = humanizeDelay(delayMs, 0.10, 0.85);
+        await new Promise(r => setTimeout(r, humanizedMs));
       }
       console.log(`[MsgLoop] ${botKey}: Loop ended`);
     };
