@@ -294,26 +294,26 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
             console.log(`[SELFBOT ${configId}] Loop tick | msg #${(currentMessageIndex % messages.length) + 1}/${messages.length} | text="${(msg.text || '').substring(0, 40)}" | images=${targetImages.length}`);
             
             if (sendAllAtOnce) {
-                console.log(`[SELFBOT ${configId}] Firing to ${channelList.length} channels simultaneously...`);
+                console.log(`[SELFBOT ${configId}] Firing to ${channelList.length} channels with 250ms stagger...`);
                 
-                // ═══════════════════════════════════════════════════════════════
-                // FIRE-AND-FORGET: Launch all sends WITHOUT awaiting.
-                // Each channel is fully isolated — its error affects nothing else.
-                // Delay timer starts IMMEDIATELY after firing.
-                // ═══════════════════════════════════════════════════════════════
-                for (const channelId of channelList) {
-                    (async () => {
-                        try {
-                            const channel = await client.channels.fetch(channelId);
-                            if (!channel || typeof channel.send !== 'function') return;
-                            await sendToChannel(channel, msg.text, targetImages);
-                        } catch (e) {
-                            // Isolated error — affects nothing
-                        }
-                    })();
-                }
+                // 250ms stagger between channels. Each fires in its own slot.
+                // A blocked channel wastes only its own 250ms, nothing else.
+                const STAGGER_MS = 250;
+                channelList.forEach((channelId, i) => {
+                    setTimeout(() => {
+                        (async () => {
+                            try {
+                                const channel = await client.channels.fetch(channelId);
+                                if (!channel || typeof channel.send !== 'function') return;
+                                await sendToChannel(channel, msg.text, targetImages);
+                            } catch (e) {
+                                // Isolated error — affects nothing
+                            }
+                        })();
+                    }, i * STAGGER_MS);
+                });
                 
-                console.log(`[SELFBOT ${configId}] All ${channelList.length} fires launched. Sleeping ${delay}ms...`);
+                console.log(`[SELFBOT ${configId}] All ${channelList.length} fires scheduled. Sleeping ${delay}ms...`);
             } else {
                 const channelId = channelList[currentChannelIndex % channelList.length];
                 currentChannelIndex++;
