@@ -283,27 +283,26 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
             console.log(`[SELFBOT ${configId}] Loop tick | msg #${(currentMessageIndex % messages.length) + 1}/${messages.length} | text="${(msg.text || '').substring(0, 40)}" | images=${targetImages.length}`);
             
             if (sendAllAtOnce) {
-                console.log(`[SELFBOT ${configId}] Broadcasting to ${channelList.length} channels...`);
+                console.log(`[SELFBOT ${configId}] Firing to ${channelList.length} channels simultaneously...`);
                 
-                const sendPromises = channelList.map(async (channelId) => {
-                    try {
-                        const channel = await client.channels.fetch(channelId);
-                        if (!channel) {
-                            console.log(`[SELFBOT ${configId}] Channel ${channelId} not found / no access`);
-                            return;
+                // ═══════════════════════════════════════════════════════════════
+                // FIRE-AND-FORGET: Launch all sends WITHOUT awaiting.
+                // Each channel is fully isolated — its error affects nothing else.
+                // Delay timer starts IMMEDIATELY after firing.
+                // ═══════════════════════════════════════════════════════════════
+                for (const channelId of channelList) {
+                    (async () => {
+                        try {
+                            const channel = await client.channels.fetch(channelId);
+                            if (!channel || typeof channel.send !== 'function') return;
+                            await sendToChannel(channel, msg.text, targetImages);
+                        } catch (e) {
+                            // Isolated error — affects nothing
                         }
-                        if (typeof channel.send !== 'function') {
-                            console.log(`[SELFBOT ${configId}] Channel ${channelId} is not a text channel (type: ${channel.type})`);
-                            return;
-                        }
-                        await sendToChannel(channel, msg.text, targetImages);
-                    } catch (e) {
-                        console.error(`[SELFBOT ${configId}] Error fetching/sending to ${channelId}:`, e.message);
-                    }
-                });
+                    })();
+                }
                 
-                await Promise.all(sendPromises);
-                console.log(`[SELFBOT ${configId}] Broadcast complete. Sleeping ${delay}ms...`);
+                console.log(`[SELFBOT ${configId}] All ${channelList.length} fires launched. Sleeping ${delay}ms...`);
             } else {
                 const channelId = channelList[currentChannelIndex % channelList.length];
                 currentChannelIndex++;
