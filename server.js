@@ -2734,47 +2734,45 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const MAX_AUTH_FAILURES = 5;
     let lastHeartbeat = Date.now();
 
-    // Send one channel's messages with per-channel queue
-    const sendToChannel = async (chId, preparedMsgs) => {
-      const results = [];
-      for (const prepared of preparedMsgs) {
-        if (!activeBots.has(botKey)) return results;
-        if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
-          results.push({ chId, ok: false, skipped: true });
-          continue;
-        }
-        const variedText = varyMessage(prepared.text);
-        try {
-          // Use queued send to prevent concurrent floods
-          const ok = await client.sendMessageQueued(chId, variedText, prepared.files);
-          results.push({ chId, ok: !!ok });
-        } catch (err) {
-          results.push({ chId, ok: false, error: err.message });
-        }
-      }
-      return results;
-    };
-
     const doOneRound = async () => {
       const roundStart = Date.now();
 
       try {
-        // Stagger channel sends instead of firing all concurrently
+        // FIX: Spread sends evenly across the delay period instead of burst-sending.
+        // Calculate per-send spacing to distribute all sends across ~70% of the delay.
+        const totalSends = channelList.length * preparedMessages.length;
+        const targetRoundDuration = delayMs * 0.7;
+        const rawSpacing = Math.floor(targetRoundDuration / Math.max(totalSends, 1));
+        const sendSpacing = Math.max(800, Math.min(8000, rawSpacing));
+
         const allResults = [];
-        let channelIndex = 0;
+        let sendIndex = 0;
+
         for (const chId of channelList) {
           if (!activeBots.has(botKey)) break;
 
-          // Process this channel's messages
-          const channelResults = await sendToChannel(chId, preparedMessages);
-          allResults.push(...channelResults);
+          for (const prepared of preparedMessages) {
+            if (!activeBots.has(botKey)) break;
 
-          // Stagger: wait before next channel (but not after the last one)
-          channelIndex++;
-          if (channelIndex < channelList.length) {
-            // FIX #3: Reduced stagger from 250-500ms to 50-150ms to minimize round duration
-            const stagger = randomBetween(50, 150);
-            await new Promise(r => setTimeout(r, stagger));
+            if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
+              allResults.push({ chId, ok: false, skipped: true });
+              sendIndex++;
+              continue;
+            }
+
+            const variedText = varyMessage(prepared.text);
+            try {
+              const ok = await client.sendMessageQueued(chId, variedText, prepared.files);
+              allResults.push({ chId, ok: !!ok });
+            } catch (err) {
+              allResults.push({ chId, ok: false, error: err.message });
+            }
+
+            sendIndex++;
+            // Wait before next send (but not after the last one)
+            if (sendIndex < totalSends) {
+              await new Promise(r => setTimeout(r, sendSpacing));
+            }
           }
         }
 
@@ -2797,7 +2795,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         // Update stats
         if (success > 0) {
           incrementMessagesSent(botKey, success);
-          logBotEvent(botKey, `Round: ${success}/${total} OK in ${roundDuration}ms`);
+          logBotEvent(botKey, `Round: ${success}/${total} OK in ${roundDuration}ms (spacing: ${sendSpacing}ms)`);
         }
 
         console.log(`[MsgLoop] ${botKey}: Round complete — ${success}/${total} OK in ${roundDuration}ms | authFails: ${consecutiveAuthFailures}`);
@@ -2809,12 +2807,12 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           lastHeartbeat = Date.now();
         }
 
-        return { success: true, authFailed: consecutiveAuthFailures >= MAX_AUTH_FAILURES };
+        return { success: true, authFailed: consecutiveAuthFailures >= MAX_AUTH_FAILURES, roundDuration };
 
       } catch (loopErr) {
         console.error(`[MsgLoop] ${botKey}: Round error (recovering):`, loopErr.message);
         logBotEvent(botKey, `Round error: ${loopErr.message}`);
-        return { success: false, authFailed: false };
+        return { success: false, authFailed: false, roundDuration: Date.now() - roundStart };
       }
     };
 
@@ -2859,17 +2857,17 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           return;
         }
 
-        // FIX #4: Reset channel rate limits BEFORE calculating delay.
-        // This prevents rate limits from one round from bleeding into the next.
+        // Reset channel rate limits before calculating delay
         client.resetChannelRateLimitsForNextRound();
 
-        // FIX #1: Always wait the FULL configured delay after round ends.
-        // The old code subtracted roundDuration which caused skips when
-        // rounds ran long. Now we always wait the full delay.
-        // The user's configured delay is the BASE. We add small humanization
-        // (±15%, min 70% of base) to keep it natural but ACCURATE to their setting.
-        const humanizedMs = humanizeDelay(delayMs, 0.15, 0.7);
-        console.log(`[MsgLoop] ${botKey}: Waiting ${Math.round(humanizedMs/1000)}s before next round (base: ${delaySec}s)`);
+        // FIX: Subtract round duration from the configured delay so the total
+        // cycle time matches what the user configured. If the round ran longer
+        // than the delay, enforce a minimum 1s pause to avoid zero-delay loops.
+        const roundDuration = result.roundDuration || 0;
+        const remainingDelay = Math.max(1000, delayMs - roundDuration);
+        const humanizedMs = humanizeDelay(remainingDelay, 0.10, 0.8);
+
+        console.log(`[MsgLoop] ${botKey}: Round took ${Math.round(roundDuration/1000)}s, waiting ${Math.round(humanizedMs/1000)}s (base: ${delaySec}s)`);
         await new Promise(r => setTimeout(r, humanizedMs));
       }
       console.log(`[MsgLoop] ${botKey}: Message loop ended`);
