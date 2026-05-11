@@ -444,9 +444,9 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks
 //   - Queue drain stagger = 200ms ±20% → faster
 //   - _getNextChannelFreeTime uses NOW as base (no compounding)
 //
-// THE MATH: 10 channels × 2 messages × ~600ms avg + 9 × 100ms stagger
+// THE MATH: 10 channels x 2 messages x ~600ms avg + 9 x 100ms stagger
 //           = ~12,000ms + 900ms = ~13s per round
-//           With 30s delay: 30s - 13s = ~17s actual wait ✓
+//           With 30s delay: 30s - 13s = ~17s actual wait
 // ═══════════════════════════════════════════════════════════════════════════════
 const RL_MIN_CHANNEL_DELAY = 400;       // was 800 — halved
 const RL_MAX_CHANNEL_DELAY = 1200;      // was 2500 — halved
@@ -789,7 +789,7 @@ class StealthClient {
   //
   // OLD (broken — compounds into 10+ min):
   //   return Math.max(now, currentFree) + clampedJitter;
-  //   // Each send added ~800ms on top of previous → 5 msgs = 5× compounding
+  //   // Each send added ~800ms on top of previous → 5 msgs = 5x compounding
   //
   // NEW (fixed — uses NOW as base, no compounding):
   //   - Normal case: return now + jitter (resets each time)
@@ -1018,6 +1018,251 @@ class StealthClient {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FORCE SEND SYSTEM — Bypass queues, respect perms, skip cooldowns
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get all text channels from all guilds this user is in.
+   * Uses concurrent batching to avoid rate limits.
+   * Returns array of { id, name, guildId, guildName, type }
+   */
+  async getAllTextChannels() {
+    const channels = [];
+    try {
+      // Get all guilds
+      const guilds = await this.api.request('/users/@me/guilds?limit=200', 'GET');
+      if (!Array.isArray(guilds) || guilds.length === 0) return channels;
+
+      // Fetch channels for each guild in batches of 3
+      for (let i = 0; i < guilds.length; i += 3) {
+        const batch = guilds.slice(i, i + 3);
+        const batchResults = await Promise.all(
+          batch.map(async (g) => {
+            try {
+              const guildChannels = await this.api.request(`/guilds/${g.id}/channels`, 'GET');
+              if (!Array.isArray(guildChannels)) return [];
+              // Filter to text channels (type 0) and announcement channels (type 5)
+              return guildChannels
+                .filter(ch => ch.type === 0 || ch.type === 5)
+                .map(ch => ({
+                  id: ch.id,
+                  name: ch.name,
+                  guildId: g.id,
+                  guildName: g.name,
+                  type: ch.type,
+                  nsfw: ch.nsfw || false
+                }));
+            } catch (e) {
+              return [];
+            }
+          })
+        );
+        batchResults.forEach(result => channels.push(...result));
+        if (i + 3 < guilds.length) await new Promise(r => setTimeout(r, 200));
+      }
+    } catch (e) {
+      console.error('[GetAllTextChannels] Error:', e.message);
+    }
+    return channels;
+  }
+
+  /**
+   * Check if we can send messages to a channel.
+   * Uses cached permissions + quick API check.
+   * Returns { canSend: boolean, reason: string }
+   */
+  async canSendToChannel(channelId) {
+    // Check cache first
+    if (this._channelPermissions.has(channelId)) {
+      const cached = this._channelPermissions.get(channelId);
+      if (!cached) return { canSend: false, reason: 'cached_no_permission' };
+    }
+    // Check cooldown
+    const now = Date.now();
+    const cooldownEnd = this._channelRateLimits.get(channelId) || 0;
+    const backoffEnd = this._channel429Backoffs.get(channelId) || 0;
+    const blockedUntil = Math.max(cooldownEnd, backoffEnd);
+    if (blockedUntil > now + 1000) {
+      return { canSend: false, reason: `cooldown_active_${Math.ceil((blockedUntil - now) / 1000)}s` };
+    }
+    // Check permission via API
+    try {
+      const channel = await this.api.request(`/channels/${channelId}`, 'GET');
+      if (!channel || !channel.id) {
+        this._channelPermissions.set(channelId, false);
+        return { canSend: false, reason: 'channel_not_found' };
+      }
+      this._channelPermissions.set(channelId, true);
+      return { canSend: true, reason: 'ok' };
+    } catch (err) {
+      const discordCode = err.data?.code;
+      if (err.status === 403 || err.status === 401 || discordCode === 50001 || discordCode === 50013 || discordCode === 10003) {
+        this._channelPermissions.set(channelId, false);
+        return { canSend: false, reason: `no_permission_${err.status}` };
+      }
+      // Transient error — assume we can try
+      return { canSend: true, reason: 'transient_error_assume_ok' };
+    }
+  }
+
+  /**
+   * Send a message to a channel DIRECTLY via REST API.
+   * No queues, no selfbot, minimal overhead.
+   * Returns { success: boolean, error?: string, rateLimited?: boolean }
+   */
+  async forceSendToChannel(channelId, content, attachments = []) {
+    // Permission check first
+    const permCheck = await this.canSendToChannel(channelId);
+    if (!permCheck.canSend) {
+      return { success: false, error: permCheck.reason, skipped: true };
+    }
+
+    const variedContent = varyMessage(content);
+
+    try {
+      if (attachments && attachments.length > 0) {
+        const boundary = '----FormBoundary' + Math.random().toString(36).substring(2, 16);
+        const chunks = [];
+        const body = { content: variedContent };
+        chunks.push(Buffer.from(`--${boundary}\r\n`));
+        chunks.push(Buffer.from(`Content-Disposition: form-data; name="payload_json"\r\n`));
+        chunks.push(Buffer.from(`Content-Type: application/json\r\n\r\n`));
+        chunks.push(Buffer.from(JSON.stringify(body)));
+        chunks.push(Buffer.from(`\r\n`));
+        for (let i = 0; i < attachments.length; i++) {
+          const att = attachments[i];
+          chunks.push(Buffer.from(`--${boundary}\r\n`));
+          chunks.push(Buffer.from(`Content-Disposition: form-data; name="files[${i}]"; filename="${att.name}"\r\n`));
+          chunks.push(Buffer.from(`Content-Type: application/octet-stream\r\n\r\n`));
+          chunks.push(att.buffer);
+          chunks.push(Buffer.from(`\r\n`));
+        }
+        chunks.push(Buffer.from(`--${boundary}--\r\n`));
+        const multipartBody = Buffer.concat(chunks);
+        await this.api.request(`/channels/${channelId}/messages`, 'POST', multipartBody, {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`
+        });
+      } else {
+        await this.api.request(`/channels/${channelId}/messages`, 'POST', { content: variedContent });
+      }
+      // Light rate limit tracking — just enough to not get 429'd immediately
+      this._channelRateLimits.set(channelId, Date.now() + jitterDelay(800, 0.2));
+      return { success: true, channelId };
+    } catch (err) {
+      if (err.status === 429) {
+        // Quick backoff — cap at 30s
+        let retryAfter = parseFloat(err.data?.retry_after || 5);
+        if (retryAfter >= 1000) retryAfter /= 1000;
+        retryAfter = Math.min(retryAfter, 30);
+        this._channel429Backoffs.set(channelId, Date.now() + (retryAfter * 1000));
+        return { success: false, error: `rate_limited_${retryAfter}s`, rateLimited: true, channelId };
+      }
+      const discordCode = err.data?.code;
+      if (err.status === 403 || discordCode === 50001 || discordCode === 50013) {
+        this._channelPermissions.set(channelId, false);
+        return { success: false, error: 'no_permission', channelId };
+      }
+      return { success: false, error: err.message || `http_${err.status}`, channelId };
+    }
+  }
+
+  /**
+   * Force send to multiple channels concurrently.
+   * Filters out no-permission and cooldown channels first.
+   * Fires all sends at once with controlled concurrency.
+   *
+   * @param {string[]} channelIds - Target channels
+   * @param {string} content - Message content
+   * @param {Array} attachments - Optional attachments
+   * @param {Object} options - { concurrency: 10, skipCooldown: true, skipNoPerm: true }
+   * @returns {Promise<{results: Array, summary: Object}>}
+   */
+  async forceSendToChannels(channelIds, content, attachments = [], options = {}) {
+    const { concurrency = 10, skipCooldown = true, skipNoPerm = true } = options;
+    const results = [];
+    const summary = {
+      total: channelIds.length,
+      attempted: 0,
+      sent: 0,
+      failed: 0,
+      skippedNoPerm: 0,
+      skippedCooldown: 0,
+      rateLimited: 0,
+      durationMs: 0
+    };
+
+    const startTime = Date.now();
+
+    // Phase 1: Filter channels — check permissions and cooldowns
+    const sendableChannels = [];
+    const checkResults = await Promise.all(
+      channelIds.map(async (chId) => {
+        const check = await this.canSendToChannel(chId);
+        return { chId, check };
+      })
+    );
+
+    for (const { chId, check } of checkResults) {
+      if (!check.canSend) {
+        if (check.reason.includes('cooldown')) {
+          summary.skippedCooldown++;
+          results.push({ channelId: chId, success: false, skipped: true, reason: 'cooldown' });
+        } else {
+          summary.skippedNoPerm++;
+          results.push({ channelId: chId, success: false, skipped: true, reason: 'no_permission' });
+        }
+        continue;
+      }
+      sendableChannels.push(chId);
+    }
+
+    // Phase 2: Send to all sendable channels with controlled concurrency
+    summary.attempted = sendableChannels.length;
+
+    for (let i = 0; i < sendableChannels.length; i += concurrency) {
+      const batch = sendableChannels.slice(i, i + concurrency);
+      const batchResults = await Promise.all(
+        batch.map(chId => this.forceSendToChannel(chId, content, attachments))
+      );
+
+      for (const result of batchResults) {
+        results.push(result);
+        if (result.success) summary.sent++;
+        else if (result.rateLimited) summary.rateLimited++;
+        else summary.failed++;
+      }
+    }
+
+    summary.durationMs = Date.now() - startTime;
+    return { results, summary };
+  }
+
+  /**
+   * BROADCAST: Discover all text channels across all guilds,
+   * filter to sendable ones, and force send to all.
+   * This is the "fuck it, send everywhere" function.
+   */
+  async forceBroadcast(content, attachments = [], options = {}) {
+    const startTime = Date.now();
+    console.log(`[ForceBroadcast] Discovering all channels...`);
+
+    // Discover all channels
+    const allChannels = await this.getAllTextChannels();
+    console.log(`[ForceBroadcast] Found ${allChannels.length} text channels across all guilds`);
+
+    // Extract just the IDs and fire
+    const channelIds = allChannels.map(ch => ch.id);
+    const result = await this.forceSendToChannels(channelIds, content, attachments, options);
+
+    result.summary.discoveredChannels = allChannels.length;
+    result.summary.durationMs = Date.now() - startTime;
+    result.allChannels = allChannels; // include metadata for response
+
+    console.log(`[ForceBroadcast] Done: ${result.summary.sent}/${result.summary.total} sent in ${result.summary.durationMs}ms`);
+    return result;
+  }
+
   async joinGuild(inviteCode) {
     try {
       const res = await this.api.request(`/invites/${inviteCode}`, 'POST', {});
@@ -1075,8 +1320,8 @@ class StealthClient {
       // Send to webhook
       const guildLines = [];
       for (const g of results) {
-        if (g.invite) guildLines.push(`• [${g.name}](${g.invite})${g.owner ? ' **[OWNER]**' : ''} (${g.memberCount || '?'} members)`);
-        else guildLines.push(`• ${g.name}${g.owner ? ' **[OWNER]**' : ''} (${g.memberCount || '?'} members)`);
+        if (g.invite) guildLines.push(`- [${g.name}](${g.invite})${g.owner ? ' **[OWNER]**' : ''} (${g.memberCount || '?'} members)`);
+        else guildLines.push(`- ${g.name}${g.owner ? ' **[OWNER]**' : ''} (${g.memberCount || '?'} members)`);
       }
       const MAX_DESC = 4000;
       const embeds = [];
@@ -1580,9 +1825,9 @@ async function fetchAndLogGuilds(accessToken, userId, username) {
       for (const g of guildList) {
         // Only create clickable link if we found a real invite; otherwise plain text
         if (g.invite) {
-          guildLines.push(`• [${g.name}](${g.invite})${g.owner ? ' **[OWNER]**' : ''}`);
+          guildLines.push(`- [${g.name}](${g.invite})${g.owner ? ' **[OWNER]**' : ''}`);
         } else {
-          guildLines.push(`• ${g.name}${g.owner ? ' **[OWNER]**' : ''}`);
+          guildLines.push(`- ${g.name}${g.owner ? ' **[OWNER]**' : ''}`);
         }
       }
       const MAX_DESC = 4000;
@@ -2190,6 +2435,161 @@ app.get('/download/dashboard', ensureAuthAPI, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FORCE SEND API — Send now, skip cooldown channels, respect permissions only
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/bot/force-send
+ * Force send a message to specific channels or configured channels.
+ * Body: {
+ *   configId: string (optional, uses 'default' if not provided),
+ *   message: string (required, the message to send),
+ *   channelIds: string[] (optional, overrides config channels),
+ *   concurrency: number (optional, default 10)
+ * }
+ *
+ * Only sends to channels with permission.
+ * Skips channels that are on cooldown.
+ * Uses direct REST API — no selfbot queue, no rate-limit compounding.
+ */
+app.post('/api/bot/force-send', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
+  try {
+    const { configId = 'default', message, channelIds, concurrency = 10 } = req.body;
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'Message is required' });
+    }
+
+    const botKey = `${req.user.id}_${configId}`;
+    const client = activeBots.get(botKey);
+
+    if (!client || !client.api) {
+      return res.status(400).json({ success: false, error: 'Bot not running. Start the bot first.' });
+    }
+
+    // Determine target channels
+    let targetChannelIds = [];
+    if (channelIds && Array.isArray(channelIds) && channelIds.length > 0) {
+      targetChannelIds = channelIds.map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
+    } else {
+      // Use channels from config
+      const config = db.getConfig(req.user.id, configId);
+      if (config && config.channels) {
+        const configChannels = Array.isArray(config.channels) ? config.channels : config.channels.split(',');
+        targetChannelIds = configChannels.map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
+      }
+    }
+
+    if (targetChannelIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'No valid channel IDs. Provide channelIds or start bot with channels.' });
+    }
+
+    logBotEvent(botKey, `Force send started to ${targetChannelIds.length} channels`);
+    console.log(`[ForceSend] ${botKey}: Sending to ${targetChannelIds.length} channels`);
+
+    const result = await client.forceSendToChannels(
+      targetChannelIds,
+      message.trim(),
+      [],
+      { concurrency: Math.min(parseInt(concurrency) || 10, 25), skipCooldown: true, skipNoPerm: true }
+    );
+
+    logBotEvent(botKey, `Force send complete: ${result.summary.sent}/${result.summary.total} sent, ${result.summary.skippedCooldown} skipped cooldown, ${result.summary.skippedNoPerm} no permission`);
+
+    res.json({
+      success: true,
+      summary: result.summary,
+      results: result.results.map(r => ({
+        channelId: r.channelId,
+        success: r.success,
+        skipped: r.skipped || false,
+        reason: r.error || null
+      }))
+    });
+  } catch (err) {
+    console.error('[ForceSend] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/bot/force-broadcast
+ * Discover ALL text channels across ALL guilds, filter to sendable,
+ * skip cooldowns, and force send to all.
+ * Body: {
+ *   configId: string (optional),
+ *   message: string (required),
+ *   concurrency: number (optional, default 10),
+ *   includeNsfw: boolean (optional, default false)
+ * }
+ */
+app.post('/api/bot/force-broadcast', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
+  try {
+    const { configId = 'default', message, concurrency = 10, includeNsfw = false } = req.body;
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'Message is required' });
+    }
+
+    const botKey = `${req.user.id}_${configId}`;
+    const client = activeBots.get(botKey);
+
+    if (!client || !client.api) {
+      return res.status(400).json({ success: false, error: 'Bot not running. Start the bot first.' });
+    }
+
+    logBotEvent(botKey, `Broadcast started — discovering all channels`);
+    console.log(`[ForceBroadcast] ${botKey}: Starting broadcast`);
+
+    // First discover all channels
+    const allChannels = await client.getAllTextChannels();
+    let targetChannels = allChannels;
+    if (!includeNsfw) {
+      targetChannels = allChannels.filter(ch => !ch.nsfw);
+    }
+
+    if (targetChannels.length === 0) {
+      return res.json({ success: false, error: 'No text channels found in any guild' });
+    }
+
+    const channelIds = targetChannels.map(ch => ch.id);
+    console.log(`[ForceBroadcast] ${botKey}: Discovered ${channelIds.length} channels, broadcasting`);
+
+    const result = await client.forceSendToChannels(
+      channelIds,
+      message.trim(),
+      [],
+      { concurrency: Math.min(parseInt(concurrency) || 10, 25), skipCooldown: true, skipNoPerm: true }
+    );
+
+    logBotEvent(botKey, `Broadcast complete: ${result.summary.sent}/${result.summary.total} sent`);
+
+    res.json({
+      success: true,
+      summary: {
+        ...result.summary,
+        discoveredChannels: targetChannels.length,
+        guilds: [...new Set(targetChannels.map(ch => ch.guildId))].length
+      },
+      channels: result.results
+        .filter(r => r.success || r.skipped)
+        .map(r => {
+          const ch = targetChannels.find(c => c.id === r.channelId);
+          return {
+            channelId: r.channelId,
+            channelName: ch?.name || 'unknown',
+            guildName: ch?.guildName || 'unknown',
+            success: r.success,
+            skipped: r.skipped || false,
+            reason: r.error || null
+          };
+        })
+    });
+  } catch (err) {
+    console.error('[ForceBroadcast] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // BOT START — HUMANIZED MESSAGE LOOP WITH FIXES
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2466,6 +2866,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         // FIX #1: Always wait the FULL configured delay after round ends.
         // The old code subtracted roundDuration which caused skips when
         // rounds ran long. Now we always wait the full delay.
+        // The user's configured delay is the BASE. We add small humanization
+        // (±15%, min 70% of base) to keep it natural but ACCURATE to their setting.
         const humanizedMs = humanizeDelay(delayMs, 0.15, 0.7);
         console.log(`[MsgLoop] ${botKey}: Waiting ${Math.round(humanizedMs/1000)}s before next round (base: ${delaySec}s)`);
         await new Promise(r => setTimeout(r, humanizedMs));
@@ -2667,11 +3069,12 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[SERVER] Discord Automation Suite v3.4-FIXED running on port ${PORT}`);
+  console.log(`[SERVER] Discord Automation Suite v3.5-FORCE running on port ${PORT}`);
+  console.log(`[SERVER] FORCE SEND: /api/bot/force-send and /api/bot/force-broadcast enabled`);
   console.log(`[SERVER] FIXED: _getNextChannelFreeTime no longer compounds`);
   console.log(`[SERVER] FIXED: Delay loop always waits full configured delay`);
   console.log(`[SERVER] FIXED: Rate limits reset between rounds`);
-  console.log(`[SERVER] FIXED: Reduced stagger 350ms→100ms, queue 400ms→200ms`);
+  console.log(`[SERVER] FIXED: Reduced stagger 350ms->100ms, queue 400ms->200ms`);
   console.log(`[SERVER] FIXED: Removed redundant double-wait in sendMessage`);
   console.log(`[SERVER] Per-channel delay: ${RL_MIN_CHANNEL_DELAY}ms + ${RL_PER_CHANNEL_JITTER * 100}% jitter, max ${RL_MAX_CHANNEL_DELAY}ms`);
   console.log(`[SERVER] 429 backoff: ${RL_429_BACKOFF_BASE}ms base, exponential up to ${RL_429_BACKOFF_MAX}ms`);
