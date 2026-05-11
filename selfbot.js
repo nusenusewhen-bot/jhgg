@@ -128,6 +128,17 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function randomBetween(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// Humanize delay: base ±10%, never below 85% of configured value.
+// Prevents Discord from detecting perfectly exact intervals.
+function humanizeDelay(baseMs, humanization = 0.10, minPercent = 0.85) {
+    const jitter = baseMs * humanization * (Math.random() * 2 - 1);
+    return Math.max(Math.floor(baseMs * minPercent), Math.floor(baseMs + jitter));
+}
+
 async function startSelfBot(userId, token, channels, messages, delay, autoReply, autoReplyText, configId, images, ipAddress, sendAllAtOnce = true, dbInstance) {
     // Stop any existing instance first
     stopSelfBot(userId, configId);
@@ -323,7 +334,7 @@ async function startSelfBot(userId, token, channels, messages, delay, autoReply,
             }
             
             currentMessageIndex++;
-            await sleep(delay);
+            await sleep(humanizeDelay(delay, 0.10, 0.85));
         }
         
         console.log(`[SELFBOT ${configId}] Loop ENDED. Cleaning up...`);
