@@ -2734,37 +2734,27 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const MAX_AUTH_FAILS = 5;
 
     // Send to ONE channel. Isolated — one failure doesn't affect others.
-    // Fire-and-forget: we don't await the result. Success/failure is logged internally.
+    // Fire-and-forget: we don't await the send result.
     const sendToOneChannel = (chId, prepared) => {
       if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
         return;
       }
       const variedText = varyMessage(prepared.text);
       client.sendMessageQueued(chId, variedText, prepared.files)
-        .then(ok => {
-          if (ok) {
-            incrementMessagesSent(botKey, 1);
-          }
-        })
-        .catch(() => {
-          // Isolated error — affects nothing
-        });
+        .then(ok => { if (ok) incrementMessagesSent(botKey, 1); })
+        .catch(() => {});
     };
 
-    // Fire ALL channels at once, then immediately return.
-    // NO awaiting. Delay timer starts right after firing.
-    // One blocked channel has ZERO effect on timing or other channels.
+    // 250ms stagger between each channel. No channel waits for another.
+    // A blocked channel's fetch just wastes its own 250ms slot, nothing else.
+    const STAGGER_MS = 250;
     const doOneRound = () => {
       if (channelList.length === 0 || preparedMessages.length === 0) return;
-
-      // Rotate which message to use this round
       currentMsgIdx = (currentMsgIdx + 1) % preparedMessages.length;
       const prepared = preparedMessages[currentMsgIdx];
-
-      // Fire ALL sends simultaneously — each is fully isolated
-      for (const chId of channelList) {
-        sendToOneChannel(chId, prepared);
-      }
+      channelList.forEach((chId, i) => {
+        setTimeout(() => sendToOneChannel(chId, prepared), i * STAGGER_MS);
+      });
     };
 
     // Track consecutive auth failures for dead-token detection
