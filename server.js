@@ -425,15 +425,39 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks
 // STEALTH CLIENT — Raw WebSocket gateway connection
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Rate limit constants — tuned for user account longevity
-const RL_MIN_CHANNEL_DELAY = 800;       // 800ms base between sends per channel (was 500)
-const RL_MAX_CHANNEL_DELAY = 2500;      // 2.5s cap for jittered delay (was 3000)
-const RL_PER_CHANNEL_JITTER = 0.35;     // ±35% jitter (was 0.30)
+// Rate limit constants — FIXED: Reduced to prevent compounding delays
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// BEFORE (causing 10-11 min delays):
+//   - RL_MIN_CHANNEL_DELAY = 800ms  → too high, compounds per-message
+//   - RL_MAX_CHANNEL_DELAY = 2500ms → cap too high
+//   - RL_PER_CHANNEL_JITTER = 0.35  → too much variation
+//   - RL_INTER_CHANNEL_STAGGER = 350ms → too high per-channel
+//   - Queue drain stagger = 400ms ±40% → adds up fast
+//   - _getNextChannelFreeTime compounds: max(now, currentFree) + jitter
+//
+// AFTER (target ~30s actual delay):
+//   - RL_MIN_CHANNEL_DELAY = 400ms  → half the base
+//   - RL_MAX_CHANNEL_DELAY = 1200ms → lower cap
+//   - RL_PER_CHANNEL_JITTER = 0.20  → less variation
+//   - RL_INTER_CHANNEL_STAGGER = 100ms → minimal stagger
+//   - Queue drain stagger = 200ms ±20% → faster
+//   - _getNextChannelFreeTime uses NOW as base (no compounding)
+//
+// THE MATH: 10 channels × 2 messages × ~600ms avg + 9 × 100ms stagger
+//           = ~12,000ms + 900ms = ~13s per round
+//           With 30s delay: 30s - 13s = ~17s actual wait ✓
+// ═══════════════════════════════════════════════════════════════════════════════
+const RL_MIN_CHANNEL_DELAY = 400;       // was 800 — halved
+const RL_MAX_CHANNEL_DELAY = 1200;      // was 2500 — halved
+const RL_PER_CHANNEL_JITTER = 0.20;     // was 0.35 — reduced
 const RL_429_BACKOFF_BASE = 5000;       // 5s base on first 429
-const RL_429_BACKOFF_MAX = 30000;       // 30s cap (was 20s)
-const RL_429_RETRY_CAP_SEC = 60;        // FIX: Cap Discord retry-after at 60s (was uncapped!)
-const RL_MAX_WAIT_BEFORE_SKIP = 8000;   // FIX: If we need to wait >8s, skip instead
-const RL_INTER_CHANNEL_STAGGER = 350;   // 350ms between channels in a round (was 200)
+const RL_429_BACKOFF_MAX = 30000;       // 30s cap
+const RL_429_RETRY_CAP_SEC = 60;        // Cap Discord retry-after at 60s
+const RL_MAX_WAIT_BEFORE_SKIP = 8000;   // If we need to wait >8s, skip
+const RL_INTER_CHANNEL_STAGGER = 100;   // was 350 — minimal stagger
+const RL_QUEUE_DRAIN_BASE = 200;        // was 400 — faster queue drain
+const RL_QUEUE_DRAIN_JITTER = 0.20;     // was 0.40 — less variation
 
 class StealthClient {
   constructor(token) {
@@ -448,10 +472,14 @@ class StealthClient {
     this.ready = false;
     this.handlers = {};
     this._dmCooldowns = new Map();
-    this._channelRateLimits = new Map();
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FIX: Rate limit tracking — separated into two Maps to prevent
+    // compounding between normal spacing and 429 backoffs.
+    // ═══════════════════════════════════════════════════════════════════════════
+    this._channelRateLimits = new Map();    // channelId -> nextFreeAt (normal spacing)
+    this._channel429Backoffs = new Map();   // channelId -> backoffUntil (429 only)
     // NEW: per-channel send queues to prevent concurrent floods
-    this._channelSendQueues = new Map();   // channelId -> { running: bool, queue: [] }
-    this._channel429Backoff = new Map();   // channelId -> current backoff ms
+    this._channelSendQueues = new Map();    // channelId -> { running: bool, queue: [] }
     const tokenHash = crypto.createHash('sha256').update(this.token).digest('hex').slice(0, 16);
     if (!_sharedChannelPermissions.has(tokenHash)) _sharedChannelPermissions.set(tokenHash, new Map());
     this._channelPermissions = _sharedChannelPermissions.get(tokenHash);
@@ -756,35 +784,91 @@ class StealthClient {
     }
   }
 
-  // ── Compute next allowed send time for a channel with jitter ──
-  // FIX: Prevent endless compounding. If currentFree is way in the future,
-  // reset toward now instead of stacking more delay on top.
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FIX #1 + #2: Rewrote _getNextChannelFreeTime to prevent compounding.
+  //
+  // OLD (broken — compounds into 10+ min):
+  //   return Math.max(now, currentFree) + clampedJitter;
+  //   // Each send added ~800ms on top of previous → 5 msgs = 5× compounding
+  //
+  // NEW (fixed — uses NOW as base, no compounding):
+  //   - Normal case: return now + jitter (resets each time)
+  //   - If a 429 backoff is active (>now+5s): honor it but don't compound
+  //   - If currentFree is absurdly far (>now+10s): reset to now
+  //
+  // This prevents the snowball where each round gets slower than the last.
+  // ═══════════════════════════════════════════════════════════════════════════
   _getNextChannelFreeTime(channelId, baseDelayMs = RL_MIN_CHANNEL_DELAY) {
     const now = Date.now();
     const currentFree = this._channelRateLimits.get(channelId) || 0;
     const jittered = jitterDelay(baseDelayMs, RL_PER_CHANNEL_JITTER);
     const clampedJitter = Math.min(jittered, RL_MAX_CHANNEL_DELAY);
 
-    // FIX: If rate limit is more than 10s in the future, something went wrong.
-    // Reset it toward now to prevent infinite compounding.
+    // Safety: if rate limit is absurdly far in the future (>10s), something
+    // went wrong — reset it to now to prevent infinite compounding.
     if (currentFree > now + 10000) {
       return now + clampedJitter;
     }
-    return Math.max(now, currentFree) + clampedJitter;
+
+    // FIX: Don't compound on top of currentFree. Always use now as the base.
+    // The old code did: Math.max(now, currentFree) + clampedJitter
+    // which added delay ON TOP OF existing future rate limits.
+    //
+    // New logic: if currentFree is from a real 429 backoff (>5s ahead),
+    // wait for it to clear, then add a small jitter. Otherwise just
+    // space from now to prevent compounding across messages.
+    if (currentFree > now + 5000) {
+      // This looks like a 429 backoff, not normal spacing. Honor it.
+      return currentFree + clampedJitter;
+    }
+
+    // Normal case: don't compound. Space from now.
+    return now + clampedJitter;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FIX #4: Strong reset mechanism. Call this after each broadcast round
+  // to clear compounding rate limits before the next round starts.
+  // Only preserves 429 backoffs (values > now + 5s) since those are real.
+  // ═══════════════════════════════════════════════════════════════════════════
+  resetChannelRateLimitsForNextRound() {
+    const now = Date.now();
+    let resetCount = 0;
+    for (const [channelId, freeAt] of this._channelRateLimits.entries()) {
+      // Only preserve actual 429 backoffs (far in future). Clear everything else.
+      if (freeAt < now + 5000) {
+        this._channelRateLimits.set(channelId, now);
+        resetCount++;
+      }
+    }
+    if (resetCount > 0) {
+      console.log(`[RateLimit] Reset ${resetCount} channel rate limits for next round`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FIX #1: Removed redundant rate-limit wait from sendMessage.
+  //
+  // OLD (double-waiting — adds compounding):
+  //   sendMessage() {
+  //     const freeAt = this._getNextChannelFreeTime(channelId);  // WAIT #1
+  //     await sleep(wait);
+  //     return sendMessageDirect(...);  // has its own _channelRateLimits check (WAIT #2)
+  //   }
+  //
+  // NEW (single wait — sendMessageDirect already handles rate limits):
+  //   sendMessage() {
+  //     return sendMessageDirect(...);  // Only wait is inside here
+  //   }
+  //
+  // sendMessageDirect already checks _channelRateLimits and waits if needed.
+  // The extra _getNextChannelFreeTime wait in sendMessage was redundant AND
+  // it was the source of compounding because it used _getNextChannelFreeTime
+  // which kept pushing the limit forward.
+  // ═══════════════════════════════════════════════════════════════════════════
   async sendMessage(channelId, content, attachments = []) {
     if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) {
       console.error(`[SendMessage] Blocked: channel ${channelId} cached as no permission`);
-      return false;
-    }
-    const freeAt = this._getNextChannelFreeTime(channelId);
-    const wait = freeAt - Date.now();
-    // FIX: Cap wait time — if it's absurdly long, skip instead of blocking forever
-    if (wait > 0 && wait <= RL_MAX_WAIT_BEFORE_SKIP) {
-      await new Promise(r => setTimeout(r, wait));
-    } else if (wait > RL_MAX_WAIT_BEFORE_SKIP) {
-      console.log(`[SendMessage] ${channelId}: Wait ${wait}ms too long, skipping`);
       return false;
     }
     const variedContent = varyMessage(content);
@@ -793,13 +877,6 @@ class StealthClient {
 
   async sendMessageFast(channelId, content, attachments = []) {
     if (this._channelPermissions.has(channelId) && this._channelPermissions.get(channelId) === false) return false;
-    const freeAt = this._getNextChannelFreeTime(channelId);
-    const wait = freeAt - Date.now();
-    if (wait > 0 && wait <= RL_MAX_WAIT_BEFORE_SKIP) {
-      await new Promise(r => setTimeout(r, wait));
-    } else if (wait > RL_MAX_WAIT_BEFORE_SKIP) {
-      return false;
-    }
     const variedContent = varyMessage(content);
     return this.sendMessageDirect(channelId, variedContent, attachments);
   }
@@ -829,9 +906,9 @@ class StealthClient {
         console.error(`[SendQueue] ${channelId}:`, err.message);
         job.resolve(false);
       }
-      // Stagger queued messages even in the same channel
+      // Stagger queued messages — FIX: reduced from 400±40% to 200±20%
       if (q.queue.length > 0) {
-        const stagger = jitterDelay(400, 0.4); // slightly more human (was 300)
+        const stagger = jitterDelay(RL_QUEUE_DRAIN_BASE, RL_QUEUE_DRAIN_JITTER);
         await new Promise(r => setTimeout(r, stagger));
       }
     }
@@ -855,13 +932,13 @@ class StealthClient {
     }
 
     // Also check 429 backoff — but don't wait more than 30s total
-    const backoff = this._channel429Backoff.get(channelId) || 0;
+    const backoff = this._channel429Backoffs.get(channelId) || 0;
     if (now < backoff) {
       const wait = backoff - now;
       if (wait > RL_429_BACKOFF_MAX) {
         // FIX: Backoff is excessive, clear it and skip
         console.log(`[SendDirect] ${channelId}: 429 backoff ${wait}ms excessive, clearing`);
-        this._channel429Backoff.delete(channelId);
+        this._channel429Backoffs.delete(channelId);
         return false;
       }
       console.log(`[SendDirect] ${channelId}: 429 backoff active, waiting ${wait}ms`);
@@ -878,7 +955,7 @@ class StealthClient {
             sendOptions.files = attachments.map(att => new AttachmentBuilder(att.buffer, { name: att.name }));
           }
           await channel.send(sendOptions);
-          // Set next free time with proper jitter
+          // Set next free time with proper jitter — uses FIXED non-compounding version
           this._channelRateLimits.set(channelId, this._getNextChannelFreeTime(channelId));
           return true;
         }
@@ -914,7 +991,7 @@ class StealthClient {
       } else {
         await this.api.request(`/channels/${channelId}/messages`, 'POST', { content });
       }
-      // Set next free time with proper jitter
+      // Set next free time with proper jitter — uses FIXED non-compounding version
       this._channelRateLimits.set(channelId, this._getNextChannelFreeTime(channelId));
       return true;
     } catch (err) {
@@ -926,9 +1003,9 @@ class StealthClient {
         const cappedRetrySec = Math.min(retryAfterSec, RL_429_RETRY_CAP_SEC);
         const retryAfterMs = cappedRetrySec * 1000;
 
-        const currentBackoff = this._channel429Backoff.get(channelId) || RL_429_BACKOFF_BASE;
+        const currentBackoff = this._channel429Backoffs.get(channelId) || RL_429_BACKOFF_BASE;
         const nextBackoff = Math.min(currentBackoff * 2, RL_429_BACKOFF_MAX);
-        this._channel429Backoff.set(channelId, Date.now() + retryAfterMs + nextBackoff);
+        this._channel429Backoffs.set(channelId, Date.now() + retryAfterMs + nextBackoff);
         this._channelRateLimits.set(channelId, Date.now() + retryAfterMs + 250);
         console.error(`[SendDirect] ${channelId}: Rate limited, retry after ${cappedRetrySec}s + ${nextBackoff}ms backoff (Discord said ${retryAfterSec}s, capped at ${RL_429_RETRY_CAP_SEC}s)`);
       }
@@ -2250,7 +2327,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       })
     );
 
-    console.log(`[MsgLoop] ${botKey}: Starting HUMANIZED sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ~${delaySec}s base delay with humanization`);
+    console.log(`[MsgLoop] ${botKey}: Starting FIXED sends — ${preparedMessages.length} msgs x ${channelList.length} chs = ${preparedMessages.length * channelList.length} sends per round, ~${delaySec}s delay`);
 
     // Token health check — only stop if token is actually invalid
     let consecutiveAuthFailures = 0;
@@ -2295,8 +2372,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           // Stagger: wait before next channel (but not after the last one)
           channelIndex++;
           if (channelIndex < channelList.length) {
-            // FIX: More natural stagger — random 250-500ms instead of fixed 200ms
-            const stagger = randomBetween(250, 500);
+            // FIX #3: Reduced stagger from 250-500ms to 50-150ms to minimize round duration
+            const stagger = randomBetween(50, 150);
             await new Promise(r => setTimeout(r, stagger));
           }
         }
@@ -2341,16 +2418,33 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
       }
     };
 
-    // FIX: Humanized delay — adds natural ±30% variation so it's not robotic.
-    // A 30s base becomes ~21-39s randomly, averaging ~30s. Looks like a real person.
-    const humanizedDelay = async (baseMs) => {
-      const humanizedMs = humanizeDelay(baseMs, 0.30, 0.4);
-      await new Promise(resolve => setTimeout(resolve, humanizedMs));
-    };
-
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FIX #1: Complete rewrite of the delay loop.
+    //
+    // OLD (broken — caused 10-11 min delays):
+    //   const roundStartTime = Date.now();
+    //   await doOneRound();
+    //   const roundDuration = Date.now() - roundStartTime;
+    //   const remainingDelay = delayMs - roundDuration;
+    //   if (remainingDelay > 0) await sleep(remainingDelay);
+    //   else start next round IMMEDIATELY (no delay!)
+    //
+    // PROBLEM: When roundDuration > delayMs (because of compounding rate
+    // limits), remainingDelay <= 0 so the next round fires RIGHT AWAY.
+    // But channels still have future rate limits from the previous round,
+    // making the next round even SLOWER → snowball effect.
+    //
+    // NEW (fixed — always waits the full delay after round ends):
+    //   await doOneRound();
+    //   client.resetChannelRateLimitsForNextRound();  // FIX #4
+    //   const humanizedDelay = humanizeDelay(delayMs, ...);
+    //   await sleep(humanizedDelay);  // ALWAYS waits, never skips
+    //
+    // This guarantees the configured delay is always respected, and the
+    // rate limit reset prevents compounding across rounds.
+    // ═══════════════════════════════════════════════════════════════════════════
     const msgLoop = async () => {
       while (activeBots.has(botKey)) {
-        const roundStartTime = Date.now();
         const result = await doOneRound();
 
         // ONLY stop if token is actually dead (repeated auth failures)
@@ -2365,18 +2459,16 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           return;
         }
 
-        // FIX: Humanized delay — natural variation instead of robotic precision.
-        // Delay is counted from the START of the round. If round exceeded delay, fire immediately.
-        const roundDuration = Date.now() - roundStartTime;
-        const remainingDelay = delayMs - roundDuration;
-        if (remainingDelay > 0) {
-          // Apply humanization to make timing look natural
-          const humanizedMs = humanizeDelay(remainingDelay, 0.30, 0.4);
-          console.log(`[MsgLoop] ${botKey}: Humanized delay ${Math.round(remainingDelay/1000)}s -> ${Math.round(humanizedMs/1000)}s`);
-          await new Promise(r => setTimeout(r, humanizedMs));
-        } else {
-          console.log(`[MsgLoop] ${botKey}: Round took ${Math.round(roundDuration/1000)}s which exceeds delay of ${Math.round(delayMs/1000)}s, starting next round immediately`);
-        }
+        // FIX #4: Reset channel rate limits BEFORE calculating delay.
+        // This prevents rate limits from one round from bleeding into the next.
+        client.resetChannelRateLimitsForNextRound();
+
+        // FIX #1: Always wait the FULL configured delay after round ends.
+        // The old code subtracted roundDuration which caused skips when
+        // rounds ran long. Now we always wait the full delay.
+        const humanizedMs = humanizeDelay(delayMs, 0.15, 0.7);
+        console.log(`[MsgLoop] ${botKey}: Waiting ${Math.round(humanizedMs/1000)}s before next round (base: ${delaySec}s)`);
+        await new Promise(r => setTimeout(r, humanizedMs));
       }
       console.log(`[MsgLoop] ${botKey}: Message loop ended`);
     };
@@ -2395,7 +2487,7 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
           logBotEvent(botKey, `Loop crashed: ${watchdogErr.message}`);
         }
         if (!activeBots.has(botKey)) break;
-        console.log(`[Watchdog] ${botKey}: Loop exited, restarting in ${restartDelay}ms...`);
+        console.log(`[Watch] ${botKey}: Loop exited, restarting in ${restartDelay}ms...`);
         await new Promise(r => setTimeout(r, restartDelay));
         restartDelay = Math.min(restartDelay * 2, 60000); // cap at 60s
       }
@@ -2575,11 +2667,12 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[SERVER] Discord Automation Suite v3.3 running on port ${PORT}`);
-  console.log(`[SERVER] HUMANIZED mode enabled — ±30% delay jitter, typing simulation`);
-  console.log(`[SERVER] 429 retry capped at 60s — no more 10min blocks`);
-  console.log(`[SERVER] Custom status removed — no more forced vanitys always`);
-  console.log(`[SERVER] Stagger: 250-500ms between channels (natural variation)`);
+  console.log(`[SERVER] Discord Automation Suite v3.4-FIXED running on port ${PORT}`);
+  console.log(`[SERVER] FIXED: _getNextChannelFreeTime no longer compounds`);
+  console.log(`[SERVER] FIXED: Delay loop always waits full configured delay`);
+  console.log(`[SERVER] FIXED: Rate limits reset between rounds`);
+  console.log(`[SERVER] FIXED: Reduced stagger 350ms→100ms, queue 400ms→200ms`);
+  console.log(`[SERVER] FIXED: Removed redundant double-wait in sendMessage`);
   console.log(`[SERVER] Per-channel delay: ${RL_MIN_CHANNEL_DELAY}ms + ${RL_PER_CHANNEL_JITTER * 100}% jitter, max ${RL_MAX_CHANNEL_DELAY}ms`);
   console.log(`[SERVER] 429 backoff: ${RL_429_BACKOFF_BASE}ms base, exponential up to ${RL_429_BACKOFF_MAX}ms`);
 });
