@@ -2894,14 +2894,17 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const botKey = `${req.user.id}_${configId}`;
     activeBots.set(botKey, { destroy: () => stopBrowserFarm(req.user.id, configId) });
 
+    // Get actual username from first session
+    const botUsername = result.sessions[0]?.myId ? (req.user.username || req.user.global_name || 'Bot') : 'Bot';
+
     db.setConfig(req.user.id, {
       token, channels: chList, messages: msgList, delay_seconds: delaySec,
       auto_reply_enabled: autoReplyEnabled ? 1 : 0, auto_reply_text: autoReplyText || '',
-      active: 1, username: result.sessions[0]?.rest?.token ? 'user' : 'Bot', images: savedImages
+      active: 1, username: botUsername, images: savedImages
     }, configId);
     db.registerActiveBot(req.user.id, configId, token);
 
-    res.json({ success: true, channelCount: chList.length, messageCount: msgList.length, delayMs, mode: 'browser_farm' });
+    res.json({ success: true, username: botUsername, channelCount: chList.length, messageCount: msgList.length, delayMs, mode: 'browser_farm' });
   } catch (err) { console.error('[BotStart]', err); res.status(500).json({ success: false, error: err.message }); }
 });
 
