@@ -12,10 +12,18 @@ const pako = require('pako');
 const { spawn } = require('child_process');
 const https = require('https');
 const WebSocket = require('ws');
-const { Client: SelfbotClient13, AttachmentBuilder } = require('@discord-selfbot-sdk/bot');
+// Optional selfbot SDK — browser farm uses its own RestClient/Gateway
+let SelfbotClient13 = null, AttachmentBuilder = null;
+try {
+  const sdk = require('@discord-selfbot-sdk/bot');
+  SelfbotClient13 = sdk.Client;
+  AttachmentBuilder = sdk.AttachmentBuilder;
+} catch(e) {
+  console.log('[INIT] @discord-selfbot-sdk/bot not available, using REST-only mode');
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FIX: @discord-selfbot-sdk/bot crashes in THREAD_LIST_SYNC handler when
+// FIX: selfbot SDK crashes in THREAD_LIST_SYNC handler when
 // Discord sends null/undefined for threads/members. Defensive monkey-patch.
 // ═══════════════════════════════════════════════════════════════════════════════
 const _origObjectValues = Object.values;
@@ -492,7 +500,7 @@ class StealthClient {
     this.pendingReplies = new Set();
     this._autoReplyState = new Map();
     this.user = null;
-    this.selfbot = new SelfbotClient13({ checkUpdate: false });
+    this.selfbot = SelfbotClient13 ? new SelfbotClient13({ checkUpdate: false }) : null;
     this._selfbotReady = false;
   }
 
@@ -945,13 +953,13 @@ class StealthClient {
       await new Promise(r => setTimeout(r, wait));
     }
 
-    // Try @discord-selfbot-sdk/bot first for accurate delivery
+    // Try selfbot SDK first for accurate delivery (optional — may not be installed)
     try {
-      if (this._selfbotReady && this.selfbot) {
+      if (SelfbotClient13 && this._selfbotReady && this.selfbot) {
         const channel = await this.selfbot.channels.fetch(channelId).catch(() => null);
         if (channel && channel.send) {
           const sendOptions = { content };
-          if (attachments && attachments.length > 0) {
+          if (AttachmentBuilder && attachments && attachments.length > 0) {
             sendOptions.files = attachments.map(att => new AttachmentBuilder(att.buffer, { name: att.name }));
           }
           await channel.send(sendOptions);
@@ -2524,24 +2532,22 @@ class Gateway {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class ChannelSession {
-    constructor(token, channelId, messages, delayMs, images, userId, configId, dbInstance, onSend, onAutoReply, ownerId) {
+    constructor(token, channelId, messages, delayMs, images, userId, configId, dbInstance, onSend, onAutoReply, selfUsername, selfId) {
         this.token = token; this.channelId = channelId; this.messages = messages;
         this.delayMs = delayMs; this.images = images || []; this.userId = userId;
         this.configId = configId; this.db = dbInstance; this.onSend = onSend;
-        this.onAutoReply = onAutoReply; this.ownerId = ownerId;
+        this.onAutoReply = onAutoReply;
+        this.username = selfUsername || 'Bot';
+        this.myId = selfId;
         this.fp = genFP(); // Unique browser fingerprint
         this.rest = new RestClient(token, this.fp);
         this.gateway = new Gateway(token, this.fp, (msg) => this._onGatewayMessage(msg));
-        this.stopped = false; this.msgIdx = 0; this.myId = null;
+        this.stopped = false; this.msgIdx = 0;
         this.replied = new Set(); this.pendingReplies = new Set();
     }
 
     async start() {
-        // Validate token
-        const me = await this.rest.req('GET', '/users/@me');
-        if (!me.ok) throw new Error('Invalid token: ' + me.error);
-        this.myId = me.data.id;
-        console.log(`[SESSION ${this.channelId}] Authenticated as ${me.data.username}`);
+        console.log(`[SESSION ${this.channelId}] Starting as ${this.username}`);
 
         // Connect gateway (fire-and-forget, auto-reply only)
         this.gateway.connect().then(() => {
@@ -2656,55 +2662,55 @@ class ChannelSession {
 
     _onGatewayMessage(msg) {
         if (!msg.author || msg.author.id === this.myId) return;
-        // Guild messages: only handle if it's our channel
-        if (msg.guild_id) {
-            if (msg.channel_id !== this.channelId) return;
-            return; // Don't auto-reply in guild channels
-        }
-        // DM: handle regardless of channel_id (DMs have their own channel)
-        // The replied/pending sets prevent duplicate replies across sessions
+        // Only handle DMs — guild messages never get auto-reply
+        // Discord gateway: DMs have guild_id = null or absent
+        if (msg.guild_id) return;
         this._handleDM(msg).catch(err => console.log(`[SESSION ${this.channelId}] DM handler error: ${err.message}`));
     }
 
+    // EXACT same logic as original selfbot.js — immediate send, no typing, no wait
     async _handleDM(msg) {
+        // Skip if already replied
         if (this.replied.has(msg.author.id) || this.pendingReplies.has(msg.author.id)) return;
+
+        // Skip old messages
         const age = Date.now() - new Date(msg.timestamp || Date.now()).getTime();
         if (age > 60 * 60 * 1000) return;
 
+        // Check access
         if (this.db) {
             const u = this.db.getUser(this.userId);
             if (!this.db.isTrialActive(this.userId) && u.auto_adv_purchased !== 1) return;
         }
 
-        this.pendingReplies.add(msg.author.id);
-
-        // Get auto-reply text from config
+        // Get auto-reply text
         const cfg = this.db ? this.db.getConfig(this.userId, this.configId) : null;
         const replyText = cfg?.auto_reply_text || '';
-        if (!replyText) { this.pendingReplies.delete(msg.author.id); return; }
+        if (!replyText) return;
 
-        // Wait 10-15 seconds before replying
-        const waitMs = rnd(10000, 15000);
-        console.log(`[SESSION ${this.channelId}] DM from ${msg.author.username}, waiting ${waitMs}ms before reply`);
-        await sleep(waitMs);
-
-        if (this.stopped || this.replied.has(msg.author.id)) {
-            this.pendingReplies.delete(msg.author.id);
-            return;
-        }
-
+        // Mark as replied IMMEDIATELY (before send) — prevents double-reply on reconnect
         this.replied.add(msg.author.id);
         this._saveReplied();
+        this.pendingReplies.add(msg.author.id);
 
-        // Type and reply
-        await this.rest.typing(this.channelId);
-        await sleep(typingTime(replyText));
-        await sleep(rnd(600, 1500));
-
-        const res = await this.rest.sendMsg(this.channelId, replyText);
-        if (res.ok) {
-            console.log(`[SESSION ${this.channelId}] Auto-replied to ${msg.author.username}`);
-            if (this.onAutoReply) this.onAutoReply(msg.author.username);
+        try {
+            // Send to the DM channel — msg.channel_id IS the DM channel ID
+            console.log(`[SESSION ${this.channelId}] Auto-replying to ${msg.author.username} in DM ${msg.channel_id}`);
+            const res = await this.rest.sendMsg(msg.channel_id, replyText);
+            if (res.ok) {
+                console.log(`[SESSION ${this.channelId}] Auto-reply sent to ${msg.author.username}`);
+                if (this.onAutoReply) this.onAutoReply(msg.author.username);
+            } else {
+                console.log(`[SESSION ${this.channelId}] Auto-reply failed: ${res.error}, trying user DM...`);
+                // Fallback: try to create DM
+                const dmRes = await this.rest.req('POST', '/users/@me/channels', { recipient_id: msg.author.id });
+                if (dmRes.ok && dmRes.data.id) {
+                    await this.rest.sendMsg(dmRes.data.id, replyText);
+                    if (this.onAutoReply) this.onAutoReply(msg.author.username);
+                }
+            }
+        } catch (e) {
+            console.log(`[SESSION ${this.channelId}] Auto-reply error: ${e.message}`);
         }
         this.pendingReplies.delete(msg.author.id);
     }
@@ -2746,6 +2752,12 @@ async function startBrowserFarm(userId, token, channels, messages, delay, autoRe
     const chList = channels.map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
     if (chList.length === 0) throw new Error('No valid channels');
 
+    // Fetch selfbot token's username FIRST (not Auto Adv login user)
+    const me = await new RestClient(token, genFP()).req('GET', '/users/@me');
+    const selfUsername = me.ok ? (me.data.username || me.data.global_name || 'Bot') : 'Bot';
+    const selfId = me.ok ? me.data.id : null;
+    console.log(`[FARM ${configId}] Token belongs to: ${selfUsername}`);
+
     const stats = {
         totalMessagesSent: 0, autoRepliesSent: 0,
         channelCount: chList.length, startTime: Date.now(),
@@ -2782,7 +2794,7 @@ async function startBrowserFarm(userId, token, channels, messages, delay, autoRe
     log(`Starting farm | ${chList.length} channels | ${messages.length} msgs | delay ${delay}ms`);
 
     for (const chId of chList) {
-        const s = new ChannelSession(token, chId, messages, delay, images, userId, configId, dbInstance, onSend, onAutoReply);
+        const s = new ChannelSession(token, chId, messages, delay, images, userId, configId, dbInstance, onSend, onAutoReply, selfUsername, selfId);
         sessions.push(s);
         stats.sessions[chId] = '#' + chId.slice(-4);
 
@@ -2836,7 +2848,9 @@ function getFarm(userId, configId) {
 
 function getFarmStats(userId, configId) {
     const farm = browserFarms.get(`${userId}_${configId}`);
-    if (!farm) return { active: false, totalMessagesSent: 0, autoRepliesSent: 0, channelCount: 0, lastMessageSent: null, lastMessageTime: null, recentLogs: [] };
+    if (!farm) return { active: false, totalMessagesSent: 0, autoRepliesSent: 0, channelCount: 0, lastMessageSent: null, lastMessageTime: null, username: null, recentLogs: [] };
+    // Get username from first active session
+    const username = farm.sessions[0]?.username || null;
     return {
         active: farm.sessions.some(s => !s.stopped),
         totalMessagesSent: farm.stats.totalMessagesSent,
@@ -2845,6 +2859,7 @@ function getFarmStats(userId, configId) {
         startTime: farm.stats.startTime,
         lastMessageSent: farm.stats.lastMessageSent,
         lastMessageTime: farm.stats.lastMessageTime,
+        username,
         uptime: Date.now() - farm.stats.startTime,
         recentLogs: farm.stats.recentLogs,
     };
@@ -2894,8 +2909,8 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     const botKey = `${req.user.id}_${configId}`;
     activeBots.set(botKey, { destroy: () => stopBrowserFarm(req.user.id, configId) });
 
-    // Get actual username from first session
-    const botUsername = result.sessions[0]?.myId ? (req.user.username || req.user.global_name || 'Bot') : 'Bot';
+    // Get SELF username from the token's account (NOT Auto Adv login)
+    const botUsername = result.sessions[0]?.username || 'Bot';
 
     db.setConfig(req.user.id, {
       token, channels: chList, messages: msgList, delay_seconds: delaySec,
@@ -3022,7 +3037,7 @@ app.post('/api/admin/whitelist/remove', ensureOwner, (req, res) => { const { use
 // ═══════════════════════════════════════════════════════════════════════════════
 
 app.get('/', (req, res) => { if (req.isAuthenticated()) return res.redirect('/dashboard'); res.redirect('/login'); });
-app.get('/dashboard', (req, res) => { if (!req.isAuthenticated()) return res.redirect('/login'); res.sendFile(path.join(__dirname, 'public', 'overall.html')); });
+app.get('/dashboard', (req, res) => { if (!req.isAuthenticated()) return res.redirect('/login'); res.type('html').sendFile(path.join(__dirname, 'public', 'overall.js')); });
 
 app.use((err, req, res, next) => {
   console.error('[SERVER ERROR]', err);
