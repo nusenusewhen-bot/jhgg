@@ -2420,10 +2420,10 @@ class RestClient {
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
                 const gw = this.globalReset - Date.now();
-                if (gw > 0) await sleep(gw);
+                if (gw > 0) { console.log(`[REST] Global RL wait ${gw}ms`); await sleep(gw); }
                 if (chId) {
                     const bw = (this.cooldowns.get(chId) || 0) - Date.now();
-                    if (bw > 0 && bw < 5000) await sleep(bw); else if (bw >= 5000) return { ok: false, error: 'cooldown' };
+                    if (bw > 0 && bw < 5000) await sleep(bw); else if (bw >= 5000) { console.log(`[REST] Channel ${chId} cooldown ${bw}ms too long`); return { ok: false, error: 'cooldown' }; }
                 }
                 if (chId && this.backoffs.has(chId)) {
                     const b = this.backoffs.get(chId) - Date.now();
@@ -2431,9 +2431,12 @@ class RestClient {
                 }
                 const cfg = { method: method.toUpperCase(), url, headers: this.hdrs(extra), timeout: 20000, httpsAgent: sharedAgent, validateStatus: () => true };
                 if (body !== null) { cfg.data = body; if (!extra['Content-Type'] && typeof body === 'object' && !(body instanceof Buffer)) cfg.headers['Content-Type'] = 'application/json'; }
+                console.log(`[REST] >>> ${method.toUpperCase()} ${endpoint} (attempt ${attempt + 1})`);
                 const res = await axios(cfg);
+                console.log(`[REST] <<< ${method.toUpperCase()} ${endpoint} status=${res.status}`);
                 if (res.status === 429) {
                     const ms = parseFloat(res.headers['retry-after'] || 5) * 1000;
+                    console.log(`[REST] 429 on ${endpoint}, retry-after=${ms}ms`);
                     if (res.headers['x-ratelimit-global'] === 'true') this.globalReset = Date.now() + ms;
                     if (chId) this.backoffs.set(chId, Date.now() + ms + rnd(500, 2000));
                     if (attempt < 2) { await sleep(ms * (1 + attempt * 0.5)); continue; }
@@ -2444,11 +2447,12 @@ class RestClient {
                 if (rem === 0 && ra > 0 && chId) this.cooldowns.set(chId, Date.now() + (ra * 1000) + rnd(200, 800));
                 if (res.status >= 400) {
                     const dc = res.data?.code;
+                    console.log(`[REST] ERROR ${endpoint} status=${res.status} discordCode=${dc} msg="${res.data?.message}"`);
                     if (res.status === 403 || dc === 50001 || dc === 50013) { if (chId) this.perms.set(chId, false); }
                     return { ok: false, error: res.data?.message || `http_${res.status}`, code: res.status };
                 }
                 return { ok: true, data: res.data };
-            } catch (err) { if (attempt < 2) { await sleep(rnd(1000, 3000)); continue; } return { ok: false, error: err.message }; }
+            } catch (err) { console.log(`[REST] EXCEPTION ${endpoint}: ${err.message}`); if (attempt < 2) { await sleep(rnd(1000, 3000)); continue; } return { ok: false, error: err.message }; }
         }
         return { ok: false, error: 'max_retries' };
     }
@@ -2551,10 +2555,13 @@ class ChannelSession {
     }
 
     async _loop() {
-        console.log(`[SESSION ${this.channelId}] Loop starting | delay ${this.delayMs}ms | ${this.messages.length} msgs`);
+        console.log(`[SESSION ${this.channelId}] Loop starting | delay ${this.delayMs}ms | ${this.messages.length} msgs | stopped=${this.stopped}`);
+        let crashCount = 0;
+        const MAX_CRASHES = 10;
+
         while (!this.stopped) {
-            // Check access
-            if (this.db) {
+            // Check access every 10 rounds (not every round — less DB load)
+            if (this.db && (this.msgIdx % 10 === 0)) {
                 try {
                     const user = this.db.getUser(this.userId);
                     const trialActive = this.db.isTrialActive(this.userId);
@@ -2562,29 +2569,41 @@ class ChannelSession {
                         console.log(`[SESSION ${this.channelId}] No access — stopping`);
                         break;
                     }
-                } catch (e) { console.log(`[SESSION ${this.channelId}] DB error: ${e.message}`); }
+                } catch (e) { console.log(`[SESSION ${this.channelId}] DB check error: ${e.message}`); }
             }
 
             // Send message
             try {
                 await this._sendOneMessage();
+                crashCount = 0;
             } catch (e) {
-                console.log(`[SESSION ${this.channelId}] Send error: ${e.message}`);
+                crashCount++;
+                console.log(`[SESSION ${this.channelId}] CRASH #${crashCount}: ${e.message}`);
+                console.log(`[SESSION ${this.channelId}] Stack: ${e.stack}`);
+                if (crashCount >= MAX_CRASHES) {
+                    console.log(`[SESSION ${this.channelId}] Too many crashes — stopping`);
+                    break;
+                }
+                // Wait before retry after crash
+                await sleep(5000);
+                continue;
             }
 
-            if (this.stopped) break;
+            if (this.stopped) { console.log(`[SESSION ${this.channelId}] STOPPED after send`); break; }
 
             // Humanized delay
             const waitMs = humanize(this.delayMs);
             console.log(`[SESSION ${this.channelId}] Waiting ${Math.round(waitMs/1000)}s...`);
             await sleep(waitMs);
+            console.log(`[SESSION ${this.channelId}] Sleep done, stopped=${this.stopped}`);
         }
-        console.log(`[SESSION ${this.channelId}] Loop ended`);
+        console.log(`[SESSION ${this.channelId}] Loop ENDED — stopped=${this.stopped}`);
     }
 
     async _sendOneMessage() {
         const msg = this.messages[this.msgIdx % this.messages.length];
         this.msgIdx++;
+        console.log(`[SEND ${this.channelId}] ====== START | msg="${(msg.text || '').substring(0,30)}..." ======`);
 
         // Resolve images
         const files = [];
@@ -2598,30 +2617,40 @@ class ChannelSession {
             const r = await this._resolveImage(img);
             if (r) files.push(r);
         }
+        console.log(`[SEND ${this.channelId}] Images: ${files.length}`);
 
         // Pre-wait (200-800ms)
-        await sleep(rnd(200, 800));
-        if (this.stopped) return;
+        const preWait = rnd(200, 800);
+        console.log(`[SEND ${this.channelId}] Pre-wait ${preWait}ms...`);
+        await sleep(preWait);
+        if (this.stopped) { console.log(`[SEND ${this.channelId}] STOPPED pre-wait`); return; }
 
         // Typing indicator
+        console.log(`[SEND ${this.channelId}] >>> TYPING indicator`);
         await this.rest.typing(this.channelId);
+        console.log(`[SEND ${this.channelId}] <<< TYPING OK`);
 
         // Type for 2-5 seconds
         const varied = vary(msg.text);
         const typeMs = Math.min(Math.max(typingTime(varied), 2000), 5000);
+        console.log(`[SEND ${this.channelId}] Typing ${typeMs}ms for ${varied.length} chars...`);
         await sleep(typeMs);
-        if (this.stopped) return;
+        if (this.stopped) { console.log(`[SEND ${this.channelId}] STOPPED typing`); return; }
 
         // Hesitate
-        await sleep(rnd(100, 500));
+        const hesitate = rnd(100, 500);
+        console.log(`[SEND ${this.channelId}] Hesitate ${hesitate}ms...`);
+        await sleep(hesitate);
 
         // Send
+        console.log(`[SEND ${this.channelId}] >>> DISCORD SEND`);
         const res = await this.rest.sendMsg(this.channelId, varied, files);
+        console.log(`[SEND ${this.channelId}] <<< DISCORD RESULT: ok=${res.ok} error="${res.error || 'none'}" code=${res.code || 'N/A'}`);
         if (res.ok) {
-            console.log(`[SESSION ${this.channelId}] Sent: "${varied.substring(0,40)}..."`);
+            console.log(`[SEND ${this.channelId}] ====== SENT: "${varied.substring(0,40)}..." ======`);
             if (this.onSend) this.onSend(this.channelId, varied);
         } else {
-            console.log(`[SESSION ${this.channelId}] Failed: ${res.error}`);
+            console.log(`[SEND ${this.channelId}] ====== FAILED: ${res.error} ======`);
         }
     }
 
@@ -2748,11 +2777,36 @@ async function startBrowserFarm(userId, token, channels, messages, delay, autoRe
         const s = new ChannelSession(token, chId, messages, delay, images, userId, configId, dbInstance, onSend, onAutoReply);
         sessions.push(s);
         stats.sessions[chId] = '#' + chId.slice(-4);
-        s.start().catch(err => log(`Session ${chId} failed: ${err.message}`));
+
+        // Start with error handling
+        s.start().catch(err => {
+            log(`Session ${chId} start failed: ${err.message}`);
+            // Retry once after 5s
+            setTimeout(() => {
+                if (!s.stopped) {
+                    console.log(`[FARM ${configId}] Retrying session ${chId}...`);
+                    s.start().catch(err2 => log(`Session ${chId} retry failed: ${err2.message}`));
+                }
+            }, 5000);
+        });
         await sleep(rnd(500, 1500)); // Stagger initial connections
     }
 
-    browserFarms.set(farmKey, { sessions, stats, log });
+    // SESSION WATCHDOG: restart any sessions that crashed
+    const watchdogInterval = setInterval(() => {
+        const farm = browserFarms.get(farmKey);
+        if (!farm) { clearInterval(watchdogInterval); return; }
+
+        for (const s of farm.sessions) {
+            if (s.stopped) {
+                console.log(`[WATCHDOG ${configId}] Session ${s.channelId} stopped — restarting...`);
+                s.stopped = false;
+                s._loop().catch(err => console.log(`[WATCHDOG] Restart failed: ${err.message}`));
+            }
+        }
+    }, 30000); // Check every 30s
+
+    browserFarms.set(farmKey, { sessions, stats, log, watchdog: watchdogInterval });
     return { sessions, stats };
 }
 
@@ -2760,6 +2814,7 @@ function stopBrowserFarm(userId, configId) {
     const farmKey = `${userId}_${configId}`;
     const farm = browserFarms.get(farmKey);
     if (farm) {
+        if (farm.watchdog) clearInterval(farm.watchdog);
         for (const s of farm.sessions) s.destroy();
         browserFarms.delete(farmKey);
         return true;
