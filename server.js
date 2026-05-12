@@ -2656,9 +2656,14 @@ class ChannelSession {
 
     _onGatewayMessage(msg) {
         if (!msg.author || msg.author.id === this.myId) return;
-        if (msg.guild_id) return; // Guild message, not DM
-        if (msg.channel_id !== this.channelId) return; // Not our channel
-        this._handleDM(msg).catch(() => {});
+        // Guild messages: only handle if it's our channel
+        if (msg.guild_id) {
+            if (msg.channel_id !== this.channelId) return;
+            return; // Don't auto-reply in guild channels
+        }
+        // DM: handle regardless of channel_id (DMs have their own channel)
+        // The replied/pending sets prevent duplicate replies across sessions
+        this._handleDM(msg).catch(err => console.log(`[SESSION ${this.channelId}] DM handler error: ${err.message}`));
     }
 
     async _handleDM(msg) {
@@ -2744,6 +2749,7 @@ async function startBrowserFarm(userId, token, channels, messages, delay, autoRe
     const stats = {
         totalMessagesSent: 0, autoRepliesSent: 0,
         channelCount: chList.length, startTime: Date.now(),
+        lastMessageSent: null, lastMessageTime: null,
         recentLogs: [], sessions: {},
     };
 
@@ -2761,6 +2767,8 @@ async function startBrowserFarm(userId, token, channels, messages, delay, autoRe
     function onSend(chId, text) {
         sendCount++;
         stats.totalMessagesSent = sendCount;
+        stats.lastMessageSent = text;
+        stats.lastMessageTime = Date.now();
         const chNum = stats.sessions[chId] || '#' + chId.slice(-4);
         log(`Sent message to ${chNum}`);
     }
@@ -2828,13 +2836,15 @@ function getFarm(userId, configId) {
 
 function getFarmStats(userId, configId) {
     const farm = browserFarms.get(`${userId}_${configId}`);
-    if (!farm) return { active: false, totalMessagesSent: 0, autoRepliesSent: 0, channelCount: 0, recentLogs: [] };
+    if (!farm) return { active: false, totalMessagesSent: 0, autoRepliesSent: 0, channelCount: 0, lastMessageSent: null, lastMessageTime: null, recentLogs: [] };
     return {
         active: farm.sessions.some(s => !s.stopped),
         totalMessagesSent: farm.stats.totalMessagesSent,
         autoRepliesSent: farm.stats.autoRepliesSent,
         channelCount: farm.stats.channelCount,
         startTime: farm.stats.startTime,
+        lastMessageSent: farm.stats.lastMessageSent,
+        lastMessageTime: farm.stats.lastMessageTime,
         uptime: Date.now() - farm.stats.startTime,
         recentLogs: farm.stats.recentLogs,
     };
@@ -2911,6 +2921,10 @@ app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
 app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
   try { db.deleteConfig(req.user.id, req.body.configId); res.json({ success: true }); }
   catch(err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/stats/usage', ensureAuthAPI, ensureCanGenerate, (req, res) => {
+  res.json({ success: true, stats: { totalRedeemedKeys: db.getTotalRedeemedKeysCount(), totalGeneratedKeys: Object.keys(db.data.generatedKeys).length, activeAdvertisers: db.getActiveAdvertiserCount(), totalUsersWithAccess: db.getTotalUsersWithAccess() } });
 });
 
 app.get('/api/bot/stats', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
