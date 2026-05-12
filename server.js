@@ -3078,7 +3078,7 @@ app.post('/api/admin/whitelist/remove', ensureOwner, (req, res) => { const { use
 // ═══════════════════════════════════════════════════════════════════════════════
 
 app.get('/', (req, res) => { if (req.isAuthenticated()) return res.redirect('/dashboard'); res.redirect('/login'); });
-app.get('/dashboard', (req, res) => { if (!req.isAuthenticated()) return res.redirect('/login'); res.type('html').sendFile(path.join(__dirname, 'public', 'overall.js')); });
+app.get('/dashboard', (req, res) => { if (!req.isAuthenticated()) return res.redirect('/login'); res.type('html').sendFile(path.join(__dirname, 'public', 'overall.html')); });
 
 app.use((err, req, res, next) => {
   console.error('[SERVER ERROR]', err);
