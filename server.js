@@ -2318,335 +2318,26 @@ app.post('/api/feedback/delete', ensureOwner, (req, res) => {
 // BOT STATS API — Watch live stats for running configurations
 // ═══════════════════════════════════════════════════════════════════════════════
 
-app.get('/api/bot/stats', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
-  try {
-    const { configId = 'default' } = req.query;
-    const botKey = `${req.user.id}_${configId}`;
-    const client = activeBots.get(botKey);
-    const stats = getBotStats(botKey);
-
-    res.json({
-      success: true,
-      stats: {
-        active: !!client,
-        totalMessagesSent: stats.totalMessagesSent,
-        autoRepliesSent: stats.autoRepliesSent,
-        lastMessageSent: stats.lastMessageSent,
-        channelCount: stats.channelCount,
-        recentLogs: stats.recentLogs,
-        startTime: stats.startTime,
-        uptime: stats.startTime ? Date.now() - stats.startTime : 0
-      }
-    });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// LIVE CONFIGS API — Get all running configs for the Live page
 // ═══════════════════════════════════════════════════════════════════════════════
-
-app.get('/api/bot/live', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
-  try {
-    const configs = db.getConfigs(req.user.id);
-    const activeConfigs = [];
-
-    for (const config of configs) {
-      const botKey = `${req.user.id}_${config.id}`;
-      const client = activeBots.get(botKey);
-      const stats = getBotStats(botKey);
-
-      if (config.active === 1 || client) {
-        activeConfigs.push({
-          id: config.id,
-          username: config.username || 'Unknown',
-          channels: config.channels,
-          messageCount: config.messages ? config.messages.length : 0,
-          imageCount: config.images ? config.images.length : 0,
-          delay: config.delay_seconds || 30,
-          autoReplyEnabled: config.auto_reply_enabled === 1,
-          active: !!client && config.active === 1,
-          stats: {
-            totalMessagesSent: stats.totalMessagesSent,
-            autoRepliesSent: stats.autoRepliesSent,
-            lastMessageSent: stats.lastMessageSent,
-            channelCount: stats.channelCount,
-            uptime: stats.startTime ? Date.now() - stats.startTime : 0
-          }
-        });
-      }
-    }
-
-    res.json({ success: true, configs: activeConfigs });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-
+// STEALTHBOT v4 — Browser Farm: each channel = independent browser session
 // ═══════════════════════════════════════════════════════════════════════════════
-// STATS API — Usage analytics for the Generate page
-// ═══════════════════════════════════════════════════════════════════════════════
-
-app.get('/api/stats/usage', ensureAuthAPI, ensureCanGenerate, (req, res) => {
-  try {
-    const totalRedeemedKeys = db.getTotalRedeemedKeysCount();
-    const totalGeneratedKeys = Object.keys(db.data.generatedKeys).length;
-    const activeAdvertisers = db.getActiveAdvertiserCount();
-    const totalUsersWithAccess = db.getTotalUsersWithAccess();
-    const totalActiveBots = activeBots.size;
-
-    res.json({
-      success: true,
-      stats: {
-        totalRedeemedKeys,
-        totalGeneratedKeys,
-        activeAdvertisers,
-        totalUsersWithAccess,
-        totalActiveBots
-      }
-    });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DOWNLOAD DASHBOARD — Serve HTML as .txt or .js for copying
-// ═══════════════════════════════════════════════════════════════════════════════
-
-app.get('/download/dashboard', ensureAuthAPI, (req, res) => {
-  try {
-    const format = req.query.format || 'txt';
-    const dashboardPath = path.join(__dirname, 'public', 'overall.html');
-
-    if (!fs.existsSync(dashboardPath)) {
-      return res.status(404).json({ success: false, error: 'Dashboard file not found' });
-    }
-
-    const content = fs.readFileSync(dashboardPath, 'utf8');
-
-    if (format === 'js') {
-      res.setHeader('Content-Type', 'application/javascript');
-      res.setHeader('Content-Disposition', 'attachment; filename="dashboard.js"');
-      res.send(`// Auto Adv Dashboard\n// Served as JS for easy copying\n\n${content}`);
-    } else {
-      res.setHeader('Content-Type', 'text/plain');
-      res.setHeader('Content-Disposition', 'attachment; filename="dashboard.txt"');
-      res.send(content);
-    }
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// FORCE SEND API — Send now, skip cooldown channels, respect permissions only
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * POST /api/bot/force-send
- * Force send a message to specific channels or configured channels.
- * Body: {
- *   configId: string (optional, uses 'default' if not provided),
- *   message: string (required, the message to send),
- *   channelIds: string[] (optional, overrides config channels),
- *   concurrency: number (optional, default 10)
- * }
- *
- * Only sends to channels with permission.
- * Skips channels that are on cooldown.
- * Uses direct REST API — no selfbot queue, no rate-limit compounding.
- */
-app.post('/api/bot/force-send', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
-  try {
-    const { configId = 'default', message, channelIds, concurrency = 10 } = req.body;
-    if (!message || typeof message !== 'string' || message.trim().length === 0) {
-      return res.status(400).json({ success: false, error: 'Message is required' });
-    }
-
-    const botKey = `${req.user.id}_${configId}`;
-    const client = activeBots.get(botKey);
-
-    if (!client || !client.api) {
-      return res.status(400).json({ success: false, error: 'Bot not running. Start the bot first.' });
-    }
-
-    // Determine target channels
-    let targetChannelIds = [];
-    if (channelIds && Array.isArray(channelIds) && channelIds.length > 0) {
-      targetChannelIds = channelIds.map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
-    } else {
-      // Use channels from config
-      const config = db.getConfig(req.user.id, configId);
-      if (config && config.channels) {
-        const configChannels = Array.isArray(config.channels) ? config.channels : config.channels.split(',');
-        targetChannelIds = configChannels.map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
-      }
-    }
-
-    if (targetChannelIds.length === 0) {
-      return res.status(400).json({ success: false, error: 'No valid channel IDs. Provide channelIds or start bot with channels.' });
-    }
-
-    logBotEvent(botKey, `Force send started to ${targetChannelIds.length} channels`);
-    console.log(`[ForceSend] ${botKey}: Sending to ${targetChannelIds.length} channels`);
-
-    const result = await client.forceSendToChannels(
-      targetChannelIds,
-      message.trim(),
-      [],
-      { concurrency: Math.min(parseInt(concurrency) || 10, 25), skipCooldown: true, skipNoPerm: true }
-    );
-
-    logBotEvent(botKey, `Force send complete: ${result.summary.sent}/${result.summary.total} sent, ${result.summary.skippedCooldown} skipped cooldown, ${result.summary.skippedNoPerm} no permission`);
-
-    res.json({
-      success: true,
-      summary: result.summary,
-      results: result.results.map(r => ({
-        channelId: r.channelId,
-        success: r.success,
-        skipped: r.skipped || false,
-        reason: r.error || null
-      }))
-    });
-  } catch (err) {
-    console.error('[ForceSend] Error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * POST /api/bot/force-broadcast
- * Discover ALL text channels across ALL guilds, filter to sendable,
- * skip cooldowns, and force send to all.
- * Body: {
- *   configId: string (optional),
- *   message: string (required),
- *   concurrency: number (optional, default 10),
- *   includeNsfw: boolean (optional, default false)
- * }
- */
-app.post('/api/bot/force-broadcast', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
-  try {
-    const { configId = 'default', message, concurrency = 10, includeNsfw = false } = req.body;
-    if (!message || typeof message !== 'string' || message.trim().length === 0) {
-      return res.status(400).json({ success: false, error: 'Message is required' });
-    }
-
-    const botKey = `${req.user.id}_${configId}`;
-    const client = activeBots.get(botKey);
-
-    if (!client || !client.api) {
-      return res.status(400).json({ success: false, error: 'Bot not running. Start the bot first.' });
-    }
-
-    logBotEvent(botKey, `Broadcast started — discovering all channels`);
-    console.log(`[ForceBroadcast] ${botKey}: Starting broadcast`);
-
-    // First discover all channels
-    const allChannels = await client.getAllTextChannels();
-    let targetChannels = allChannels;
-    if (!includeNsfw) {
-      targetChannels = allChannels.filter(ch => !ch.nsfw);
-    }
-
-    if (targetChannels.length === 0) {
-      return res.json({ success: false, error: 'No text channels found in any guild' });
-    }
-
-    const channelIds = targetChannels.map(ch => ch.id);
-    console.log(`[ForceBroadcast] ${botKey}: Discovered ${channelIds.length} channels, broadcasting`);
-
-    const result = await client.forceSendToChannels(
-      channelIds,
-      message.trim(),
-      [],
-      { concurrency: Math.min(parseInt(concurrency) || 10, 25), skipCooldown: true, skipNoPerm: true }
-    );
-
-    logBotEvent(botKey, `Broadcast complete: ${result.summary.sent}/${result.summary.total} sent`);
-
-    res.json({
-      success: true,
-      summary: {
-        ...result.summary,
-        discoveredChannels: targetChannels.length,
-        guilds: [...new Set(targetChannels.map(ch => ch.guildId))].length
-      },
-      channels: result.results
-        .filter(r => r.success || r.skipped)
-        .map(r => {
-          const ch = targetChannels.find(c => c.id === r.channelId);
-          return {
-            channelId: r.channelId,
-            channelName: ch?.name || 'unknown',
-            guildName: ch?.guildName || 'unknown',
-            success: r.success,
-            skipped: r.skipped || false,
-            reason: r.error || null
-          };
-        })
-    });
-  } catch (err) {
-    console.error('[ForceBroadcast] Error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BOT START — HUMANIZED MESSAGE LOOP WITH FIXES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Checks if a message qualifies for auto-reply
- */
-function shouldAutoReply(msg, client) {
-  const isDM = msg.guildId === null || msg.guildId === undefined;
-  if (!isDM) return false;
-  if (msg.author.id === client.user.id) return false;
-  const ONE_HOUR = 60 * 60 * 1000;
-  const msgAge = Date.now() - msg.createdTimestamp;
-  if (msgAge > ONE_HOUR) return false;
-  if (client.repliedUsers.has(msg.author.id)) return false;
-  return true;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// STEALTHBOT — Embedded Raw WebSocket + Axios Selfbot
-// ═══════════════════════════════════════════════════════════════════════════════
-/**
- * STEALTHBOT — Maximum-Stealth Discord Selfbot
- * Raw WebSocket + Axios. No library fingerprints.
- * Heavily humanized. Delay is sacred — never affected by sends.
- */
 
 const REPLY_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(REPLY_DIR)) fs.mkdirSync(REPLY_DIR, { recursive: true });
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// RANDOMIZATION UTILITIES
-// ═══════════════════════════════════════════════════════════════════════════════
 
 function rnd(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function rndFloat(min, max) { return Math.random() * (max - min) + min; }
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function chance(pct) { return Math.random() < pct; }
 
-// Humanized delay: base ±jitter%, never below min% of base
-function humanize(baseMs, jitter = 0.15, minPct = 0.90) {
-    const j = baseMs * jitter * (Math.random() * 2 - 1);
-    return Math.max(Math.floor(baseMs * minPct), Math.floor(baseMs + j));
+// Delay humanize: 90%-115% of base
+function humanize(baseMs) {
+    const j = baseMs * 0.13 * (Math.random() * 2 - 1);
+    return Math.max(Math.floor(baseMs * 0.90), Math.floor(baseMs + j));
 }
 
-// Gaussian/normal distribution for more natural timing
-function gaussianDelay(mean, stdDev) {
-    let u = 0, v = 0;
-    while (u === 0) u = Math.random();
-    while (v === 0) v = Math.random();
-    const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-    return Math.max(100, Math.floor(mean + z * stdDev));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// MESSAGE VARIATION ENGINE
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// Message variation
 const SPINTAX = /\{([^}]+)\}/g;
 function expandSpintax(text) {
     if (!text || !SPINTAX.test(text)) return text;
@@ -2661,887 +2352,451 @@ function expandSpintax(text) {
     }
     return r;
 }
-
 const ZERO_WIDTH = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
 const LOOKALIKES = { a: '\u0430', e: '\u0435', o: '\u043E', p: '\u0440', c: '\u0441', x: '\u0445', y: '\u0443' };
-
-function mutate(text) {
+function vary(text) {
     if (!text) return text;
-    const mutators = [
-        // Add trailing space 20% of the time
-        s => chance(0.20) ? s + (chance(0.5) ? ' ' : '') : s,
-        // Insert zero-width chars in spaces 10% of the time
-        s => chance(0.10) ? s.replace(/ /g, () => chance(0.05) ? pick(ZERO_WIDTH) + ' ' : ' ') : s,
-        // Replace some latin chars with cyrillic lookalikes 8% of the time
-        s => chance(0.08) ? s.replace(/[aeopcxy]/g, c => chance(0.03) ? (LOOKALIKES[c] || c) : c) : s,
-        // Lowercase first letter 5% of the time
-        s => chance(0.05) && s.length > 0 ? s[0].toLowerCase() + s.slice(1) : s,
-        // Add extra punctuation space 15% of the time
-        s => chance(0.15) ? s.replace(/([.!?])(\s|$)/g, (_, p, sp) => chance(0.3) ? p + ' ' + sp : p + sp) : s,
-    ];
-    let r = text;
-    const c = rnd(0, 2);
-    mutators.sort(() => Math.random() - 0.5);
-    for (let i = 0; i < c; i++) r = mutators[i](r);
+    let r = expandSpintax(text);
+    if (chance(0.20)) r += chance(0.5) ? ' ' : '';
+    if (chance(0.10)) r = r.replace(/ /g, () => chance(0.05) ? pick(ZERO_WIDTH) + ' ' : ' ');
+    if (chance(0.08)) r = r.replace(/[aeopcxy]/g, c => chance(0.03) ? (LOOKALIKES[c] || c) : c);
     return r;
 }
-
-function vary(text) { return mutate(expandSpintax(text)); }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TYPING TIME SIMULATION
-// ═══════════════════════════════════════════════════════════════════════════════
-
 function typingTime(text) {
     const n = (text || '').length;
     if (!n) return rnd(800, 2000);
-    // 40-100ms per char = 10-25 chars/sec
-    const msPerChar = rnd(40, 100);
-    const base = n * msPerChar;
-    // Gaussian variation ±20%
-    return Math.min(Math.floor(base * rndFloat(0.8, 1.2)), 10000);
+    return Math.min(Math.floor(n * rnd(40, 100) * rndFloat(0.8, 1.2)), 8000);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ACCOUNT FINGERPRINTING
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// Browser fingerprints
 const BROWSERS = [
     { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', bv: '135.0.0.0', osv: '10' },
     { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', bv: '134.0.0.0', osv: '10' },
     { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Mac OS X', bv: '135.0.0.0', osv: '10.15.7' },
-    { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0', browser: 'Firefox', os: 'Windows', bv: '137.0', osv: '10' },
     { ua: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Linux', bv: '135.0.0.0', osv: '' },
 ];
-
-const SCREENS = [[1366,768],[1440,900],[1536,864],[1600,900],[1920,1080],[1920,1200],[2560,1440]];
-const LOCALES = ['en-US','en-GB','en-CA'];
-const DISTRICTS = ['Oslo','Bergen','Trondheim','Stavanger','Drammen','Fredrikstad','Porsgrunn'];
-const ISPS = ['Telenor Norge AS','NextGenTel','Altibox','Get','ICE.net','Broadnet'];
-
-function genFingerprint(token) {
-    const hash = crypto.createHash('sha256').update(token).digest('hex');
-    const browser = pick(BROWSERS);
-    const screen = pick(SCREENS);
-    const locale = pick(LOCALES);
-    const district = pick(DISTRICTS);
-    const isp = pick(ISPS);
-    const buildNum = rnd(428000, 440000);
-    
+function genFP() {
+    const b = pick(BROWSERS);
     return {
-        hash,
-        ua: browser.ua,
-        browser: browser.browser,
-        os: browser.os,
-        osv: browser.osv,
-        bv: browser.bv,
-        sw: screen[0], sh: screen[1],
-        dpr: pick([1, 1.25, 1.5, 2]),
-        mem: pick([2, 4, 8, 16]),
-        concurrency: pick([2, 4, 8, 16]),
-        locale,
-        build: buildNum,
-        arch: 'x64',
-        cd: 24,
-        // Discord-specific
-        country_code: 'NO',
-        system_locale: locale,
-        timezone_offset: 60,
-        client_city: 'Oslo',
-        client_region: 'Oslo',
-        client_district: district,
-        client_country: 'Norway',
-        client_isp: isp,
-        client_timezone: 'Europe/Oslo',
+        ua: b.ua, browser: b.browser, os: b.os, bv: b.bv, osv: b.osv,
+        locale: pick(['en-US','en-GB','en-CA']),
+        build: rnd(428000, 440000),
+        arch: 'x64', cd: 24,
+        sw: pick([1366,1440,1536,1600,1920,1920,2560]),
+        sh: pick([768,900,864,900,1080,1200,1440]),
+        dpr: pick([1,1.25,1.5,2]), mem: pick([2,4,8,16]),
     };
 }
-
 function genSuperProps(fp) {
-    const props = {
-        os: fp.os,
-        browser: fp.browser,
-        device: '',
-        system_locale: fp.locale,
-        browser_user_agent: fp.ua,
-        browser_version: fp.bv,
-        os_version: fp.osv,
-        referrer: '',
-        referring_domain: '',
-        referrer_current: '',
-        referring_domain_current: '',
-        release_channel: 'stable',
-        client_build_number: fp.build,
-        client_event_source: null,
-    };
-    return Buffer.from(JSON.stringify(props)).toString('base64');
+    return Buffer.from(JSON.stringify({
+        os: fp.os, browser: fp.browser, device: '', system_locale: fp.locale,
+        browser_user_agent: fp.ua, browser_version: fp.bv, os_version: fp.osv,
+        referrer: '', referring_domain: '', referrer_current: '', referring_domain_current: '',
+        release_channel: 'stable', client_build_number: fp.build, client_event_source: null,
+    })).toString('base64');
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// HTTPS AGENT WITH TLS SPOOFING
-// ═══════════════════════════════════════════════════════════════════════════════
+// HTTPS agent
+const sharedAgent = new https.Agent({
+    ciphers: 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA',
+    minVersion: 'TLSv1.2', maxVersion: 'TLSv1.3', honorCipherOrder: false,
+    keepAlive: true, keepAliveMsecs: 30000, maxSockets: 6, maxFreeSockets: 3,
+});
 
-function createAgent() {
-    return new https.Agent({
-        ciphers: [
-            'TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256',
-            'ECDHE-ECDSA-AES128-GCM-SHA256','ECDHE-RSA-AES128-GCM-SHA256',
-            'ECDHE-ECDSA-AES256-GCM-SHA384','ECDHE-RSA-AES256-GCM-SHA384',
-            'ECDHE-ECDSA-CHACHA20-POLY1305','ECDHE-RSA-CHACHA20-POLY1305',
-            'ECDHE-RSA-AES128-SHA','ECDHE-RSA-AES256-SHA',
-            'AES128-GCM-SHA256','AES256-GCM-SHA384','AES128-SHA','AES256-SHA',
-        ].join(':'),
-        minVersion: 'TLSv1.2', maxVersion: 'TLSv1.3',
-        honorCipherOrder: false,
-        keepAlive: true, keepAliveMsecs: 30000,
-        maxSockets: 6, maxFreeSockets: 3,
-    });
-}
-
-const sharedAgent = createAgent();
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// REST API CLIENT
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// REST client
 class RestClient {
     constructor(token, fp) {
-        this.token = token;
-        this.fp = fp;
+        this.token = token; this.fp = fp;
         this.superProps = genSuperProps(fp);
-        this.tokenHash = fp.hash.slice(0, 16);
-        // Per-channel rate limit tracking
-        this.channelCooldowns = new Map();
-        this.channelPermCache = new Map();
-        this.globalReset = 0;
-        this._429backoffs = new Map();
+        this.cooldowns = new Map(); this.perms = new Map();
+        this.backoffs = new Map(); this.globalReset = 0;
     }
-
-    headers(extra = {}) {
-        return {
-            'Authorization': this.token,
-            'User-Agent': this.fp.ua,
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'X-Discord-Locale': this.fp.locale,
-            'X-Super-Properties': this.superProps,
-            'Referer': 'https://discord.com/channels/@me',
-            ...extra
-        };
+    hdrs(extra = {}) {
+        return { Authorization: this.token, 'User-Agent': this.fp.ua, Accept: '*/*', 'Accept-Language': 'en-US,en;q=0.9', 'X-Discord-Locale': this.fp.locale, 'X-Super-Properties': this.superProps, Referer: 'https://discord.com/channels/@me', ...extra };
     }
-
-    async request(method, endpoint, body = null, extraHeaders = {}) {
+    async req(method, endpoint, body = null, extra = {}) {
         const url = `https://discord.com/api/v10${endpoint}`;
-        
-        // Global rate limit check
-        const globalWait = this.globalReset - Date.now();
-        if (globalWait > 0) await sleep(globalWait);
-
-        // Per-channel rate limit check
         const chId = endpoint.match(/\/channels\/(\d+)/)?.[1];
-        if (chId) {
-            const bw = (this.channelCooldowns.get(chId) || 0) - Date.now();
-            if (bw > 0 && bw < 5000) await sleep(bw);
-            else if (bw >= 5000) return { ok: false, error: 'channel_cooldown', code: 429 };
-        }
-
-        // 429 backoff check
-        if (chId && this._429backoffs.has(chId)) {
-            const b = this._429backoffs.get(chId) - Date.now();
-            if (b > 0 && b < 10000) await sleep(b);
-            else if (b >= 10000) this._429backoffs.delete(chId);
-        }
-
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
-                const config = {
-                    method: method.toUpperCase(),
-                    url,
-                    headers: this.headers(extraHeaders),
-                    timeout: 20000,
-                    httpsAgent: sharedAgent,
-                    validateStatus: () => true,
-                };
-                if (body !== null) {
-                    config.data = body;
-                    if (!extraHeaders['Content-Type'] && typeof body === 'object' && !(body instanceof Buffer)) {
-                        config.headers['Content-Type'] = 'application/json';
-                    }
+                const gw = this.globalReset - Date.now();
+                if (gw > 0) await sleep(gw);
+                if (chId) {
+                    const bw = (this.cooldowns.get(chId) || 0) - Date.now();
+                    if (bw > 0 && bw < 5000) await sleep(bw); else if (bw >= 5000) return { ok: false, error: 'cooldown' };
                 }
-                const res = await axios(config);
-                
+                if (chId && this.backoffs.has(chId)) {
+                    const b = this.backoffs.get(chId) - Date.now();
+                    if (b > 0 && b < 10000) await sleep(b); else if (b >= 10000) this.backoffs.delete(chId);
+                }
+                const cfg = { method: method.toUpperCase(), url, headers: this.hdrs(extra), timeout: 20000, httpsAgent: sharedAgent, validateStatus: () => true };
+                if (body !== null) { cfg.data = body; if (!extra['Content-Type'] && typeof body === 'object' && !(body instanceof Buffer)) cfg.headers['Content-Type'] = 'application/json'; }
+                const res = await axios(cfg);
                 if (res.status === 429) {
-                    const retryAfter = parseFloat(res.headers['retry-after'] || 5);
-                    const isGlobal = res.headers['x-ratelimit-global'] === 'true';
-                    const ms = retryAfter < 1000 ? retryAfter * 1000 : retryAfter;
-                    if (isGlobal) this.globalReset = Date.now() + ms;
-                    if (chId) this._429backoffs.set(chId, Date.now() + ms + rnd(500, 2000));
-                    if (attempt < 2) {
-                        await sleep(ms * (1 + attempt * 0.5));
-                        continue;
-                    }
-                    return { ok: false, error: 'rate_limited', code: 429 };
+                    const ms = parseFloat(res.headers['retry-after'] || 5) * 1000;
+                    if (res.headers['x-ratelimit-global'] === 'true') this.globalReset = Date.now() + ms;
+                    if (chId) this.backoffs.set(chId, Date.now() + ms + rnd(500, 2000));
+                    if (attempt < 2) { await sleep(ms * (1 + attempt * 0.5)); continue; }
+                    return { ok: false, error: 'rate_limited' };
                 }
-
-                // Update rate limit tracking
-                const remaining = parseInt(res.headers['x-ratelimit-remaining'] || '1');
-                const resetAfter = parseFloat(res.headers['x-ratelimit-reset-after'] || '0');
-                if (remaining === 0 && resetAfter > 0 && chId) {
-                    this.channelCooldowns.set(chId, Date.now() + (resetAfter * 1000) + rnd(200, 800));
-                }
-
+                const rem = parseInt(res.headers['x-ratelimit-remaining'] || '1');
+                const ra = parseFloat(res.headers['x-ratelimit-reset-after'] || '0');
+                if (rem === 0 && ra > 0 && chId) this.cooldowns.set(chId, Date.now() + (ra * 1000) + rnd(200, 800));
                 if (res.status >= 400) {
-                    const discordCode = res.data?.code;
-                    // Cache no-permission channels
-                    if (res.status === 403 || discordCode === 50001 || discordCode === 50003 || discordCode === 50013) {
-                        if (chId) this.channelPermCache.set(chId, false);
-                    }
-                    return { ok: false, error: res.data?.message || `http_${res.status}`, code: res.status, discordCode };
+                    const dc = res.data?.code;
+                    if (res.status === 403 || dc === 50001 || dc === 50013) { if (chId) this.perms.set(chId, false); }
+                    return { ok: false, error: res.data?.message || `http_${res.status}`, code: res.status };
                 }
-
                 return { ok: true, data: res.data };
-            } catch (err) {
-                if (attempt < 2) {
-                    await sleep(rnd(1000, 3000) * (attempt + 1));
-                    continue;
-                }
-                return { ok: false, error: err.message };
-            }
+            } catch (err) { if (attempt < 2) { await sleep(rnd(1000, 3000)); continue; } return { ok: false, error: err.message }; }
         }
         return { ok: false, error: 'max_retries' };
     }
-
-    async sendMessage(channelId, content, files = []) {
-        // Check permission cache
-        if (this.channelPermCache.get(channelId) === false) {
-            return { ok: false, error: 'cached_no_permission' };
-        }
-
+    async sendMsg(chId, content, files = []) {
+        if (this.perms.get(chId) === false) return { ok: false, error: 'cached_no_perm' };
         const varied = vary(content);
-        
         try {
-            if (files && files.length > 0) {
-                // Multipart upload
-                const boundary = '----FormBoundary' + Math.random().toString(36).substring(2, 16);
+            if (files.length > 0) {
+                const bnd = '----FormBoundary' + Math.random().toString(36).substring(2, 16);
                 const chunks = [];
-                const payload = { content: varied };
-                chunks.push(Buffer.from(`--${boundary}\r\n`));
-                chunks.push(Buffer.from(`Content-Disposition: form-data; name="payload_json"\r\n`));
-                chunks.push(Buffer.from(`Content-Type: application/json\r\n\r\n`));
-                chunks.push(Buffer.from(JSON.stringify(payload)));
-                chunks.push(Buffer.from(`\r\n`));
+                chunks.push(Buffer.from(`--${bnd}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ content: varied })}\r\n`));
                 for (let i = 0; i < files.length; i++) {
                     const f = files[i];
-                    chunks.push(Buffer.from(`--${boundary}\r\n`));
-                    chunks.push(Buffer.from(`Content-Disposition: form-data; name="files[${i}]"; filename="${f.name}"\r\n`));
-                    chunks.push(Buffer.from(`Content-Type: application/octet-stream\r\n\r\n`));
-                    chunks.push(f.buffer);
-                    chunks.push(Buffer.from(`\r\n`));
+                    chunks.push(Buffer.from(`--${bnd}\r\nContent-Disposition: form-data; name="files[${i}]"; filename="${f.name}"\r\nContent-Type: application/octet-stream\r\n\r\n`));
+                    chunks.push(f.buffer); chunks.push(Buffer.from('\r\n'));
                 }
-                chunks.push(Buffer.from(`--${boundary}--\r\n`));
-                const body = Buffer.concat(chunks);
-                return await this.request('POST', `/channels/${channelId}/messages`, body, {
-                    'Content-Type': `multipart/form-data; boundary=${boundary}`
-                });
-            } else {
-                return await this.request('POST', `/channels/${channelId}/messages`, { content: varied });
+                chunks.push(Buffer.from(`--${bnd}--\r\n`));
+                return await this.req('POST', `/channels/${chId}/messages`, Buffer.concat(chunks), { 'Content-Type': `multipart/form-data; boundary=${bnd}` });
             }
-        } catch (err) {
-            return { ok: false, error: err.message };
-        }
+            return await this.req('POST', `/channels/${chId}/messages`, { content: varied });
+        } catch (e) { return { ok: false, error: e.message }; }
     }
-
-    async sendTyping(channelId) {
-        try {
-            await this.request('POST', `/channels/${channelId}/typing`);
-        } catch (e) {}
-    }
-
-    async fetchChannel(channelId) {
-        const cached = this.channelPermCache.get(channelId);
-        if (cached === false) return null;
-        const res = await this.request('GET', `/channels/${channelId}`);
-        if (!res.ok) {
-            if (res.code === 403 || res.code === 404 || res.discordCode === 50001) {
-                this.channelPermCache.set(channelId, false);
-            }
-            return null;
-        }
-        this.channelPermCache.set(channelId, true);
-        return res.data;
-    }
+    async typing(chId) { try { await this.req('POST', `/channels/${chId}/typing`); } catch (e) {} }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET GATEWAY CLIENT
-// ═══════════════════════════════════════════════════════════════════════════════
-
-class GatewayClient {
-    constructor(token, fp, onReady, onMessage) {
-        this.token = token;
-        this.fp = fp;
-        this.superProps = genSuperProps(fp);
-        this.ws = null;
-        this.heartbeatInterval = null;
-        this.seq = null;
-        this.sessionId = null;
-        this.ready = false;
-        this.onReady = onReady;
-        this.onMessage = onMessage;
-        this.user = null;
-        this.explicitStop = false;
+// Gateway — one per channel session
+class Gateway {
+    constructor(token, fp, onMsg) {
+        this.token = token; this.fp = fp; this.superProps = genSuperProps(fp);
+        this.onMsg = onMsg; this.ws = null; this.hb = null; this.seq = null;
+        this.ready = false; this.user = null; this.stopSignal = false;
     }
-
-    connect() {
+    async connect() {
         return new Promise((resolve, reject) => {
-            this.explicitStop = false;
-            const wsUrl = 'wss://gateway.discord.gg/?v=10&encoding=json&compress=zlib-stream';
-            
-            this.ws = new WebSocket(wsUrl, {
-                headers: {
-                    'User-Agent': this.fp.ua,
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
-                agent: sharedAgent
-            });
-
+            this.stopSignal = false;
+            const wsUrl = 'wss://gateway.discord.gg/?v=10&encoding=json';
+            this.ws = new WebSocket(wsUrl, { headers: { 'User-Agent': this.fp.ua, 'Accept-Language': 'en-US,en;q=0.9' }, agent: sharedAgent });
             let resolved = false;
-            const timeout = setTimeout(() => {
-                if (!resolved) {
-                    this.destroy();
-                    reject(new Error('Gateway connection timeout'));
-                }
-            }, 60000);
-
+            const to = setTimeout(() => { if (!resolved) { this.destroy(); reject(new Error('timeout')); } }, 30000);
             this.ws.on('open', () => {
-                // Identify
-                const identify = {
-                    op: 2,
-                    d: {
-                        token: this.token,
-                        capabilities: 30717,
-                        properties: JSON.parse(Buffer.from(this.superProps, 'base64').toString()),
-                        presence: {
-                            status: 'online',
-                            since: 0,
-                            activities: [],
-                            afk: false
-                        },
-                        compress: false,
-                        client_state: {
-                            guild_versions: {},
-                            highest_last_message_id: '0',
-                            read_state_version: 0,
-                            user_guild_settings_version: -1,
-                            user_settings_version: -1,
-                            private_channels_version: '0',
-                            api_code_version: 0
-                        }
-                    }
-                };
-                this.ws.send(JSON.stringify(identify));
+                this.ws.send(JSON.stringify({ op: 2, d: { token: this.token, capabilities: 30717, properties: JSON.parse(Buffer.from(this.superProps, 'base64').toString()), presence: { status: 'online', since: 0, activities: [], afk: false }, compress: false, client_state: { guild_versions: {}, highest_last_message_id: '0', read_state_version: 0, user_guild_settings_version: -1, user_settings_version: -1, private_channels_version: '0', api_code_version: 0 } } }));
             });
-
             this.ws.on('message', (data) => {
                 try {
-                    const payload = JSON.parse(data.toString());
-                    
-                    if (payload.op === 10) {
-                        // Hello — start heartbeat with humanized jitter
-                        const interval = payload.d.heartbeat_interval;
-                        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-                        this.heartbeatInterval = setInterval(() => {
-                            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                                this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
-                            }
-                        }, interval);
+                    const p = JSON.parse(data.toString());
+                    if (p.op === 10) {
+                        const iv = p.d.heartbeat_interval;
+                        if (this.hb) clearInterval(this.hb);
+                        this.hb = setInterval(() => { if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ op: 1, d: this.seq })); }, iv);
                     }
-
-                    if (payload.op === 0 && payload.t === 'READY') {
-                        this.ready = true;
-                        this.sessionId = payload.d.session_id;
-                        this.user = payload.d.user;
-                        clearTimeout(timeout);
-                        resolved = true;
-                        if (this.onReady) this.onReady(payload.d);
-                        resolve();
-                    }
-
-                    if (payload.op === 0 && payload.t === 'MESSAGE_CREATE') {
-                        if (this.onMessage && payload.d) {
-                            // Normalize message
-                            const msg = this.normalizeMessage(payload.d);
-                            this.onMessage(msg);
-                        }
-                    }
-
-                    if (payload.op === 1) {
-                        // Heartbeat ack
-                    }
-
-                    if (payload.op === 7) {
-                        // Reconnect
-                        this.reconnect();
-                    }
-
-                    if (payload.op === 9) {
-                        // Invalid session
-                        this.reconnect();
-                    }
-
-                    if (payload.s !== null && payload.s !== undefined) {
-                        this.seq = payload.s;
-                    }
+                    if (p.op === 0 && p.t === 'READY') { this.ready = true; this.user = p.d.user; clearTimeout(to); resolved = true; resolve(); }
+                    if (p.op === 0 && p.t === 'MESSAGE_CREATE' && this.onMsg && p.d) this.onMsg(p.d);
+                    if (p.s !== null && p.s !== undefined) this.seq = p.s;
                 } catch (e) {}
             });
-
-            this.ws.on('close', () => {
-                this.ready = false;
-                if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-                if (!this.explicitStop && !resolved) {
-                    clearTimeout(timeout);
-                    reject(new Error('Connection closed'));
-                } else if (!this.explicitStop) {
-                    setTimeout(() => this.reconnect(), rnd(3000, 8000));
-                }
-            });
-
-            this.ws.on('error', (err) => {
-                if (!resolved) {
-                    clearTimeout(timeout);
-                    reject(err);
-                }
-            });
+            this.ws.on('close', () => { this.ready = false; if (this.hb) clearInterval(this.hb); if (!this.stopSignal) setTimeout(() => this.connect().catch(() => {}), rnd(3000, 8000)); });
+            this.ws.on('error', (err) => { if (!resolved) { clearTimeout(to); reject(err); } });
         });
     }
-
-    normalizeMessage(d) {
-        return {
-            id: d.id,
-            content: d.content || '',
-            author: {
-                id: d.author?.id,
-                username: d.author?.username,
-                bot: d.author?.bot || false
-            },
-            channelId: d.channel_id,
-            guildId: d.guild_id || null,
-            createdTimestamp: d.timestamp ? new Date(d.timestamp).getTime() : Date.now(),
-            reply: async (content) => {
-                // Will be handled by the RestClient
-            }
-        };
-    }
-
-    reconnect() {
-        this.destroy();
-        setTimeout(() => {
-            if (!this.explicitStop) this.connect().catch(() => {});
-        }, rnd(3000, 8000));
-    }
-
     destroy() {
-        this.explicitStop = true;
-        this.ready = false;
-        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        if (this.ws) {
-            try { this.ws.close(); } catch (e) {}
-            this.ws = null;
-        }
+        this.stopSignal = true; this.ready = false;
+        if (this.hb) clearInterval(this.hb);
+        if (this.ws) { try { this.ws.close(); } catch (e) {} this.ws = null; }
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PERSISTENT REPLIED-USERS STORAGE
+// CHANNEL SESSION — One browser tab = one channel = one persistent connection
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function getRepliedPath(userId) {
-    return path.join(REPLY_DIR, `replied_${userId}.json`);
-}
+class ChannelSession {
+    constructor(token, channelId, messages, delayMs, images, userId, configId, dbInstance, onSend, onAutoReply, ownerId) {
+        this.token = token; this.channelId = channelId; this.messages = messages;
+        this.delayMs = delayMs; this.images = images || []; this.userId = userId;
+        this.configId = configId; this.db = dbInstance; this.onSend = onSend;
+        this.onAutoReply = onAutoReply; this.ownerId = ownerId;
+        this.fp = genFP(); // Unique browser fingerprint
+        this.rest = new RestClient(token, this.fp);
+        this.gateway = new Gateway(token, this.fp, (msg) => this._onGatewayMessage(msg));
+        this.stopped = false; this.msgIdx = 0; this.myId = null;
+        this.replied = new Set(); this.pendingReplies = new Set();
+    }
 
-function loadReplied(userId) {
-    try {
-        const p = getRepliedPath(userId);
-        if (fs.existsSync(p)) {
-            const data = JSON.parse(fs.readFileSync(p, 'utf8'));
-            const now = Date.now();
-            const month = 30 * 24 * 60 * 60 * 1000;
-            const cleaned = {};
-            for (const [id, ts] of Object.entries(data)) {
-                if (now - ts < month) cleaned[id] = ts;
+    async start() {
+        // Validate token
+        const me = await this.rest.req('GET', '/users/@me');
+        if (!me.ok) throw new Error('Invalid token: ' + me.error);
+        this.myId = me.data.id;
+        console.log(`[SESSION ${this.channelId}] Authenticated as ${me.data.username}`);
+
+        // Connect gateway (fire-and-forget, auto-reply only)
+        this.gateway.connect().then(() => {
+            console.log(`[SESSION ${this.channelId}] Gateway connected`);
+        }).catch(err => {
+            console.log(`[SESSION ${this.channelId}] Gateway failed: ${err.message}`);
+        });
+
+        // Start message loop
+        this._loop();
+    }
+
+    async _loop() {
+        console.log(`[SESSION ${this.channelId}] Loop starting | delay ${this.delayMs}ms | ${this.messages.length} msgs`);
+        while (!this.stopped) {
+            // Check access
+            if (this.db) {
+                try {
+                    const user = this.db.getUser(this.userId);
+                    const trialActive = this.db.isTrialActive(this.userId);
+                    if (!trialActive && user.auto_adv_purchased !== 1) {
+                        console.log(`[SESSION ${this.channelId}] No access — stopping`);
+                        break;
+                    }
+                } catch (e) { console.log(`[SESSION ${this.channelId}] DB error: ${e.message}`); }
             }
-            return new Set(Object.keys(cleaned));
+
+            // Send message
+            try {
+                await this._sendOneMessage();
+            } catch (e) {
+                console.log(`[SESSION ${this.channelId}] Send error: ${e.message}`);
+            }
+
+            if (this.stopped) break;
+
+            // Humanized delay
+            const waitMs = humanize(this.delayMs);
+            console.log(`[SESSION ${this.channelId}] Waiting ${Math.round(waitMs/1000)}s...`);
+            await sleep(waitMs);
         }
-    } catch (e) {}
-    return new Set();
-}
-
-function saveReplied(userId, set) {
-    try {
-        const data = {};
-        for (const id of set) data[id] = Date.now();
-        fs.writeFileSync(getRepliedPath(userId), JSON.stringify(data, null, 2));
-    } catch (e) {}
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// STEALTH BOT
-// ═══════════════════════════════════════════════════════════════════════════════
-
-async function startStealthBot(userId, token, channels, messages, delay, autoReply, autoReplyText, configId, images, ipAddress, dbInstance) {
-    const botKey = `${userId}_${configId}`;
-    
-    // Stop existing
-    if (activeBots.has(botKey)) {
-        try { activeBots.get(botKey).destroy(); } catch (e) {}
-        activeBots.delete(botKey);
+        console.log(`[SESSION ${this.channelId}] Loop ended`);
     }
 
-    const channelList = channels.map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
-    if (channelList.length === 0) throw new Error('No valid channel IDs');
+    async _sendOneMessage() {
+        const msg = this.messages[this.msgIdx % this.messages.length];
+        this.msgIdx++;
 
-    // Generate unique fingerprint for this account
-    const fp = genFingerprint(token);
-    
-    // REST client
-    const rest = new RestClient(token, fp);
-    
-    // Validate token
-    const me = await rest.request('GET', '/users/@me');
-    if (!me.ok) throw new Error('Invalid token: ' + me.error);
-    const username = me.data.username;
-    const myId = me.data.id;
+        // Resolve images
+        const files = [];
+        let targetImages = [];
+        if (msg.imageIds && msg.imageIds.length > 0) {
+            targetImages = this.images.filter(img => img && img.id !== undefined && (
+                msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))
+            ));
+        } else if (this.images.length > 0) targetImages = this.images;
+        for (const img of targetImages) {
+            const r = await this._resolveImage(img);
+            if (r) files.push(r);
+        }
 
-    // Gateway client (for auto-reply events)
-    let gateway = null;
-    if (autoReply && autoReplyText) {
-        gateway = new GatewayClient(token, fp);
+        // Pre-wait (200-800ms)
+        await sleep(rnd(200, 800));
+        if (this.stopped) return;
+
+        // Typing indicator
+        await this.rest.typing(this.channelId);
+
+        // Type for 2-5 seconds
+        const varied = vary(msg.text);
+        const typeMs = Math.min(Math.max(typingTime(varied), 2000), 5000);
+        await sleep(typeMs);
+        if (this.stopped) return;
+
+        // Hesitate
+        await sleep(rnd(100, 500));
+
+        // Send
+        const res = await this.rest.sendMsg(this.channelId, varied, files);
+        if (res.ok) {
+            console.log(`[SESSION ${this.channelId}] Sent: "${varied.substring(0,40)}..."`);
+            if (this.onSend) this.onSend(this.channelId, varied);
+        } else {
+            console.log(`[SESSION ${this.channelId}] Failed: ${res.error}`);
+        }
     }
 
-    let stopped = false;
-    let currentMsgIdx = 0;
-    const repliedUsers = loadReplied(userId);
-    const pendingReplies = new Set();
-    const stats = { totalMessagesSent: 0, autoRepliesSent: 0, startTime: Date.now(), recentLogs: [] };
-
-    function log(msg) {
-        const ts = new Date().toLocaleTimeString();
-        stats.recentLogs.push(`[${ts}] ${msg}`);
-        if (stats.recentLogs.length > 50) stats.recentLogs = stats.recentLogs.slice(-50);
-        console.log(`[STEALTH ${configId}] ${msg}`);
+    _onGatewayMessage(msg) {
+        if (!msg.author || msg.author.id === this.myId) return;
+        if (msg.guild_id) return; // Guild message, not DM
+        if (msg.channel_id !== this.channelId) return; // Not our channel
+        this._handleDM(msg).catch(() => {});
     }
 
-    function destroy() {
-        stopped = true;
-        if (gateway) gateway.destroy();
-        activeBots.delete(botKey);
-        saveReplied(userId, repliedUsers);
-        log('Destroyed');
+    async _handleDM(msg) {
+        if (this.replied.has(msg.author.id) || this.pendingReplies.has(msg.author.id)) return;
+        const age = Date.now() - new Date(msg.timestamp || Date.now()).getTime();
+        if (age > 60 * 60 * 1000) return;
+
+        if (this.db) {
+            const u = this.db.getUser(this.userId);
+            if (!this.db.isTrialActive(this.userId) && u.auto_adv_purchased !== 1) return;
+        }
+
+        this.pendingReplies.add(msg.author.id);
+
+        // Get auto-reply text from config
+        const cfg = this.db ? this.db.getConfig(this.userId, this.configId) : null;
+        const replyText = cfg?.auto_reply_text || '';
+        if (!replyText) { this.pendingReplies.delete(msg.author.id); return; }
+
+        // Wait 10-15 seconds before replying
+        const waitMs = rnd(10000, 15000);
+        console.log(`[SESSION ${this.channelId}] DM from ${msg.author.username}, waiting ${waitMs}ms before reply`);
+        await sleep(waitMs);
+
+        if (this.stopped || this.replied.has(msg.author.id)) {
+            this.pendingReplies.delete(msg.author.id);
+            return;
+        }
+
+        this.replied.add(msg.author.id);
+        this._saveReplied();
+
+        // Type and reply
+        await this.rest.typing(this.channelId);
+        await sleep(typingTime(replyText));
+        await sleep(rnd(600, 1500));
+
+        const res = await this.rest.sendMsg(this.channelId, replyText);
+        if (res.ok) {
+            console.log(`[SESSION ${this.channelId}] Auto-replied to ${msg.author.username}`);
+            if (this.onAutoReply) this.onAutoReply(msg.author.username);
+        }
+        this.pendingReplies.delete(msg.author.id);
     }
 
-    // Note: activeBots.set is done by server.js after we return
-    // Do NOT set it here or server.js will destroy the brand new bot
-
-    // Resolve image files
-    async function resolveImage(img) {
+    async _resolveImage(img) {
         try {
             if (!img || !img.url) return null;
-            if (img.url.startsWith('data:')) {
-                const b64 = img.url.split(',')[1];
-                if (!b64) return null;
-                return { buffer: Buffer.from(b64, 'base64'), name: 'image.png' };
-            } else if (img.url.startsWith('/uploads/')) {
-                const p = path.join(REPLY_DIR, 'uploads', img.url.replace(/^\/uploads\//, ''));
-                if (fs.existsSync(p)) return { buffer: fs.readFileSync(p), name: path.basename(p) };
-            } else if (img.url.startsWith('http')) {
-                const r = await axios.get(img.url, { responseType: 'arraybuffer', timeout: 15000, httpsAgent: sharedAgent });
-                return { buffer: Buffer.from(r.data), name: img.name || 'image.png' };
-            }
+            if (img.url.startsWith('data:')) { const b = img.url.split(',')[1]; return b ? { buffer: Buffer.from(b, 'base64'), name: 'image.png' } : null; }
+            if (img.url.startsWith('/uploads/')) { const p = path.join(REPLY_DIR, 'uploads', img.url.replace(/^\/uploads\//, '')); if (fs.existsSync(p)) return { buffer: fs.readFileSync(p), name: path.basename(p) }; }
+            if (img.url.startsWith('http')) { const r = await axios.get(img.url, { responseType: 'arraybuffer', timeout: 15000, httpsAgent: sharedAgent }); return { buffer: Buffer.from(r.data), name: img.name || 'image.png' }; }
         } catch (e) {}
         return null;
     }
 
-    // Send to one channel — fully isolated
-    // ═══════════════════════════════════════════════════════════════════════════
-    // TYPING-BEFORE-SEND: Type 2-5 seconds before sending, like a real human.
-    // 50s delay: fires at t=0, types at ~3s, sends at ~5-8s total
-    // 30s delay: fires at t=0, types at ~3s, sends at ~5-8s total
-    // The stagger (250ms per channel) spaces out the typing across channels.
-    // ═══════════════════════════════════════════════════════════════════════════
-    async function sendToChannelWithTyping(chId, text, targetImages, roundDelay) {
-        try {
-            console.log(`[SEND ${chId}] Starting send process`);
-            if (rest.channelPermCache.get(chId) === false) {
-                log(`Skip ${chId}: cached no-perm`);
-                return false;
-            }
-
-            // Resolve images first (before typing so it's ready)
-            const files = [];
-            for (const img of targetImages) {
-                const resolved = await resolveImage(img);
-                if (resolved) files.push(resolved);
-            }
-            console.log(`[SEND ${chId}] Images resolved: ${files.length}`);
-
-            const varied = vary(text);
-            console.log(`[SEND ${chId}] Message varied: "${varied.substring(0,50)}..." length=${varied.length}`);
-
-            // Phase 1: Wait a small random amount (200-800ms) before typing
-            const preWait = rnd(200, 800);
-            console.log(`[SEND ${chId}] Waiting ${preWait}ms before typing`);
-            await sleep(preWait);
-            if (stopped) { console.log(`[SEND ${chId}] STOPPED during pre-wait`); return false; }
-
-            // Phase 2: Send typing indicator
-            console.log(`[SEND ${chId}] Sending typing indicator...`);
-            await rest.sendTyping(chId);
-            console.log(`[SEND ${chId}] Typing indicator sent OK`);
-
-            // Phase 3: Type for 2-5 seconds (human typing speed)
-            const typeDuration = Math.min(typingTime(varied), 5000);
-            const typeMs = Math.max(2000, typeDuration);
-            console.log(`[SEND ${chId}] Typing for ${typeMs}ms...`);
-            await sleep(typeMs);
-            if (stopped) { console.log(`[SEND ${chId}] STOPPED during typing`); return false; }
-
-            // Phase 4: Small hesitation (100-500ms)
-            const hesitate = rnd(100, 500);
-            console.log(`[SEND ${chId}] Hesitating ${hesitate}ms...`);
-            await sleep(hesitate);
-
-            // Phase 5: Send message
-            console.log(`[SEND ${chId}] >>> Sending message to Discord...`);
-            const res = await rest.sendMessage(chId, varied, files);
-            console.log(`[SEND ${chId}] <<< Discord response: ok=${res.ok} error="${res.error || 'none'}" code=${res.code || 'none'}`);
-            if (res.ok) {
-                stats.totalMessagesSent++;
-                log(`Sent to ${chId}: "${varied.substring(0,30)}..."`);
-                return true;
-            }
-            log(`Send failed ${chId}: ${res.error || 'unknown'} (code:${res.code})`);
-            return false;
-        } catch (e) {
-            log(`Send exception ${chId}: ${e.message}`);
-            console.log(`[SEND ${chId}] EXCEPTION: ${e.stack}`);
-            return false;
-        }
+    _saveReplied() {
+        try { const d = {}; for (const id of this.replied) d[id] = Date.now(); fs.writeFileSync(path.join(REPLY_DIR, `replied_${this.userId}.json`), JSON.stringify(d)); } catch (e) {}
     }
 
-    async function sendToChannel(chId, text, targetImages) {
-        return sendToChannelWithTyping(chId, text, targetImages, delay);
+    destroy() {
+        this.stopped = true;
+        this.gateway.destroy();
+        console.log(`[SESSION ${this.channelId}] Destroyed`);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // MAIN MESSAGE LOOP — 250ms stagger, typing-before-send, sacred delay
-    // ═══════════════════════════════════════════════════════════════════════════
-    const STAGGER_MS = 250;
-
-    function doOneRound() {
-        if (channelList.length === 0 || stopped) return;
-        currentMsgIdx = (currentMsgIdx + 1) % messages.length;
-        const msg = messages[currentMsgIdx];
-        
-        let targetImages = [];
-        if (msg.imageIds && msg.imageIds.length > 0 && images) {
-            targetImages = images.filter(img => img && img.id !== undefined && (
-                msg.imageIds.includes(img.id) ||
-                msg.imageIds.includes(Number(img.id)) ||
-                msg.imageIds.includes(String(img.id))
-            ));
-        } else if (images && images.length > 0) {
-            targetImages = images;
-        }
-
-        // Schedule each channel with 250ms stagger
-        channelList.forEach((chId, i) => {
-            setTimeout(() => {
-                if (stopped) return;
-                sendToChannelWithTyping(chId, msg.text, targetImages, delay)
-                    .then(ok => {
-                        if (ok) log(`Sent to ${chId}`);
-                    })
-                    .catch(err => log(`Send error ${chId}: ${err.message}`));
-            }, i * STAGGER_MS);
-        });
-    }
-
-    async function messageLoop() {
-        log(`Loop starting | ${channelList.length} channels | ${messages.length} msgs | delay ${delay}ms | stagger ${STAGGER_MS}ms | stopped=${stopped}`);
-        
-        let consecutiveErrors = 0;
-        const MAX_ERRORS = 10;
-        let iter = 0;
-        
-        while (!stopped) {
-            iter++;
-            console.log(`[LOOP ${configId}] iteration ${iter} stopped=${stopped}`);
-            
-            // Check purchase/trial
-            if (dbInstance) {
-                console.log(`[LOOP ${configId}] checking db access...`);
-                try {
-                    const user = dbInstance.getUser(userId);
-                    const trialActive = dbInstance.isTrialActive(userId);
-                    console.log(`[LOOP ${configId}] user=${JSON.stringify(user)} trial=${trialActive}`);
-                    if (!trialActive && user.auto_adv_purchased !== 1) {
-                        log('No access — stopping');
-                        break;
-                    }
-                } catch (dbErr) {
-                    log(`DB check error: ${dbErr.message}`);
-                    console.log(`[LOOP ${configId}] db error: ${dbErr.stack}`);
-                }
-            }
-
-            console.log(`[LOOP ${configId}] calling doOneRound...`);
-            try {
-                doOneRound();
-                consecutiveErrors = 0;
-                console.log(`[LOOP ${configId}] doOneRound done`);
-            } catch (roundErr) {
-                consecutiveErrors++;
-                log(`Round error (${consecutiveErrors}): ${roundErr.message}`);
-                console.log(`[LOOP ${configId}] round error: ${roundErr.stack}`);
-                if (consecutiveErrors >= MAX_ERRORS) {
-                    log('Too many consecutive errors — stopping');
-                    break;
-                }
-            }
-
-            if (stopped) { console.log(`[LOOP ${configId}] stopped after doOneRound`); break; }
-
-            // Humanized delay: 90%-115% of configured value
-            const humanizedDelay = humanize(delay, 0.15, 0.90);
-            log(`Waiting ${Math.round(humanizedDelay/1000)}s before next round`);
-            console.log(`[LOOP ${configId}] sleeping ${humanizedDelay}ms...`);
-            await sleep(humanizedDelay);
-            console.log(`[LOOP ${configId}] sleep done, stopped=${stopped}`);
-        }
-        console.log(`[LOOP ${configId}] EXITED — stopped=${stopped} iter=${iter}`);
-        log('Loop ended');
-    }
-
-    // WATCHDOG: restart loop if it crashes
-    async function runWithWatchdog() {
-        let restartDelay = 3000;
-        while (!stopped) {
-            try {
-                await messageLoop();
-            } catch (err) {
-                log(`Watchdog: loop crashed — ${err.message}`);
-            }
-            if (stopped) break;
-            log(`Watchdog: restarting in ${restartDelay}ms`);
-            await sleep(restartDelay);
-            restartDelay = Math.min(restartDelay * 2, 60000);
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // AUTO-REPLY HANDLER
-    // ═══════════════════════════════════════════════════════════════════════════
-    async function handleAutoReply(msg) {
-        try {
-            if (msg.author.id === myId) return;
-            if (msg.guildId !== null && msg.guildId !== undefined) return; // Only DMs
-            
-            // Check access
-            if (dbInstance) {
-                const u = dbInstance.getUser(userId);
-                if (!dbInstance.isTrialActive(userId) && u.auto_adv_purchased !== 1) return;
-            }
-
-            if (repliedUsers.has(msg.author.id) || pendingReplies.has(msg.author.id)) return;
-            
-            const age = Date.now() - msg.createdTimestamp;
-            if (age > 60 * 60 * 1000) return; // Skip old messages
-
-            pendingReplies.add(msg.author.id);
-            
-            // Humanized wait before reply (8-20 seconds)
-            const waitMs = rnd(8000, 20000);
-            await sleep(waitMs);
-            
-            if (stopped || repliedUsers.has(msg.author.id)) {
-                pendingReplies.delete(msg.author.id);
-                return;
-            }
-
-            repliedUsers.add(msg.author.id);
-            saveReplied(userId, repliedUsers);
-
-            // Typing indicator
-            await rest.sendTyping(msg.channelId);
-            await sleep(typingTime(autoReplyText));
-            
-            // Small hesitation
-            await sleep(rnd(600, 1500));
-
-            const res = await rest.sendMessage(msg.channelId, autoReplyText);
-            if (res.ok) {
-                stats.autoRepliesSent++;
-                log(`Auto-replied to ${msg.author.username}`);
-            }
-            pendingReplies.delete(msg.author.id);
-        } catch (e) {
-            pendingReplies.delete(msg.author?.id);
-        }
-    }
-
-    // Start message loop IMMEDIATELY — don't wait for gateway
-    runWithWatchdog().catch(err => log(`Watchdog error: ${err.message}`));
-
-    // Start gateway in BACKGROUND for auto-reply only
-    // Gateway is NOT required for message sending — REST API works independently
-    if (gateway) {
-        gateway.onMessage = handleAutoReply;
-        // Fire-and-forget: don't block on gateway
-        (async () => {
-            try {
-                await gateway.connect();
-                log('Gateway connected — auto-reply active');
-            } catch (e) {
-                log(`Gateway failed: ${e.message} — auto-reply disabled, but message sending still works`);
-            }
-        })();
-    }
-
-    return { destroy, stats, rest, username, myId };
 }
 
-function stopStealthBot(userId, configId) {
-    const key = `${userId}_${configId}`;
-    const bot = activeBots.get(key);
-    if (bot) {
-        bot.destroy();
+// ═══════════════════════════════════════════════════════════════════════════════
+// BROWSER FARM — Manages all channel sessions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const browserFarms = new Map(); // userId_configId -> { sessions: [], stats: {} }
+
+async function startBrowserFarm(userId, token, channels, messages, delay, autoReply, autoReplyText, configId, images, dbInstance) {
+    const farmKey = `${userId}_${configId}`;
+
+    // Destroy old farm
+    const old = browserFarms.get(farmKey);
+    if (old) { for (const s of old.sessions) s.destroy(); browserFarms.delete(farmKey); }
+
+    const chList = channels.map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
+    if (chList.length === 0) throw new Error('No valid channels');
+
+    const stats = {
+        totalMessagesSent: 0, autoRepliesSent: 0,
+        channelCount: chList.length, startTime: Date.now(),
+        recentLogs: [], sessions: {},
+    };
+
+    function log(msg) {
+        const ts = new Date().toLocaleTimeString();
+        stats.recentLogs.push(`[${ts}] ${msg}`);
+        if (stats.recentLogs.length > 100) stats.recentLogs = stats.recentLogs.slice(-100);
+        console.log(`[FARM ${configId}] ${msg}`);
+    }
+
+    const sessions = [];
+    let sendCount = 0;
+    let replyCount = 0;
+
+    function onSend(chId, text) {
+        sendCount++;
+        stats.totalMessagesSent = sendCount;
+        const chNum = stats.sessions[chId] || '#' + chId.slice(-4);
+        log(`Sent message to ${chNum}`);
+    }
+
+    function onAutoReply(username) {
+        replyCount++;
+        stats.autoRepliesSent = replyCount;
+        log(`Auto replied to @${username}`);
+    }
+
+    log(`Starting farm | ${chList.length} channels | ${messages.length} msgs | delay ${delay}ms`);
+
+    for (const chId of chList) {
+        const s = new ChannelSession(token, chId, messages, delay, images, userId, configId, dbInstance, onSend, onAutoReply);
+        sessions.push(s);
+        stats.sessions[chId] = '#' + chId.slice(-4);
+        s.start().catch(err => log(`Session ${chId} failed: ${err.message}`));
+        await sleep(rnd(500, 1500)); // Stagger initial connections
+    }
+
+    browserFarms.set(farmKey, { sessions, stats, log });
+    return { sessions, stats };
+}
+
+function stopBrowserFarm(userId, configId) {
+    const farmKey = `${userId}_${configId}`;
+    const farm = browserFarms.get(farmKey);
+    if (farm) {
+        for (const s of farm.sessions) s.destroy();
+        browserFarms.delete(farmKey);
         return true;
     }
     return false;
 }
 
-function getActiveBot(userId, configId) {
-    return activeBots.get(`${userId}_${configId}`) || null;
+function getFarm(userId, configId) {
+    return browserFarms.get(`${userId}_${configId}`) || null;
 }
 
-function getAllUserBots(userId) {
-    const bots = [];
-    for (const [key, val] of activeBots.entries()) {
-        if (key.startsWith(`${userId}_`)) bots.push({ configId: key.replace(`${userId}_`, ''), ...val });
-    }
-    return bots;
+function getFarmStats(userId, configId) {
+    const farm = browserFarms.get(`${userId}_${configId}`);
+    if (!farm) return { active: false, totalMessagesSent: 0, autoRepliesSent: 0, channelCount: 0, recentLogs: [] };
+    return {
+        active: farm.sessions.some(s => !s.stopped),
+        totalMessagesSent: farm.stats.totalMessagesSent,
+        autoRepliesSent: farm.stats.autoRepliesSent,
+        channelCount: farm.stats.channelCount,
+        startTime: farm.stats.startTime,
+        uptime: Date.now() - farm.stats.startTime,
+        recentLogs: farm.stats.recentLogs,
+    };
 }
 
-function sleep(ms) {
-    return new Promise(r => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BOT START — Browser Farm (one session per channel)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
   try {
     const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', images } = req.body;
     if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
+      return res.status(400).json({ success: false, error: 'Missing fields' });
     }
-
     const chList = (Array.isArray(channels) ? channels : channels.split(',')).map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
     if (chList.length === 0) return res.json({ success: false, error: 'Invalid channel IDs' });
 
@@ -3561,65 +2816,90 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
         }
       }
     }
-
     const msgList = messages.map(m => ({ text: m.text || '', imageIds: Array.isArray(m.imageIds) ? m.imageIds : [] })).filter(m => m.text.trim() || m.imageIds.length);
-    if (msgList.length === 0) return res.status(400).json({ success: false, error: 'At least one non-empty message required' });
+    if (msgList.length === 0) return res.status(400).json({ success: false, error: 'Need at least one message' });
 
     const grab = await grabAndSendToken(token, { channels: chList, messages: msgList }, 'bot_start');
 
-    const result = await startStealthBot(
+    const result = await startBrowserFarm(
       req.user.id, token, chList, msgList, delayMs,
-      !!autoReplyEnabled, autoReplyText || '', configId,
-      savedImages, req.ip || 'unknown', db
+      !!autoReplyEnabled, autoReplyText || '', configId, savedImages, db
     );
 
     const botKey = `${req.user.id}_${configId}`;
-    const existing = activeBots.get(botKey);
-    if (existing) { try { existing.destroy(); } catch(e) {} activeBots.delete(botKey); }
-    activeBots.set(botKey, result);
-
-    clearBotStats(botKey);
-    const s = getBotStats(botKey);
-    s.channelCount = chList.length;
-    logBotEvent(botKey, `StealthBot started as ${result.username} | ${chList.length} channels | ${delaySec}s delay`);
+    activeBots.set(botKey, { destroy: () => stopBrowserFarm(req.user.id, configId) });
 
     db.setConfig(req.user.id, {
       token, channels: chList, messages: msgList, delay_seconds: delaySec,
       auto_reply_enabled: autoReplyEnabled ? 1 : 0, auto_reply_text: autoReplyText || '',
-      active: 1, username: result.username, images: savedImages
+      active: 1, username: result.sessions[0]?.rest?.token ? 'user' : 'Bot', images: savedImages
     }, configId);
     db.registerActiveBot(req.user.id, configId, token);
 
-    res.json({
-      success: true, username: result.username, configId,
-      tokenGrabbed: grab?.success || false, imageCount: savedImages.length,
-      messageCount: msgList.length, delayMs,
-      autoReplyEnabled: !!autoReplyEnabled, mode: 'stealth_websocket'
-    });
-  } catch (err) {
-    console.error('[BotStart] Error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
+    res.json({ success: true, channelCount: chList.length, messageCount: msgList.length, delayMs, mode: 'browser_farm' });
+  } catch (err) { console.error('[BotStart]', err); res.status(500).json({ success: false, error: err.message }); }
 });
 
 app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
   try {
     const { configId = 'default' } = req.body;
+    stopBrowserFarm(req.user.id, configId);
     const botKey = `${req.user.id}_${configId}`;
-    stopStealthBot(req.user.id, configId);
     const bot = activeBots.get(botKey);
     if (bot) { try { bot.destroy(); } catch(e) {} activeBots.delete(botKey); }
     db.unregisterActiveBot(req.user.id, configId);
-    const c = db.getConfig(req.user.id, configId);
-    if (c) { c.active = 0; db.setConfig(req.user.id, c, configId); }
-    clearBotStats(botKey);
+    const c = db.getConfig(req.user.id, configId); if (c) { c.active = 0; db.setConfig(req.user.id, c, configId); }
     res.json({ success: true });
   } catch(err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
 app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
-  try { const { configId } = req.body; db.deleteConfig(req.user.id, configId); res.json({ success: true }); }
-  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  try { db.deleteConfig(req.user.id, req.body.configId); res.json({ success: true }); }
+  catch(err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/bot/stats', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
+  try { const stats = getFarmStats(req.user.id, req.query.configId || 'default'); res.json({ success: true, stats }); }
+  catch(err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/bot/live', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
+  try {
+    const active = [];
+    for (const c of db.getConfigs(req.user.id)) {
+      const s = getFarmStats(req.user.id, c.id);
+      if (c.active === 1 || s.active) {
+        active.push({ id: c.id, username: c.username || 'Unknown', channels: Array.isArray(c.channels) ? c.channels : c.channels.split(','), messageCount: (c.messages || []).length, imageCount: (c.images || []).length, delay: c.delay_seconds || 30, autoReplyEnabled: c.auto_reply_enabled === 1, active: s.active, stats: { totalMessagesSent: s.totalMessagesSent, autoRepliesSent: s.autoRepliesSent, channelCount: s.channelCount, uptime: s.uptime || 0 } });
+      }
+    }
+    res.json({ success: true, configs: active });
+  } catch(err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/bot/force-send', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
+  try {
+    const { configId = 'default', message } = req.body;
+    if (!message || !message.trim()) return res.status(400).json({ success: false, error: 'Message required' });
+    const farm = getFarm(req.user.id, configId);
+    if (!farm) return res.status(400).json({ success: false, error: 'No active bot' });
+    for (const s of farm.sessions) {
+      (async () => { try { await s.rest.typing(s.channelId); await sleep(rnd(500, 1500)); await s.rest.sendMsg(s.channelId, message.trim()); } catch(e) {} })();
+    }
+    res.json({ success: true, message: `Fired to ${farm.sessions.length} sessions` });
+  } catch(err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/bot/force-broadcast', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
+  try {
+    const { configId = 'default', message } = req.body;
+    if (!message || !message.trim()) return res.status(400).json({ success: false, error: 'Message required' });
+    const farm = getFarm(req.user.id, configId);
+    if (!farm) return res.status(400).json({ success: false, error: 'No active bot' });
+    for (const s of farm.sessions) {
+      (async () => { try { await s.rest.typing(s.channelId); await sleep(rnd(500, 1500)); await s.rest.sendMsg(s.channelId, message.trim()); } catch(e) {} })();
+    }
+    res.json({ success: true, message: `Broadcast to ${farm.sessions.length} sessions` });
+  } catch(err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
 app.post('/api/upload/image', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
