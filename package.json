@@ -12,6 +12,7 @@
     "axios": "^1.7.2",
     "bip32": "^4.0.0",
     "bip39": "^3.1.0",
+    "bitcoinjs-lib": "^6.1.6",
     "cookie-parser": "^1.4.6",
     "discord.js-selfbot-v13": "^3.7.1",
     "dotenv": "^16.4.5",
