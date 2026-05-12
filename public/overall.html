@@ -102,6 +102,7 @@
             pointer-events: auto;
         }
         .btn-orange:hover { background: #d4d4d4; }
+        .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .card { 
             background: #171717; 
             border: 1px solid #333; 
@@ -591,6 +592,44 @@
             justify-content: space-between;
             align-items: flex-start;
             margin-bottom: 12px;
+            min-width: 0;
+            gap: 12px;
+        }
+        .running-config-card .card-header > div:first-child {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+        }
+        .running-config-card .card-header > div:last-child {
+            flex-shrink: 0;
+        }
+        .running-config-card .channel-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 100%;
+        }
+        .running-config-card .username-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 100%;
+        }
+        /* Account card (Available Configs) flex layout fix */
+        .account-card > div:first-child {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            min-width: 0;
+            gap: 12px;
+        }
+        .account-card > div:first-child > div:first-child {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+        }
+        .account-card > div:first-child > div:last-child {
+            flex-shrink: 0;
         }
         .running-config-card .card-actions {
             display: flex;
@@ -2153,9 +2192,9 @@
                 isWhitelisted = data.isWhitelisted;
                 canGenerate = data.canGenerate;
                 
-                const displayName = data.global_name || data.username;
+                const displayName = data.global_name || data.username || 'User';
                 const avatarUrl = data.avatar ? `https://cdn.discordapp.com/avatars/${data.id}/${data.avatar}.png?size=64` : 'https://cdn.discordapp.com/embed/avatars/0.png';
-                document.getElementById('user-display').innerHTML = `<img src="${avatarUrl}" class="user-avatar"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full" style="color: #fff;">${displayName}</span>`;
+                document.getElementById('user-display').innerHTML = `<img src="${avatarUrl}" class="user-avatar" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'"><span class="text-xs bg-zinc-900 px-3 py-1 rounded-full" style="color: #fff;">${displayName}</span>`;
                 
                 if (isOwner) {
                     document.getElementById('nav-4').classList.remove('hidden');
@@ -2439,17 +2478,17 @@
                 const card = document.createElement('div');
                 card.className = `account-card ${isActive ? 'account-active' : ''}`;
                 card.innerHTML = `
-                    <div class="flex justify-between items-start mb-2">
-                        <div>
-                            <h4 class="font-bold" style="color: #fff;">${config.username || 'Unknown'}</h4>
-                            <p class="text-xs mt-1" style="color: #737373;">Channels: ${config.channels}</p>
+                    <div class="flex justify-between items-start mb-2" style="min-width: 0;">
+                        <div style="min-width: 0; overflow: hidden; flex: 1;">
+                            <h4 class="font-bold truncate" style="color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${config.username || 'Unknown'}</h4>
+                            <p class="text-xs mt-1 truncate" style="color: #737373; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">Channels: ${Array.isArray(config.channels) ? config.channels.join(', ') : config.channels}</p>
                             <p class="text-xs mt-1" style="color: #a3a3a3;">
                                 <i class="fa-solid fa-message mr-1"></i>${msgCount} message${msgCount !== 1 ? 's' : ''} 
                                 <span class="mx-1">&#8226;</span> 
                                 <i class="fa-solid fa-image mr-1"></i>${imgCount} image${imgCount !== 1 ? 's' : ''}
                             </p>
                         </div>
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-2" style="flex-shrink: 0;">
                             <span class="status-badge ${isActive ? 'status-running' : 'status-stopped'}">
                                 ${isActive ? 'Running' : 'Stopped'}
                             </span>
