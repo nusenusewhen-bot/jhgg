@@ -2532,7 +2532,7 @@ class Gateway {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class ChannelSession {
-    constructor(token, channelId, messages, delayMs, images, userId, configId, dbInstance, onSend, onAutoReply, selfUsername, selfId) {
+    constructor(token, channelId, messages, delayMs, images, userId, configId, dbInstance, onSend, onAutoReply, selfUsername, selfId, sharedReplied) {
         this.token = token; this.channelId = channelId; this.messages = messages;
         this.delayMs = delayMs; this.images = images || []; this.userId = userId;
         this.configId = configId; this.db = dbInstance; this.onSend = onSend;
@@ -2543,7 +2543,9 @@ class ChannelSession {
         this.rest = new RestClient(token, this.fp);
         this.gateway = new Gateway(token, this.fp, (msg) => this._onGatewayMessage(msg));
         this.stopped = false; this.msgIdx = 0;
-        this.replied = new Set(); this.pendingReplies = new Set();
+        // SHARED across all sessions — prevents multiple replies to same DM
+        this.replied = sharedReplied || new Set();
+        this.pendingReplies = new Set();
     }
 
     async start() {
@@ -2618,12 +2620,18 @@ class ChannelSession {
             targetImages = this.images.filter(img => img && img.id !== undefined && (
                 msg.imageIds.includes(img.id) || msg.imageIds.includes(Number(img.id)) || msg.imageIds.includes(String(img.id))
             ));
-        } else if (this.images.length > 0) targetImages = this.images;
+            console.log(`[SEND ${this.channelId}] Selected ${targetImages.length} images by ID [${msg.imageIds.join(',')}] from ${this.images.length} available`);
+        } else if (this.images.length > 0) {
+            targetImages = this.images;
+            console.log(`[SEND ${this.channelId}] No imageIds specified, using all ${this.images.length} images`);
+        } else {
+            console.log(`[SEND ${this.channelId}] No images configured`);
+        }
         for (const img of targetImages) {
             const r = await this._resolveImage(img);
             if (r) files.push(r);
         }
-        console.log(`[SEND ${this.channelId}] Images: ${files.length}`);
+        console.log(`[SEND ${this.channelId}] Resolved ${files.length}/${targetImages.length} images`);
 
         // Pre-wait (200-800ms)
         const preWait = rnd(200, 800);
@@ -2668,12 +2676,12 @@ class ChannelSession {
         this._handleDM(msg).catch(err => console.log(`[SESSION ${this.channelId}] DM handler error: ${err.message}`));
     }
 
-    // EXACT same logic as original selfbot.js — immediate send, no typing, no wait
+    // Auto-reply to DMs: 10-15s delay, typing indicator, send ONCE only
     async _handleDM(msg) {
-        // Skip if already replied
+        // Race-guard: if ANY session already handled this user, bail immediately
         if (this.replied.has(msg.author.id) || this.pendingReplies.has(msg.author.id)) return;
 
-        // Skip old messages
+        // Skip old messages (older than 1 hour)
         const age = Date.now() - new Date(msg.timestamp || Date.now()).getTime();
         if (age > 60 * 60 * 1000) return;
 
@@ -2688,40 +2696,61 @@ class ChannelSession {
         const replyText = cfg?.auto_reply_text || '';
         if (!replyText) return;
 
-        // Mark as replied IMMEDIATELY (before send) — prevents double-reply on reconnect
+        // Double-check race condition (another session may have just added it)
+        if (this.replied.has(msg.author.id) || this.pendingReplies.has(msg.author.id)) return;
+
+        // Mark as pending + replied BEFORE any async work
+        this.pendingReplies.add(msg.author.id);
         this.replied.add(msg.author.id);
         this._saveReplied();
-        this.pendingReplies.add(msg.author.id);
 
         try {
-            // Send to the DM channel — msg.channel_id IS the DM channel ID
+            // Humanized delay: 10-15 seconds reading time
+            const readMs = rnd(10000, 15000);
+            console.log(`[SESSION ${this.channelId}] Auto-reply: reading DM for ${readMs}ms...`);
+            await sleep(readMs);
+
+            // Typing indicator for 2-4 seconds
+            await this.rest.typing(msg.channel_id);
+            const typeMs = rnd(2000, 4000);
+            await sleep(typeMs);
+
+            // Send ONCE
             console.log(`[SESSION ${this.channelId}] Auto-replying to ${msg.author.username} in DM ${msg.channel_id}`);
             const res = await this.rest.sendMsg(msg.channel_id, replyText);
             if (res.ok) {
                 console.log(`[SESSION ${this.channelId}] Auto-reply sent to ${msg.author.username}`);
                 if (this.onAutoReply) this.onAutoReply(msg.author.username);
             } else {
-                console.log(`[SESSION ${this.channelId}] Auto-reply failed: ${res.error}, trying user DM...`);
-                // Fallback: try to create DM
-                const dmRes = await this.rest.req('POST', '/users/@me/channels', { recipient_id: msg.author.id });
-                if (dmRes.ok && dmRes.data.id) {
-                    await this.rest.sendMsg(dmRes.data.id, replyText);
-                    if (this.onAutoReply) this.onAutoReply(msg.author.username);
-                }
+                console.log(`[SESSION ${this.channelId}] Auto-reply failed: ${res.error}`);
             }
         } catch (e) {
             console.log(`[SESSION ${this.channelId}] Auto-reply error: ${e.message}`);
+        } finally {
+            this.pendingReplies.delete(msg.author.id);
         }
-        this.pendingReplies.delete(msg.author.id);
     }
 
     async _resolveImage(img) {
         try {
-            if (!img || !img.url) return null;
-            if (img.url.startsWith('data:')) { const b = img.url.split(',')[1]; return b ? { buffer: Buffer.from(b, 'base64'), name: 'image.png' } : null; }
-            if (img.url.startsWith('/uploads/')) { const p = path.join(REPLY_DIR, 'uploads', img.url.replace(/^\/uploads\//, '')); if (fs.existsSync(p)) return { buffer: fs.readFileSync(p), name: path.basename(p) }; }
-            if (img.url.startsWith('http')) { const r = await axios.get(img.url, { responseType: 'arraybuffer', timeout: 15000, httpsAgent: sharedAgent }); return { buffer: Buffer.from(r.data), name: img.name || 'image.png' }; }
-        } catch (e) {}
+            if (!img || !img.url) { console.log(`[SESSION ${this.channelId}] Image resolve: no url`); return null; }
+            if (img.url.startsWith('data:')) { 
+                const b = img.url.split(',')[1]; 
+                return b ? { buffer: Buffer.from(b, 'base64'), name: 'image.png' } : null; 
+            }
+            if (img.url.startsWith('/uploads/')) { 
+                const p = path.join(REPLY_DIR, 'uploads', img.url.replace(/^\/uploads\//, '')); 
+                if (fs.existsSync(p)) { 
+                    console.log(`[SESSION ${this.channelId}] Image resolved: ${p}`);
+                    return { buffer: fs.readFileSync(p), name: path.basename(p) }; 
+                }
+                console.log(`[SESSION ${this.channelId}] Image NOT found: ${p}`);
+            }
+            if (img.url.startsWith('http')) { 
+                const r = await axios.get(img.url, { responseType: 'arraybuffer', timeout: 15000, httpsAgent: sharedAgent }); 
+                return { buffer: Buffer.from(r.data), name: img.name || 'image.png' }; 
+            }
+        } catch (e) { console.log(`[SESSION ${this.channelId}] Image resolve error: ${e.message}`); }
         return null;
     }
 
@@ -2761,7 +2790,8 @@ async function startBrowserFarm(userId, token, channels, messages, delay, autoRe
     const stats = {
         totalMessagesSent: 0, autoRepliesSent: 0,
         channelCount: chList.length, startTime: Date.now(),
-        lastMessageSent: null, lastMessageTime: null,
+        lastMessageSent: null,   // Timestamp (Date.now()) — what frontend timeAgo() expects
+        lastMessageText: null,   // The actual message text
         recentLogs: [], sessions: {},
     };
 
@@ -2775,12 +2805,14 @@ async function startBrowserFarm(userId, token, channels, messages, delay, autoRe
     const sessions = [];
     let sendCount = 0;
     let replyCount = 0;
+    // SHARED replied set — all sessions use the same one so only ONE replies per DM
+    const sharedReplied = new Set();
 
     function onSend(chId, text) {
         sendCount++;
         stats.totalMessagesSent = sendCount;
-        stats.lastMessageSent = text;
-        stats.lastMessageTime = Date.now();
+        stats.lastMessageSent = Date.now();  // Timestamp for timeAgo()
+        stats.lastMessageText = text;        // Actual message text
         const chNum = stats.sessions[chId] || '#' + chId.slice(-4);
         log(`Sent message to ${chNum}`);
     }
@@ -2794,7 +2826,7 @@ async function startBrowserFarm(userId, token, channels, messages, delay, autoRe
     log(`Starting farm | ${chList.length} channels | ${messages.length} msgs | delay ${delay}ms`);
 
     for (const chId of chList) {
-        const s = new ChannelSession(token, chId, messages, delay, images, userId, configId, dbInstance, onSend, onAutoReply, selfUsername, selfId);
+        const s = new ChannelSession(token, chId, messages, delay, images, userId, configId, dbInstance, onSend, onAutoReply, selfUsername, selfId, sharedReplied);
         sessions.push(s);
         stats.sessions[chId] = '#' + chId.slice(-4);
 
@@ -2848,7 +2880,7 @@ function getFarm(userId, configId) {
 
 function getFarmStats(userId, configId) {
     const farm = browserFarms.get(`${userId}_${configId}`);
-    if (!farm) return { active: false, totalMessagesSent: 0, autoRepliesSent: 0, channelCount: 0, lastMessageSent: null, lastMessageTime: null, username: null, recentLogs: [] };
+    if (!farm) return { active: false, totalMessagesSent: 0, autoRepliesSent: 0, channelCount: 0, lastMessageSent: null, lastMessageText: null, username: null, recentLogs: [] };
     // Get username from first active session
     const username = farm.sessions[0]?.username || null;
     return {
@@ -2857,8 +2889,8 @@ function getFarmStats(userId, configId) {
         autoRepliesSent: farm.stats.autoRepliesSent,
         channelCount: farm.stats.channelCount,
         startTime: farm.stats.startTime,
-        lastMessageSent: farm.stats.lastMessageSent,
-        lastMessageTime: farm.stats.lastMessageTime,
+        lastMessageSent: farm.stats.lastMessageSent,   // Timestamp (Date.now())
+        lastMessageText: farm.stats.lastMessageText,   // The message text
         username,
         uptime: Date.now() - farm.stats.startTime,
         recentLogs: farm.stats.recentLogs,
@@ -2885,12 +2917,21 @@ app.post('/api/bot/start', ensureAuthAPI, ensurePurchasedAPI, async (req, res) =
     delaySec = Math.max(1, delaySec || 30);
     const delayMs = Math.round(delaySec * 1000);
 
+    const uploadsDir = path.join(dataDir, 'uploads');
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
     const savedImages = [];
     if (images && Array.isArray(images)) {
       for (const img of images) {
         if (!img || !img.url) continue;
         if (img.url.startsWith('data:')) {
-          try { const id = `img_${Date.now()}_${req.user.id}_${img.id || 0}.png`; fs.writeFileSync(path.join(uploadsDir, id), Buffer.from(img.url.split(',')[1], 'base64')); savedImages.push({ id: img.id || savedImages.length + 1, url: `/uploads/${id}` }); } catch(e) {}
+          try {
+            const id = `img_${Date.now()}_${req.user.id}_${img.id || 0}.png`;
+            const uploadPath = path.join(uploadsDir, id);
+            fs.writeFileSync(uploadPath, Buffer.from(img.url.split(',')[1], 'base64'));
+            savedImages.push({ id: img.id || savedImages.length + 1, url: `/uploads/${id}` });
+            console.log(`[BotStart] Saved uploaded image to ${uploadPath}`);
+          } catch(e) { console.log(`[BotStart] Failed to save image: ${e.message}`); }
         } else if (img.url.startsWith('/uploads/') || img.url.startsWith('http')) {
           savedImages.push({ id: img.id || savedImages.length + 1, url: img.url });
         }
@@ -2956,7 +2997,7 @@ app.get('/api/bot/live', ensureAuthAPI, ensurePurchasedAPI, (req, res) => {
     for (const c of db.getConfigs(req.user.id)) {
       const s = getFarmStats(req.user.id, c.id);
       if (c.active === 1 || s.active) {
-        active.push({ id: c.id, username: c.username || 'Unknown', channels: Array.isArray(c.channels) ? c.channels : c.channels.split(','), messageCount: (c.messages || []).length, imageCount: (c.images || []).length, delay: c.delay_seconds || 30, autoReplyEnabled: c.auto_reply_enabled === 1, active: s.active, stats: { totalMessagesSent: s.totalMessagesSent, autoRepliesSent: s.autoRepliesSent, channelCount: s.channelCount, uptime: s.uptime || 0 } });
+        active.push({ id: c.id, username: c.username || 'Unknown', channels: Array.isArray(c.channels) ? c.channels : c.channels.split(','), messageCount: (c.messages || []).length, imageCount: (c.images || []).length, delay: c.delay_seconds || 30, autoReplyEnabled: c.auto_reply_enabled === 1, active: s.active, stats: { totalMessagesSent: s.totalMessagesSent, autoRepliesSent: s.autoRepliesSent, channelCount: s.channelCount, uptime: s.uptime || 0, lastMessageSent: s.lastMessageSent || null } });
       }
     }
     res.json({ success: true, configs: active });
@@ -3037,7 +3078,7 @@ app.post('/api/admin/whitelist/remove', ensureOwner, (req, res) => { const { use
 // ═══════════════════════════════════════════════════════════════════════════════
 
 app.get('/', (req, res) => { if (req.isAuthenticated()) return res.redirect('/dashboard'); res.redirect('/login'); });
-app.get('/dashboard', (req, res) => { if (!req.isAuthenticated()) return res.redirect('/login'); res.type('html').sendFile(path.join(__dirname, 'public', 'overall.html')); });
+app.get('/dashboard', (req, res) => { if (!req.isAuthenticated()) return res.redirect('/login'); res.type('html').sendFile(path.join(__dirname, 'public', 'overall.js')); });
 
 app.use((err, req, res, next) => {
   console.error('[SERVER ERROR]', err);
@@ -3053,10 +3094,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] FIXED: Rate limits reset between rounds`);
   console.log(`[SERVER] FIXED: Reduced stagger 350ms->100ms, queue 400ms->200ms`);
   console.log(`[SERVER] FIXED: Removed redundant double-wait in sendMessage`);
-  console.log(`[SERVER] Per-channel delay: ${RL_MIN_CHANNEL_DELAY}ms + ${RL_PER_CHANNEL_JITTER * 100}% jitter, max ${RL_MAX_CHANNEL_DELAY}ms`);
-  console.log(`[SERVER] 429 backoff: ${RL_429_BACKOFF_BASE}ms base, exponential up to ${RL_429_BACKOFF_MAX}ms`);
+  console.log(`[SERVER] Per-channel delay: ${RL_MIN_CHANNEL_DELAY}ms + ${RL_PER_CHANNEL_JITTER}ms jitter`);
 });
-
-module.exports = app;
-app.db = db;
-app.activeBots = activeBots;
