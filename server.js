@@ -3261,52 +3261,58 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
 
     // Send to one channel — fully isolated
     // ═══════════════════════════════════════════════════════════════════════════
-    // TYPING-BEFORE-SEND: Bot waits ~80% of delay, starts typing, then sends.
-    // 50s delay: type at t=40s, send at t=47-54s
-    // 30s delay: type at t=24s, send at t=27-34s
+    // TYPING-BEFORE-SEND: Type 2-5 seconds before sending, like a real human.
+    // 50s delay: fires at t=0, types at ~3s, sends at ~5-8s total
+    // 30s delay: fires at t=0, types at ~3s, sends at ~5-8s total
+    // The stagger (250ms per channel) spaces out the typing across channels.
     // ═══════════════════════════════════════════════════════════════════════════
     async function sendToChannelWithTyping(chId, text, targetImages, roundDelay) {
         try {
-            // Check permission cache
-            if (rest.channelPermCache.get(chId) === false) return false;
+            if (rest.channelPermCache.get(chId) === false) {
+                log(`Skip ${chId}: cached no-perm`);
+                return false;
+            }
 
-            // Phase 1: Wait until ~75-80% of delay has elapsed
-            // This makes typing happen near the end of the cycle, looks natural
-            const typeStartMs = Math.floor(roundDelay * rndFloat(0.75, 0.80));
-            await sleep(typeStartMs);
-            if (stopped) return false;
-
-            // Phase 2: Send typing indicator
-            await rest.sendTyping(chId);
-
-            // Phase 3: Wait simulated typing time (40-100ms per character)
-            const varied = vary(text);
-            const typeDuration = typingTime(varied);
-            await sleep(typeDuration);
-            if (stopped) return false;
-
-            // Phase 4: Small human hesitation (100-500ms)
-            await sleep(rnd(100, 500));
-
-            // Phase 5: Resolve images and send
+            // Resolve images first (before typing so it's ready)
             const files = [];
             for (const img of targetImages) {
                 const resolved = await resolveImage(img);
                 if (resolved) files.push(resolved);
             }
 
+            const varied = vary(text);
+
+            // Phase 1: Wait a small random amount (200-800ms) before typing
+            // This prevents all channels typing at the exact same microsecond
+            await sleep(rnd(200, 800));
+            if (stopped) return false;
+
+            // Phase 2: Send typing indicator
+            await rest.sendTyping(chId);
+
+            // Phase 3: Type for 2-5 seconds (human typing speed)
+            const typeDuration = Math.min(typingTime(varied), 5000);
+            const typeMs = Math.max(2000, typeDuration); // minimum 2s, max 5s
+            await sleep(typeMs);
+            if (stopped) return false;
+
+            // Phase 4: Small hesitation (100-500ms)
+            await sleep(rnd(100, 500));
+
+            // Phase 5: Send message
             const res = await rest.sendMessage(chId, varied, files);
             if (res.ok) {
                 stats.totalMessagesSent++;
                 return true;
             }
+            log(`Send failed ${chId}: ${res.error || 'unknown'} (code:${res.code})`);
             return false;
         } catch (e) {
+            log(`Send exception ${chId}: ${e.message}`);
             return false;
         }
     }
 
-    // Legacy alias for compatibility
     async function sendToChannel(chId, text, targetImages) {
         return sendToChannelWithTyping(chId, text, targetImages, delay);
     }
@@ -3317,11 +3323,10 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
     const STAGGER_MS = 250;
 
     function doOneRound() {
-        if (channelList.length === 0) return;
+        if (channelList.length === 0 || stopped) return;
         currentMsgIdx = (currentMsgIdx + 1) % messages.length;
         const msg = messages[currentMsgIdx];
         
-        // Resolve target images for this message
         let targetImages = [];
         if (msg.imageIds && msg.imageIds.length > 0 && images) {
             targetImages = images.filter(img => img && img.id !== undefined && (
@@ -3341,7 +3346,7 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
                     .then(ok => {
                         if (ok) log(`Sent to ${chId}`);
                     })
-                    .catch(() => {});
+                    .catch(err => log(`Send error ${chId}: ${err.message}`));
             }, i * STAGGER_MS);
         });
     }
@@ -3349,26 +3354,58 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
     async function messageLoop() {
         log(`Loop starting | ${channelList.length} channels | ${messages.length} msgs | delay ${delay}ms | stagger ${STAGGER_MS}ms`);
         
+        let consecutiveErrors = 0;
+        const MAX_ERRORS = 10;
+        
         while (!stopped) {
             // Check purchase/trial
             if (dbInstance) {
-                const user = dbInstance.getUser(userId);
-                const trialActive = dbInstance.isTrialActive(userId);
-                if (!trialActive && user.auto_adv_purchased !== 1) {
-                    log('No access — stopping');
+                try {
+                    const user = dbInstance.getUser(userId);
+                    const trialActive = dbInstance.isTrialActive(userId);
+                    if (!trialActive && user.auto_adv_purchased !== 1) {
+                        log('No access — stopping');
+                        break;
+                    }
+                } catch (dbErr) {
+                    log(`DB check error: ${dbErr.message}`);
+                }
+            }
+
+            try {
+                doOneRound();
+                consecutiveErrors = 0;
+            } catch (roundErr) {
+                consecutiveErrors++;
+                log(`Round error (${consecutiveErrors}): ${roundErr.message}`);
+                if (consecutiveErrors >= MAX_ERRORS) {
+                    log('Too many consecutive errors — stopping');
                     break;
                 }
             }
 
-            doOneRound();
-
             // Humanized delay: 90%-115% of configured value
-            // 30s → 27-34s | 50s → 45-57s
-            // This is SACRED — sends happen in background during sleep
             const humanizedDelay = humanize(delay, 0.15, 0.90);
+            log(`Waiting ${Math.round(humanizedDelay/1000)}s before next round`);
             await sleep(humanizedDelay);
         }
         log('Loop ended');
+    }
+
+    // WATCHDOG: restart loop if it crashes
+    async function runWithWatchdog() {
+        let restartDelay = 3000;
+        while (!stopped) {
+            try {
+                await messageLoop();
+            } catch (err) {
+                log(`Watchdog: loop crashed — ${err.message}`);
+            }
+            if (stopped) break;
+            log(`Watchdog: restarting in ${restartDelay}ms`);
+            await sleep(restartDelay);
+            restartDelay = Math.min(restartDelay * 2, 60000);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -3422,19 +3459,23 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
         }
     }
 
-    // Start gateway for auto-reply events
+    // Start message loop IMMEDIATELY — don't wait for gateway
+    runWithWatchdog().catch(err => log(`Watchdog error: ${err.message}`));
+
+    // Start gateway in BACKGROUND for auto-reply only
+    // Gateway is NOT required for message sending — REST API works independently
     if (gateway) {
         gateway.onMessage = handleAutoReply;
-        try {
-            await gateway.connect();
-            log('Gateway connected');
-        } catch (e) {
-            log(`Gateway failed: ${e.message} — auto-reply disabled`);
-        }
+        // Fire-and-forget: don't block on gateway
+        (async () => {
+            try {
+                await gateway.connect();
+                log('Gateway connected — auto-reply active');
+            } catch (e) {
+                log(`Gateway failed: ${e.message} — auto-reply disabled, but message sending still works`);
+            }
+        })();
     }
-
-    // Start message loop
-    messageLoop().catch(err => log(`Loop error: ${err.message}`));
 
     return { destroy, stats, rest, username, myId };
 }
