@@ -3365,43 +3365,58 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
     }
 
     async function messageLoop() {
-        log(`Loop starting | ${channelList.length} channels | ${messages.length} msgs | delay ${delay}ms | stagger ${STAGGER_MS}ms`);
+        log(`Loop starting | ${channelList.length} channels | ${messages.length} msgs | delay ${delay}ms | stagger ${STAGGER_MS}ms | stopped=${stopped}`);
         
         let consecutiveErrors = 0;
         const MAX_ERRORS = 10;
+        let iter = 0;
         
         while (!stopped) {
+            iter++;
+            console.log(`[LOOP ${configId}] iteration ${iter} stopped=${stopped}`);
+            
             // Check purchase/trial
             if (dbInstance) {
+                console.log(`[LOOP ${configId}] checking db access...`);
                 try {
                     const user = dbInstance.getUser(userId);
                     const trialActive = dbInstance.isTrialActive(userId);
+                    console.log(`[LOOP ${configId}] user=${JSON.stringify(user)} trial=${trialActive}`);
                     if (!trialActive && user.auto_adv_purchased !== 1) {
                         log('No access — stopping');
                         break;
                     }
                 } catch (dbErr) {
                     log(`DB check error: ${dbErr.message}`);
+                    console.log(`[LOOP ${configId}] db error: ${dbErr.stack}`);
                 }
             }
 
+            console.log(`[LOOP ${configId}] calling doOneRound...`);
             try {
                 doOneRound();
                 consecutiveErrors = 0;
+                console.log(`[LOOP ${configId}] doOneRound done`);
             } catch (roundErr) {
                 consecutiveErrors++;
                 log(`Round error (${consecutiveErrors}): ${roundErr.message}`);
+                console.log(`[LOOP ${configId}] round error: ${roundErr.stack}`);
                 if (consecutiveErrors >= MAX_ERRORS) {
                     log('Too many consecutive errors — stopping');
                     break;
                 }
             }
 
+            if (stopped) { console.log(`[LOOP ${configId}] stopped after doOneRound`); break; }
+
             // Humanized delay: 90%-115% of configured value
             const humanizedDelay = humanize(delay, 0.15, 0.90);
             log(`Waiting ${Math.round(humanizedDelay/1000)}s before next round`);
+            console.log(`[LOOP ${configId}] sleeping ${humanizedDelay}ms...`);
             await sleep(humanizedDelay);
+            console.log(`[LOOP ${configId}] sleep done, stopped=${stopped}`);
         }
+        console.log(`[LOOP ${configId}] EXITED — stopped=${stopped} iter=${iter}`);
         log('Loop ended');
     }
 
