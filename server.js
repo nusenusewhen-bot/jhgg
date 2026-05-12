@@ -3238,7 +3238,8 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
         log('Destroyed');
     }
 
-    activeBots.set(botKey, { destroy, stats, rest, gateway, fp });
+    // Note: activeBots.set is done by server.js after we return
+    // Do NOT set it here or server.js will destroy the brand new bot
 
     // Resolve image files
     async function resolveImage(img) {
