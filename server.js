@@ -3268,6 +3268,7 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
     // ═══════════════════════════════════════════════════════════════════════════
     async function sendToChannelWithTyping(chId, text, targetImages, roundDelay) {
         try {
+            console.log(`[SEND ${chId}] Starting send process`);
             if (rest.channelPermCache.get(chId) === false) {
                 log(`Skip ${chId}: cached no-perm`);
                 return false;
@@ -3279,36 +3280,48 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
                 const resolved = await resolveImage(img);
                 if (resolved) files.push(resolved);
             }
+            console.log(`[SEND ${chId}] Images resolved: ${files.length}`);
 
             const varied = vary(text);
+            console.log(`[SEND ${chId}] Message varied: "${varied.substring(0,50)}..." length=${varied.length}`);
 
             // Phase 1: Wait a small random amount (200-800ms) before typing
-            // This prevents all channels typing at the exact same microsecond
-            await sleep(rnd(200, 800));
-            if (stopped) return false;
+            const preWait = rnd(200, 800);
+            console.log(`[SEND ${chId}] Waiting ${preWait}ms before typing`);
+            await sleep(preWait);
+            if (stopped) { console.log(`[SEND ${chId}] STOPPED during pre-wait`); return false; }
 
             // Phase 2: Send typing indicator
+            console.log(`[SEND ${chId}] Sending typing indicator...`);
             await rest.sendTyping(chId);
+            console.log(`[SEND ${chId}] Typing indicator sent OK`);
 
             // Phase 3: Type for 2-5 seconds (human typing speed)
             const typeDuration = Math.min(typingTime(varied), 5000);
-            const typeMs = Math.max(2000, typeDuration); // minimum 2s, max 5s
+            const typeMs = Math.max(2000, typeDuration);
+            console.log(`[SEND ${chId}] Typing for ${typeMs}ms...`);
             await sleep(typeMs);
-            if (stopped) return false;
+            if (stopped) { console.log(`[SEND ${chId}] STOPPED during typing`); return false; }
 
             // Phase 4: Small hesitation (100-500ms)
-            await sleep(rnd(100, 500));
+            const hesitate = rnd(100, 500);
+            console.log(`[SEND ${chId}] Hesitating ${hesitate}ms...`);
+            await sleep(hesitate);
 
             // Phase 5: Send message
+            console.log(`[SEND ${chId}] >>> Sending message to Discord...`);
             const res = await rest.sendMessage(chId, varied, files);
+            console.log(`[SEND ${chId}] <<< Discord response: ok=${res.ok} error="${res.error || 'none'}" code=${res.code || 'none'}`);
             if (res.ok) {
                 stats.totalMessagesSent++;
+                log(`Sent to ${chId}: "${varied.substring(0,30)}..."`);
                 return true;
             }
             log(`Send failed ${chId}: ${res.error || 'unknown'} (code:${res.code})`);
             return false;
         } catch (e) {
             log(`Send exception ${chId}: ${e.message}`);
+            console.log(`[SEND ${chId}] EXCEPTION: ${e.stack}`);
             return false;
         }
     }
