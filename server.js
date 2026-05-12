@@ -2616,13 +2616,6 @@ function shouldAutoReply(msg, client) {
  * Heavily humanized. Delay is sacred — never affected by sends.
  */
 
-const WebSocket = require('ws');
-const axios = require('axios');
-const https = require('https');
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-
 const REPLY_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(REPLY_DIR)) fs.mkdirSync(REPLY_DIR, { recursive: true });
 
@@ -2636,7 +2629,7 @@ function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function chance(pct) { return Math.random() < pct; }
 
 // Humanized delay: base ±jitter%, never below min% of base
-function humanize(baseMs, jitter = 0.10, minPct = 0.85) {
+function humanize(baseMs, jitter = 0.15, minPct = 0.90) {
     const j = baseMs * jitter * (Math.random() * 2 - 1);
     return Math.max(Math.floor(baseMs * minPct), Math.floor(baseMs + j));
 }
@@ -3194,8 +3187,6 @@ function saveReplied(userId, set) {
 // STEALTH BOT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const activeBots = new Map();
-
 async function startStealthBot(userId, token, channels, messages, delay, autoReply, autoReplyText, configId, images, ipAddress, dbInstance) {
     const botKey = `${userId}_${configId}`;
     
@@ -3269,30 +3260,40 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
     }
 
     // Send to one channel — fully isolated
-    async function sendToChannel(chId, text, targetImages) {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TYPING-BEFORE-SEND: Bot waits ~80% of delay, starts typing, then sends.
+    // 50s delay: type at t=40s, send at t=47-54s
+    // 30s delay: type at t=24s, send at t=27-34s
+    // ═══════════════════════════════════════════════════════════════════════════
+    async function sendToChannelWithTyping(chId, text, targetImages, roundDelay) {
         try {
             // Check permission cache
             if (rest.channelPermCache.get(chId) === false) return false;
 
-            // Resolve images
+            // Phase 1: Wait until ~75-80% of delay has elapsed
+            // This makes typing happen near the end of the cycle, looks natural
+            const typeStartMs = Math.floor(roundDelay * rndFloat(0.75, 0.80));
+            await sleep(typeStartMs);
+            if (stopped) return false;
+
+            // Phase 2: Send typing indicator
+            await rest.sendTyping(chId);
+
+            // Phase 3: Wait simulated typing time (40-100ms per character)
+            const varied = vary(text);
+            const typeDuration = typingTime(varied);
+            await sleep(typeDuration);
+            if (stopped) return false;
+
+            // Phase 4: Small human hesitation (100-500ms)
+            await sleep(rnd(100, 500));
+
+            // Phase 5: Resolve images and send
             const files = [];
             for (const img of targetImages) {
                 const resolved = await resolveImage(img);
                 if (resolved) files.push(resolved);
             }
-
-            const varied = vary(text);
-            
-            // Send typing indicator 70% of the time
-            if (chance(0.70)) {
-                await rest.sendTyping(chId);
-                // Wait typing time (simulated human typing)
-                const typeMs = typingTime(varied);
-                await sleep(typeMs);
-            }
-
-            // Small hesitation before send (100-500ms)
-            await sleep(rnd(100, 500));
 
             const res = await rest.sendMessage(chId, varied, files);
             if (res.ok) {
@@ -3305,8 +3306,13 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
         }
     }
 
+    // Legacy alias for compatibility
+    async function sendToChannel(chId, text, targetImages) {
+        return sendToChannelWithTyping(chId, text, targetImages, delay);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
-    // MAIN MESSAGE LOOP — 250ms stagger, fire-and-forget, sacred delay
+    // MAIN MESSAGE LOOP — 250ms stagger, typing-before-send, sacred delay
     // ═══════════════════════════════════════════════════════════════════════════
     const STAGGER_MS = 250;
 
@@ -3331,7 +3337,7 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
         channelList.forEach((chId, i) => {
             setTimeout(() => {
                 if (stopped) return;
-                sendToChannel(chId, msg.text, targetImages)
+                sendToChannelWithTyping(chId, msg.text, targetImages, delay)
                     .then(ok => {
                         if (ok) log(`Sent to ${chId}`);
                     })
@@ -3356,9 +3362,10 @@ async function startStealthBot(userId, token, channels, messages, delay, autoRep
 
             doOneRound();
 
-            // Humanized delay between rounds (±10%, min 85%)
+            // Humanized delay: 90%-115% of configured value
+            // 30s → 27-34s | 50s → 45-57s
             // This is SACRED — sends happen in background during sleep
-            const humanizedDelay = humanize(delay, 0.10, 0.85);
+            const humanizedDelay = humanize(delay, 0.15, 0.90);
             await sleep(humanizedDelay);
         }
         log('Loop ended');
